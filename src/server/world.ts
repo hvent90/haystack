@@ -1,4 +1,14 @@
 import type { FlightInputCommand, Quaternion, Ship, ThrustCommand, Vector3 } from "../shared/types";
+import {
+  applyThrustCommand,
+  integrateShipTick,
+  isFlightInputCommand,
+  normalizeQuaternion,
+  receiveFlightInput,
+  roundShip,
+  shipFixedDt,
+  type HeldFlightInput,
+} from "../shared/ship-motion";
 import type { HaystackDb } from "./db";
 
 export enum ActorRole {
@@ -67,18 +77,6 @@ type PendingInput = {
   pilotId: string;
   command: ThrustCommand | FlightInputCommand;
 };
-
-const mainAcceleration = 34;
-const lateralAcceleration = 18;
-const verticalAcceleration = 14;
-const cruiseAcceleration = 42;
-const cruiseSpeed = 220;
-const boostImpulse = 12;
-const inputFreshSeconds = 0.3;
-const linearThrusterHeatPerImpulse = 0.16;
-const angularThrusterHeatPerImpulse = 0.8;
-const angularAcceleration: Vector3 = { x: 1.65, y: 0.95, z: 2.3 };
-const maxAngularRate: Vector3 = { x: 1.15, y: 0.72, z: 1.55 };
 
 export type EngineActorDiagnostic = {
   id: string;
@@ -151,7 +149,7 @@ export class ShipActor extends Actor {
   scanPower: number;
   miningPower: number;
   stabilizerEfficiency: number;
-  private heldInput: FlightInputCommand | null = null;
+  private heldInput: HeldFlightInput | null = null;
   private inputFreshFor = 0;
 
   constructor(row: ShipRow) {
@@ -189,204 +187,69 @@ export class ShipActor extends Actor {
   }
 
   applyThrust(command: ThrustCommand): void {
-    const impulse = clampVector(command.impulse, 12);
-    const worldImpulse =
-      command.frame === "local" ? rotateVectorByQuaternion(impulse, this.orientation) : impulse;
-    const angularImpulse = clampAngularVector(command.angularImpulse ?? zeroVector());
-    this.velocity = addVectors(this.velocity, worldImpulse);
-    this.angularVelocity = clampAngularVector({
-      x: this.angularVelocity.x + angularImpulse.x,
-      y: this.angularVelocity.y + angularImpulse.y,
-      z: this.angularVelocity.z + angularImpulse.z,
-    });
-    this.addThrusterHeat(impulse, angularImpulse);
-    if (command.stabilize === true) {
-      this.applyStabilizer();
-    }
-    if (command.boost === true) {
-      this.applyBoost();
-    }
+    this.assignShip(applyThrustCommand(this.toUnroundedShip(), command));
   }
 
   applyFlightInput(command: FlightInputCommand): void {
-    this.throttle = clamp(command.throttle, -1, 1);
-    this.cruiseLock = command.cruiseLock ?? this.cruiseLock;
-    if (command.active === false) {
-      this.heldInput = null;
-      this.inputFreshFor = 0;
-    } else {
-      this.heldInput = {
-        kind: "flight",
-        throttle: this.throttle,
-        strafe: clampAxes(command.strafe),
-        rotation: clampAxes(command.rotation),
-        active: true,
-        stabilize: command.stabilize === true,
-        cruiseLock: this.cruiseLock,
-      };
-      this.inputFreshFor = inputFreshSeconds;
-    }
-    if (command.stabilize === true && command.active === false) {
-      this.applyStabilizer();
-    }
-    if (command.boost === true) {
-      this.applyBoost();
-    }
+    const receipt = receiveFlightInput(this.toUnroundedShip(), command);
+    this.assignShip(receipt.ship);
+    this.heldInput = receipt.heldInput;
+    this.inputFreshFor = receipt.inputFreshFor;
   }
 
   override update(dt: number): void {
-    this.integrateHeldInput(dt);
-    this.integrateOrientation(dt);
-    this.position = {
-      x: this.position.x + this.velocity.x * dt,
-      y: this.position.y + this.velocity.y * dt,
-      z: this.position.z + this.velocity.z * dt,
-    };
-    this.heat = Math.max(0, this.heat - dt * 0.85);
-  }
-
-  private integrateHeldInput(dt: number): void {
+    let heldInput: HeldFlightInput | null = null;
     if (this.heldInput === null || this.inputFreshFor <= 0) {
       this.heldInput = null;
       this.inputFreshFor = 0;
-      return;
-    }
-
-    this.inputFreshFor = Math.max(0, this.inputFreshFor - dt);
-    const input = this.heldInput;
-    const rotation = input.rotation;
-    const previousAngularVelocity = this.angularVelocity;
-    this.angularVelocity = clampAngularVector({
-      x: this.angularVelocity.x + rotation.x * angularAcceleration.x * dt,
-      y: this.angularVelocity.y + rotation.y * angularAcceleration.y * dt,
-      z: this.angularVelocity.z + rotation.z * angularAcceleration.z * dt,
-    });
-    this.addThrusterHeat(
-      zeroVector(),
-      subtractVectors(this.angularVelocity, previousAngularVelocity),
-    );
-
-    const strafe = input.strafe;
-    if (this.cruiseLock) {
-      this.integrateCruise(dt, strafe);
     } else {
-      this.integrateLocalThrust(dt, strafe, this.throttle);
+      this.inputFreshFor = Math.max(0, this.inputFreshFor - dt);
+      heldInput = this.heldInput;
     }
-    if (input.stabilize === true) {
-      this.integrateStabilizer(dt);
-    }
-  }
-
-  private integrateLocalThrust(dt: number, strafe: Vector3, throttle: number): void {
-    const localImpulse = {
-      x: strafe.x * lateralAcceleration * dt,
-      y: strafe.y * verticalAcceleration * dt,
-      z: (-throttle * mainAcceleration + strafe.z * lateralAcceleration) * dt,
-    };
-    if (length(localImpulse) <= 0) {
-      return;
-    }
-    const worldImpulse = rotateVectorByQuaternion(localImpulse, this.orientation);
-    this.velocity = addVectors(this.velocity, worldImpulse);
-    this.addThrusterHeat(localImpulse);
-  }
-
-  private integrateCruise(dt: number, strafe: Vector3): void {
-    if (this.heat >= 96) {
-      this.cruiseLock = false;
-      return;
-    }
-    const forward = rotateVectorByQuaternion({ x: 0, y: 0, z: -1 }, this.orientation);
-    const targetVelocity = scaleVector(forward, this.throttle * cruiseSpeed);
-    const correction = clampVector(
-      subtractVectors(targetVelocity, this.velocity),
-      cruiseAcceleration * dt,
-    );
-    this.velocity = addVectors(this.velocity, correction);
-    this.addThrusterHeat(correction);
-    this.integrateLocalThrust(dt, strafe, 0);
-  }
-
-  private integrateOrientation(dt: number): void {
-    const angularSpeed = length(this.angularVelocity);
-    if (angularSpeed <= 0.000001) {
-      return;
-    }
-    const delta = quaternionFromAxisAngle(
-      scaleVector(this.angularVelocity, 1 / angularSpeed),
-      angularSpeed * dt,
-    );
-    this.orientation = normalizeQuaternion(multiplyQuaternions(this.orientation, delta));
-  }
-
-  private applyStabilizer(): void {
-    const dampening = 1 - this.stabilizerEfficiency;
-    const previousVelocity = this.velocity;
-    const previousAngularVelocity = this.angularVelocity;
-    this.velocity = scaleVector(this.velocity, dampening);
-    this.angularVelocity = scaleVector(this.angularVelocity, dampening);
-    this.addThrusterHeat(
-      subtractVectors(this.velocity, previousVelocity),
-      subtractVectors(this.angularVelocity, previousAngularVelocity),
-    );
-  }
-
-  private integrateStabilizer(dt: number): void {
-    const dampening = Math.max(0, 1 - this.stabilizerEfficiency * dt * 3.2);
-    const previousVelocity = this.velocity;
-    const previousAngularVelocity = this.angularVelocity;
-    this.velocity = scaleVector(this.velocity, dampening);
-    this.angularVelocity = scaleVector(this.angularVelocity, dampening);
-    this.addThrusterHeat(
-      subtractVectors(this.velocity, previousVelocity),
-      subtractVectors(this.angularVelocity, previousAngularVelocity),
-    );
-  }
-
-  private applyBoost(): void {
-    if (this.heat >= 96) {
-      return;
-    }
-    const worldImpulse = rotateVectorByQuaternion(
-      { x: 0, y: 0, z: -boostImpulse },
-      this.orientation,
-    );
-    this.velocity = addVectors(this.velocity, worldImpulse);
-    this.addThrusterHeat({ x: 0, y: 0, z: -boostImpulse });
-  }
-
-  private addThrusterHeat(linearImpulse: Vector3, angularImpulse: Vector3 = zeroVector()): void {
-    const heatAdded =
-      length(linearImpulse) * linearThrusterHeatPerImpulse +
-      length(angularImpulse) * angularThrusterHeatPerImpulse;
-    if (heatAdded <= 0) {
-      return;
-    }
-    this.heat = Math.min(100, this.heat + heatAdded);
+    this.assignShip(integrateShipTick(this.toUnroundedShip(), dt, heldInput));
   }
 
   toShip(): Ship {
+    return roundShip(this.toUnroundedShip());
+  }
+
+  private toUnroundedShip(): Ship {
     return {
       pilotId: this.id,
       name: this.name,
-      position: roundVector(this.position),
-      velocity: roundVector(this.velocity),
-      orientation: roundQuaternion(this.orientation),
-      angularVelocity: roundVector(this.angularVelocity),
-      throttle: round(this.throttle),
+      position: cloneVector(this.position),
+      velocity: cloneVector(this.velocity),
+      orientation: cloneQuaternion(this.orientation),
+      angularVelocity: cloneVector(this.angularVelocity),
+      throttle: this.throttle,
       cruiseLock: this.cruiseLock,
-      heat: round(this.heat),
-      cargoMass: round(this.cargoMass),
+      heat: this.heat,
+      cargoMass: this.cargoMass,
       cargoCapacity: this.cargoCapacity,
       scanPower: this.scanPower,
       miningPower: this.miningPower,
       stabilizerEfficiency: this.stabilizerEfficiency,
     };
   }
+
+  private assignShip(ship: Ship): void {
+    this.position = cloneVector(ship.position);
+    this.velocity = cloneVector(ship.velocity);
+    this.orientation = normalizeQuaternion(ship.orientation);
+    this.angularVelocity = cloneVector(ship.angularVelocity);
+    this.throttle = clamp(ship.throttle, -1, 1);
+    this.cruiseLock = ship.cruiseLock;
+    this.heat = ship.heat;
+    this.cargoMass = ship.cargoMass;
+    this.cargoCapacity = ship.cargoCapacity;
+    this.scanPower = ship.scanPower;
+    this.miningPower = ship.miningPower;
+    this.stabilizerEfficiency = ship.stabilizerEfficiency;
+  }
 }
 
 export class ServerWorld {
-  readonly fixedDt = 1 / 60;
+  readonly fixedDt = shipFixedDt;
   frame = 0;
   currentTick = 0;
   simTime = 0;
@@ -637,147 +500,10 @@ function cloneQuaternion(quaternion: Quaternion): Quaternion {
   };
 }
 
-function zeroVector(): Vector3 {
-  return { x: 0, y: 0, z: 0 };
-}
-
-function addVectors(left: Vector3, right: Vector3): Vector3 {
-  return {
-    x: left.x + right.x,
-    y: left.y + right.y,
-    z: left.z + right.z,
-  };
-}
-
-function subtractVectors(left: Vector3, right: Vector3): Vector3 {
-  return {
-    x: left.x - right.x,
-    y: left.y - right.y,
-    z: left.z - right.z,
-  };
-}
-
-function scaleVector(vector: Vector3, scale: number): Vector3 {
-  return {
-    x: vector.x * scale,
-    y: vector.y * scale,
-    z: vector.z * scale,
-  };
-}
-
-function clampVector(vector: Vector3, maxLength: number): Vector3 {
-  const magnitude = length(vector);
-  if (magnitude <= maxLength) {
-    return vector;
-  }
-  const scale = maxLength / magnitude;
-  return {
-    x: vector.x * scale,
-    y: vector.y * scale,
-    z: vector.z * scale,
-  };
-}
-
-function clampAxes(vector: Vector3): Vector3 {
-  return {
-    x: clamp(vector.x, -1, 1),
-    y: clamp(vector.y, -1, 1),
-    z: clamp(vector.z, -1, 1),
-  };
-}
-
-function clampAngularVector(vector: Vector3): Vector3 {
-  return {
-    x: clamp(vector.x, -maxAngularRate.x, maxAngularRate.x),
-    y: clamp(vector.y, -maxAngularRate.y, maxAngularRate.y),
-    z: clamp(vector.z, -maxAngularRate.z, maxAngularRate.z),
-  };
-}
-
-function length(vector: Vector3): number {
-  return Math.sqrt(vector.x * vector.x + vector.y * vector.y + vector.z * vector.z);
-}
-
-function roundVector(vector: Vector3): Vector3 {
-  return {
-    x: round(vector.x),
-    y: round(vector.y),
-    z: round(vector.z),
-  };
-}
-
-function roundQuaternion(quaternion: Quaternion): Quaternion {
-  const normalized = normalizeQuaternion(quaternion);
-  return {
-    x: round(normalized.x),
-    y: round(normalized.y),
-    z: round(normalized.z),
-    w: round(normalized.w),
-  };
-}
-
-function normalizeQuaternion(quaternion: Quaternion): Quaternion {
-  const magnitude = Math.sqrt(
-    quaternion.x * quaternion.x +
-      quaternion.y * quaternion.y +
-      quaternion.z * quaternion.z +
-      quaternion.w * quaternion.w,
-  );
-  if (magnitude <= 0) {
-    return { x: 0, y: 0, z: 0, w: 1 };
-  }
-  return {
-    x: quaternion.x / magnitude,
-    y: quaternion.y / magnitude,
-    z: quaternion.z / magnitude,
-    w: quaternion.w / magnitude,
-  };
-}
-
-function quaternionFromAxisAngle(axis: Vector3, angle: number): Quaternion {
-  const halfAngle = angle / 2;
-  const scale = Math.sin(halfAngle);
-  return normalizeQuaternion({
-    x: axis.x * scale,
-    y: axis.y * scale,
-    z: axis.z * scale,
-    w: Math.cos(halfAngle),
-  });
-}
-
-function multiplyQuaternions(left: Quaternion, right: Quaternion): Quaternion {
-  return {
-    x: left.w * right.x + left.x * right.w + left.y * right.z - left.z * right.y,
-    y: left.w * right.y - left.x * right.z + left.y * right.w + left.z * right.x,
-    z: left.w * right.z + left.x * right.y - left.y * right.x + left.z * right.w,
-    w: left.w * right.w - left.x * right.x - left.y * right.y - left.z * right.z,
-  };
-}
-
-function rotateVectorByQuaternion(vector: Vector3, quaternion: Quaternion): Vector3 {
-  const normalized = normalizeQuaternion(quaternion);
-  const ix = normalized.w * vector.x + normalized.y * vector.z - normalized.z * vector.y;
-  const iy = normalized.w * vector.y + normalized.z * vector.x - normalized.x * vector.z;
-  const iz = normalized.w * vector.z + normalized.x * vector.y - normalized.y * vector.x;
-  const iw = -normalized.x * vector.x - normalized.y * vector.y - normalized.z * vector.z;
-
-  return {
-    x: ix * normalized.w + iw * -normalized.x + iy * -normalized.z - iz * -normalized.y,
-    y: iy * normalized.w + iw * -normalized.y + iz * -normalized.x - ix * -normalized.z,
-    z: iz * normalized.w + iw * -normalized.z + ix * -normalized.y - iy * -normalized.x,
-  };
-}
-
 function round(value: number): number {
   return Math.round(value * 1000) / 1000;
 }
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
-}
-
-function isFlightInputCommand(
-  command: ThrustCommand | FlightInputCommand,
-): command is FlightInputCommand {
-  return "kind" in command && command.kind === "flight";
 }

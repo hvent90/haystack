@@ -436,6 +436,7 @@ describe("haystack server", () => {
         if (ack.type !== "ack") {
           throw new Error("Expected stream acknowledgement.");
         }
+        expect(ack.ackClientTick).toBe(17);
         expect(ack.ship.velocity.x).toBeGreaterThan(0);
 
         const scoutDelta = await scoutStream.waitFor(
@@ -593,6 +594,7 @@ describe("haystack server", () => {
         if (flightAck.type !== "ack") {
           throw new Error("Expected flight stream acknowledgement.");
         }
+        expect(flightAck.ackClientTick).toBe(42);
         expect(flightAck.ship.throttle).toBe(0.5);
         expect(flightAck.ship.cruiseLock).toBe(true);
         expect(flightAck.ship.angularVelocity.x).toBeGreaterThan(0);

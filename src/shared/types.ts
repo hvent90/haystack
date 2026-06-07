@@ -269,6 +269,7 @@ export type WorldStreamServerMessage =
   | {
       type: "ack";
       tick: number;
+      ackClientTick: number;
       clientTick: number;
       ship: Ship;
     }
