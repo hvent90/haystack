@@ -107,6 +107,10 @@ export class AudioEngine {
     return this.mix;
   }
 
+  getContext(): AudioContext | null {
+    return this.ctx;
+  }
+
   /** Fire a one-shot through its bus with a short-lived buffer source. */
   playOneShot(id: OneShotId): void {
     if (!this.ready || this.ctx === null || this.graph === null) {
