@@ -44,6 +44,9 @@ import { CommsWindow } from "./components/windows/CommsWindow";
 import { FlightWindow } from "./components/windows/FlightWindow";
 import { ScannerWindow } from "./components/windows/ScannerWindow";
 import {
+  flightInputScaleMax,
+  flightInputScaleMin,
+  flightInputScaleWheelDivisor,
   flightInputIntervalMs,
   localPilotKey,
   mouseSensitivity,
@@ -107,6 +110,7 @@ export function EveApp(): ReactNode {
   const [keyboardThrottle, setKeyboardThrottle] = useState(0);
   const [cruiseLock, setCruiseLock] = useState(false);
   const [mouseDeflection, setMouseDeflection] = useState<Vector3>({ x: 0, y: 0, z: 0 });
+  const [flightInputScale, setFlightInputScale] = useState(flightInputScaleMax);
   const streamRef = useRef<WebSocket | null>(null);
   const sessionRef = useRef<Session | null>(null);
   const clientTickRef = useRef(0);
@@ -114,6 +118,7 @@ export function EveApp(): ReactNode {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const flightModeRef = useRef<FlightMode>("cursor");
   const mouseDeflectionRef = useRef<Vector3>({ x: 0, y: 0, z: 0 });
+  const flightInputScaleRef = useRef(flightInputScaleMax);
   const flightStateRef = useRef({ throttle: 0, cruiseLock: false });
   const oneShotRef = useRef<OneShotFlightInput>({ boost: false });
   const lastFlightActiveRef = useRef(false);
@@ -266,6 +271,14 @@ export function EveApp(): ReactNode {
       setMouseDeflection(next);
     }
 
+    function wheel(event: WheelEvent): void {
+      if (flightModeRef.current !== "flight") {
+        return;
+      }
+      event.preventDefault();
+      setFlightInputScaleByWheel(event.deltaY);
+    }
+
     function blur(): void {
       if (document.pointerLockElement !== null) {
         document.exitPointerLock();
@@ -276,10 +289,12 @@ export function EveApp(): ReactNode {
 
     document.addEventListener("pointerlockchange", pointerLockChanged);
     document.addEventListener("mousemove", mouseMove);
+    window.addEventListener("wheel", wheel, { passive: false });
     window.addEventListener("blur", blur);
     return () => {
       document.removeEventListener("pointerlockchange", pointerLockChanged);
       document.removeEventListener("mousemove", mouseMove);
+      window.removeEventListener("wheel", wheel);
       window.removeEventListener("blur", blur);
     };
   }, []);
@@ -508,6 +523,7 @@ export function EveApp(): ReactNode {
       className="app-shell"
       data-testid="haystack-app"
       data-flight-mode={flightMode}
+      data-flight-input-scale={flightInputScale.toFixed(4)}
       data-throttle={effectiveThrottle.toFixed(2)}
     >
       <WorldView
@@ -520,6 +536,7 @@ export function EveApp(): ReactNode {
         waypoint={waypoint}
         flightMode={flightMode}
         mouseDeflection={mouseDeflection}
+        flightInputScale={flightInputScale}
         stageRef={stageRef}
         onSelect={selectTarget}
         onContextMenu={openContextMenu}
@@ -871,12 +888,14 @@ export function EveApp(): ReactNode {
     const oneShot = oneShotRef.current;
     oneShotRef.current = { boost: false };
     const keys = heldKeysRef.current;
+    const inputScale = active ? flightInputScaleRef.current : 1;
     const keyboardYaw = Number(keys.has("KeyA")) - Number(keys.has("KeyD"));
     const keyboardThrottleInput = Number(keys.has("KeyW")) - Number(keys.has("KeyS"));
-    const commandThrottle =
+    const rawThrottle =
       active && keyboardThrottleInput !== 0
         ? keyboardThrottleInput
         : flightStateRef.current.throttle;
+    const commandThrottle = rawThrottle * inputScale;
     return {
       kind: "flight",
       throttle: commandThrottle,
@@ -884,18 +903,19 @@ export function EveApp(): ReactNode {
       active,
       strafe: active
         ? {
-            x: Number(keys.has("KeyC")) - Number(keys.has("KeyZ")),
+            x: (Number(keys.has("KeyC")) - Number(keys.has("KeyZ"))) * inputScale,
             y:
-              Number(keys.has("Space")) -
-              Number(keys.has("ControlLeft") || keys.has("ControlRight")),
+              (Number(keys.has("Space")) -
+                Number(keys.has("ControlLeft") || keys.has("ControlRight"))) *
+              inputScale,
             z: 0,
           }
         : { x: 0, y: 0, z: 0 },
       rotation: active
         ? {
-            x: mouseDeflectionRef.current.x,
-            y: clamp(mouseDeflectionRef.current.y + keyboardYaw * 0.35, -1, 1),
-            z: Number(keys.has("KeyQ")) - Number(keys.has("KeyE")),
+            x: mouseDeflectionRef.current.x * inputScale,
+            y: clamp(mouseDeflectionRef.current.y + keyboardYaw * 0.35, -1, 1) * inputScale,
+            z: (Number(keys.has("KeyQ")) - Number(keys.has("KeyE"))) * inputScale,
           }
         : { x: 0, y: 0, z: 0 },
       ...(active && keys.has("KeyX") ? { stabilize: true } : {}),
@@ -906,6 +926,20 @@ export function EveApp(): ReactNode {
   function syncKeyboardThrottle(): void {
     const keys = heldKeysRef.current;
     setKeyboardThrottle(Number(keys.has("KeyW")) - Number(keys.has("KeyS")));
+  }
+
+  function setFlightInputScaleByWheel(deltaY: number): void {
+    if (deltaY === 0) {
+      return;
+    }
+    const next = clamp(
+      flightInputScaleRef.current * 2 ** (-deltaY / flightInputScaleWheelDivisor),
+      flightInputScaleMin,
+      flightInputScaleMax,
+    );
+    const rounded = Math.round(next * 10000) / 10000;
+    flightInputScaleRef.current = rounded;
+    setFlightInputScale(rounded);
   }
 
   function selectTarget(next: Selection | null): void {

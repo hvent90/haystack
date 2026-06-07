@@ -159,6 +159,60 @@ tr:focus-visible {
   height: 1px;
 }
 
+.flight-input-scale-meter {
+  position: absolute;
+  z-index: 5;
+  left: calc(50% - 62px);
+  top: 50%;
+  display: grid;
+  justify-items: center;
+  color: rgb(135 208 189 / 82%);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
+.flight-input-scale-track {
+  position: relative;
+  display: grid;
+  width: 30px;
+  height: 68px;
+  place-items: center;
+  border: 1px solid rgb(135 208 189 / 28%);
+  background: rgb(10 18 16 / 48%);
+  box-shadow: 0 0 10px rgb(135 208 189 / 12%);
+}
+
+.flight-input-scale-track::before {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  left: 1px;
+  height: var(--flight-input-scale);
+  min-height: 1px;
+  background: linear-gradient(0deg, rgb(135 208 189 / 28%), rgb(135 208 189 / 78%));
+  content: "";
+}
+
+.flight-input-scale-track span {
+  position: absolute;
+  left: 50%;
+  top: calc(100% - var(--flight-input-scale));
+  width: 36px;
+  height: 2px;
+  background: rgb(226 177 93 / 88%);
+  box-shadow: 0 0 8px rgb(226 177 93 / 28%);
+  transform: translate(-50%, -50%);
+}
+
+.flight-input-scale-track small {
+  position: relative;
+  color: rgb(226 177 93 / 86%);
+  text-shadow: 0 0 4px rgb(16 16 15 / 95%);
+}
+
 .flight-vector-layer {
   position: absolute;
   z-index: 3;
@@ -217,14 +271,65 @@ tr:focus-visible {
   transform: translate(-50%, -50%) rotate(45deg);
 }
 
+.angular-torque-line {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  filter: drop-shadow(0 0 7px rgb(200 123 60 / 34%));
+}
+
+.angular-torque-line line {
+  stroke: rgb(200 123 60 / 88%);
+  stroke-dasharray: 4 3;
+  stroke-linecap: round;
+  stroke-width: 1.4;
+  vector-effect: non-scaling-stroke;
+}
+
+.angular-torque-line circle {
+  fill: rgb(200 123 60 / 28%);
+  stroke: rgb(226 177 93 / 78%);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.angular-torque-line .angular-torque-cap {
+  stroke: rgb(226 177 93 / 92%);
+  stroke-dasharray: none;
+  stroke-width: 2;
+}
+
+.angular-speed-label {
+  position: absolute;
+  color: rgb(240 221 173 / 88%);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  pointer-events: none;
+  text-shadow:
+    0 0 4px rgb(16 16 15 / 92%),
+    0 0 9px rgb(200 123 60 / 28%);
+  white-space: nowrap;
+}
+
 .aim-delta-line {
   position: absolute;
-  left: 50%;
-  top: 50%;
-  height: 1px;
-  background: linear-gradient(90deg, rgb(135 208 189 / 82%), rgb(135 208 189 / 16%));
-  box-shadow: 0 0 12px rgb(135 208 189 / 28%);
-  transform-origin: 0 50%;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  filter: drop-shadow(0 0 6px rgb(135 208 189 / 32%));
+}
+
+.aim-delta-line line {
+  stroke: rgb(135 208 189 / 82%);
+  stroke-linecap: round;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
 }
 
 .aim-delta-icon {

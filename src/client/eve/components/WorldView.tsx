@@ -1,5 +1,5 @@
 import { Canvas, useFrame } from "@react-three/fiber";
-import type { MouseEvent as ReactMouseEvent, ReactNode, RefObject } from "react";
+import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode, RefObject } from "react";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Object3D,
@@ -10,7 +10,8 @@ import {
 } from "three";
 import type { Asteroid, Quaternion, Ship, Structure } from "../../../shared/types";
 import type { FlightMode, OverviewRow, Selection, Waypoint } from "../types";
-import { formatDistance, toScene, vectorMagnitude } from "../vector";
+import { flightInputScaleMax, flightInputScaleMin } from "../constants";
+import { clamp, formatDistance, toScene, vectorMagnitude } from "../vector";
 import { sameSelection } from "../overview";
 import { AudioListenerRig, RemoteShipAudio } from "./SpatialAudio";
 
@@ -30,6 +31,7 @@ export function WorldView({
   waypoint,
   flightMode,
   mouseDeflection,
+  flightInputScale,
   stageRef,
   onSelect,
   onContextMenu,
@@ -46,6 +48,7 @@ export function WorldView({
   waypoint: Waypoint | null;
   flightMode: FlightMode;
   mouseDeflection: { x: number; y: number; z: number };
+  flightInputScale: number;
   stageRef: RefObject<HTMLDivElement | null>;
   onSelect: (selection: Selection) => void;
   onContextMenu: (event: ReactMouseEvent<HTMLElement>, target: Selection | null) => void;
@@ -106,9 +109,12 @@ export function WorldView({
         </ConditionalListenerRig>
       </Canvas>
       <div className="reticle" data-testid="hud-reticle" />
+      <FlightInputScaleMeter scale={flightInputScale} />
       <FlightVectorLayer
         velocityPoint={screenPoints["velocity"]}
         reverseVelocityPoint={screenPoints["reverseVelocity"]}
+        angularVelocity={myShip.angularVelocity}
+        flightInputScale={flightInputScale}
         flightMode={flightMode}
         mouseDeflection={mouseDeflection}
       />
@@ -252,11 +258,15 @@ function SceneProjection({
 function FlightVectorLayer({
   velocityPoint,
   reverseVelocityPoint,
+  angularVelocity,
+  flightInputScale,
   flightMode,
   mouseDeflection,
 }: {
   velocityPoint: ScreenPoint | undefined;
   reverseVelocityPoint: ScreenPoint | undefined;
+  angularVelocity: { x: number; y: number; z: number };
+  flightInputScale: number;
   flightMode: FlightMode;
   mouseDeflection: { x: number; y: number; z: number };
 }): ReactNode {
@@ -266,9 +276,9 @@ function FlightVectorLayer({
   const aimY = 50 - pitch * 24;
   const dx = aimX - 50;
   const dy = aimY - 50;
-  const aimLength = Math.min(28, Math.sqrt(dx * dx + dy * dy));
-  const aimAngle = (Math.atan2(dy, dx) * 180) / Math.PI;
-  const showAim = flightMode === "flight" && aimLength > 1.2;
+  const aimDistance = Math.sqrt(dx * dx + dy * dy);
+  const showAim = flightMode === "flight" && aimDistance > 1.2;
+  const torque = angularTorqueIndicator(angularVelocity, flightInputScale);
 
   return (
     <div className="flight-vector-layer" aria-hidden="true">
@@ -286,16 +296,53 @@ function FlightVectorLayer({
           style={{ left: `${reverseVelocityPoint.x}%`, top: `${reverseVelocityPoint.y}%` }}
         />
       ) : null}
+      {torque !== null ? (
+        <>
+          <svg
+            className="angular-torque-line"
+            data-testid="angular-torque-line"
+            data-roll-dir={torque.rollDirection}
+            data-capped={torque.capped}
+            focusable="false"
+          >
+            <line x1="50%" y1="50%" x2={`${torque.x}%`} y2={`${torque.y}%`} />
+            {torque.capped ? (
+              <line
+                className="angular-torque-cap"
+                data-testid="angular-torque-cap"
+                x1={`${torque.capStartX}%`}
+                y1={`${torque.capStartY}%`}
+                x2={`${torque.capEndX}%`}
+                y2={`${torque.capEndY}%`}
+              />
+            ) : (
+              <circle
+                className="angular-torque-pip"
+                data-testid="angular-torque-pip"
+                cx={`${torque.x}%`}
+                cy={`${torque.y}%`}
+                r="3"
+              />
+            )}
+          </svg>
+          <div
+            className="angular-speed-label"
+            data-testid="angular-speed-label"
+            style={{
+              left: `${torque.labelX}%`,
+              top: `${torque.labelY}%`,
+              transform: `translate(-50%, -50%) rotate(${torque.labelAngle}deg)`,
+            }}
+          >
+            {torque.degreesPerSecond}
+          </div>
+        </>
+      ) : null}
       {showAim ? (
         <>
-          <div
-            className="aim-delta-line"
-            data-testid="aim-delta-line"
-            style={{
-              width: `${aimLength}%`,
-              transform: `rotate(${aimAngle}deg)`,
-            }}
-          />
+          <svg className="aim-delta-line" data-testid="aim-delta-line" focusable="false">
+            <line x1="50%" y1="50%" x2={`${aimX}%`} y2={`${aimY}%`} />
+          </svg>
           <div
             className="aim-delta-icon"
             data-testid="aim-delta-icon"
@@ -305,6 +352,96 @@ function FlightVectorLayer({
       ) : null}
     </div>
   );
+}
+
+function FlightInputScaleMeter({ scale }: { scale: number }): ReactNode {
+  const position = clamp(scale, flightInputScaleMin, flightInputScaleMax) / flightInputScaleMax;
+  return (
+    <div
+      className="flight-input-scale-meter"
+      data-testid="flight-input-scale-meter"
+      data-scale={scale.toFixed(4)}
+      style={{ "--flight-input-scale": `${position * 100}%` } as CSSProperties}
+    >
+      <div className="flight-input-scale-track">
+        <span data-testid="flight-input-scale-pip" />
+        <small>{formatScalePercent(scale)}</small>
+      </div>
+    </div>
+  );
+}
+
+function formatScalePercent(scale: number): string {
+  const percent = scale * 100;
+  if (percent < 1) {
+    return `${percent.toFixed(1)}%`;
+  }
+  if (percent < 10) {
+    return `${percent.toFixed(1)}%`;
+  }
+  return `${percent.toFixed(0)}%`;
+}
+
+function angularTorqueIndicator(
+  angularVelocity: { x: number; y: number; z: number },
+  flightInputScale: number,
+): {
+  x: number;
+  y: number;
+  rollDirection: string;
+  capped: boolean;
+  capStartX: number;
+  capStartY: number;
+  capEndX: number;
+  capEndY: number;
+  labelX: number;
+  labelY: number;
+  labelAngle: number;
+  degreesPerSecond: string;
+} | null {
+  const screenX = angularVelocity.y;
+  const screenY = angularVelocity.x;
+  const planarMagnitude = Math.sqrt(screenX * screenX + screenY * screenY);
+  const rollMagnitude = Math.abs(angularVelocity.z);
+  const scaledFloor = 0.018 * clamp(flightInputScale, flightInputScaleMin, flightInputScaleMax);
+  if (planarMagnitude <= scaledFloor && rollMagnitude <= scaledFloor) {
+    return null;
+  }
+
+  const fallbackRollDirection = angularVelocity.z >= 0 ? -1 : 1;
+  const directionX =
+    planarMagnitude > scaledFloor ? screenX / planarMagnitude : fallbackRollDirection;
+  const directionY = planarMagnitude > scaledFloor ? screenY / planarMagnitude : 0;
+  const magnitude = Math.max(planarMagnitude, rollMagnitude);
+  const rawLength =
+    (magnitude * 18) / clamp(flightInputScale, flightInputScaleMin, flightInputScaleMax);
+  const capped = rawLength >= 26;
+  const length = Math.min(26, rawLength);
+  const capSize = 2.4;
+  const capX = -directionY * capSize;
+  const capY = directionX * capSize;
+  const lineAngle = (Math.atan2(directionY, directionX) * 180) / Math.PI;
+  const labelAngle = lineAngle > 90 || lineAngle < -90 ? lineAngle + 180 : lineAngle;
+
+  return {
+    x: Math.round((50 + directionX * length) * 10) / 10,
+    y: Math.round((50 + directionY * length) * 10) / 10,
+    rollDirection:
+      angularVelocity.z > scaledFloor
+        ? "positive"
+        : angularVelocity.z < -scaledFloor
+          ? "negative"
+          : "none",
+    capped,
+    capStartX: Math.round((50 + directionX * length - capX) * 10) / 10,
+    capStartY: Math.round((50 + directionY * length - capY) * 10) / 10,
+    capEndX: Math.round((50 + directionX * length + capX) * 10) / 10,
+    capEndY: Math.round((50 + directionY * length + capY) * 10) / 10,
+    labelX: Math.round((50 + directionX * Math.max(10, length * 0.58)) * 10) / 10,
+    labelY: Math.round((50 + directionY * Math.max(10, length * 0.58)) * 10) / 10,
+    labelAngle: Math.round(labelAngle * 10) / 10,
+    degreesPerSecond: `${Math.round((magnitude * 180) / Math.PI)} deg/s`,
+  };
 }
 
 function projectWorldPoint(

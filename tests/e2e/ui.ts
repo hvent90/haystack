@@ -260,6 +260,7 @@ async function verifyHudAndFlight(page: Page, pilotId: string): Promise<void> {
   assert((await count(page, "[data-testid='hud-throttle']")) === 1, "throttle readout present");
 
   await verifyFlightVectorPips(page, pilotId);
+  await verifyAimDeltaAlignment(page, pilotId);
 
   const before = await world(pilotId);
   await page.getByTestId("hud-thrust-fwd").click();
@@ -295,6 +296,183 @@ async function verifyFlightVectorPips(page: Page, pilotId: string): Promise<void
     (await page.getByTestId("reverse-velocity-vector").boundingBox()) !== null,
     "reverse velocity vector pip visible",
   );
+}
+
+async function verifyAimDeltaAlignment(page: Page, pilotId: string): Promise<void> {
+  await page.getByTestId("flight-mode-toggle").click();
+  await page.waitForFunction(
+    () =>
+      document.querySelector("[data-testid='haystack-app']")?.getAttribute("data-flight-mode") ===
+      "flight",
+  );
+  assert(
+    (await page.getByTestId("flight-input-scale-meter").getAttribute("data-scale")) === "1.0000",
+    "flight input scale meter starts at full scale",
+  );
+  await page.evaluate(() => {
+    window.dispatchEvent(new WheelEvent("wheel", { deltaY: 960, bubbles: true, cancelable: true }));
+  });
+  await page.waitForFunction(() => {
+    const scale = Number(
+      document
+        .querySelector("[data-testid='haystack-app']")
+        ?.getAttribute("data-flight-input-scale"),
+    );
+    return Number.isFinite(scale) && scale < 0.5;
+  });
+  assert(
+    (await page.getByTestId("flight-input-scale-pip").boundingBox()) !== null,
+    "flight input scale pip visible",
+  );
+  await api(`/api/ships/${encodeURIComponent(pilotId)}/thrust`, {
+    method: "POST",
+    body: JSON.stringify({
+      impulse: { x: 0, y: 0, z: 0 },
+      angularImpulse: { x: 0.2, y: 0, z: 0 },
+      frame: "world",
+    }),
+  });
+  const zoomedTorqueLength = await pollUntil(
+    () => angularTorqueLineLength(page),
+    (length) => length !== null && length > 10,
+  );
+  assert(zoomedTorqueLength !== null, "zoomed angular torque line length is measurable");
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new WheelEvent("wheel", { deltaY: -4000, bubbles: true, cancelable: true }),
+    );
+  });
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector("[data-testid='haystack-app']")
+        ?.getAttribute("data-flight-input-scale") === "1.0000",
+  );
+  const fullScaleTorqueLength = await pollUntil(
+    () => angularTorqueLineLength(page),
+    (length) => length !== null && length < zoomedTorqueLength * 0.5,
+  );
+  assert(fullScaleTorqueLength !== null, "full-scale angular torque line length is measurable");
+  assert(
+    fullScaleTorqueLength < zoomedTorqueLength,
+    "angular torque line range shrinks as input scale drops",
+  );
+  await api(`/api/ships/${encodeURIComponent(pilotId)}/thrust`, {
+    method: "POST",
+    body: JSON.stringify({
+      impulse: { x: 0, y: 0, z: 0 },
+      angularImpulse: { x: 0, y: 0, z: 1.55 },
+      frame: "world",
+    }),
+  });
+  await page.waitForSelector("[data-testid='angular-torque-cap']", { state: "attached" });
+  assert(
+    /deg\/s/.test(await page.getByTestId("angular-speed-label").innerText()),
+    "angular speed label reports degrees per second",
+  );
+  await page.evaluate(() => {
+    const event = new MouseEvent("mousemove", { bubbles: true });
+    Object.defineProperty(event, "movementX", { value: -240 });
+    Object.defineProperty(event, "movementY", { value: 180 });
+    document.dispatchEvent(event);
+  });
+  await page.waitForSelector("[data-testid='aim-delta-icon']");
+  await page.waitForFunction(() => {
+    const line = document.querySelector("[data-testid='angular-torque-line'] line");
+    if (!(line instanceof SVGLineElement)) {
+      return false;
+    }
+    const parsePercent = (value: string | null): number | null => {
+      if (value === null || !value.endsWith("%")) {
+        return null;
+      }
+      const parsed = Number(value.slice(0, -1));
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+    const x1 = parsePercent(line.getAttribute("x1"));
+    const y1 = parsePercent(line.getAttribute("y1"));
+    const x2 = parsePercent(line.getAttribute("x2"));
+    const y2 = parsePercent(line.getAttribute("y2"));
+    return x1 === 50 && y1 === 50 && x2 !== null && y2 !== null && x2 > 50 && y2 < 50;
+  });
+
+  const alignment = await page.evaluate(() => {
+    const icon = document.querySelector("[data-testid='aim-delta-icon']");
+    const svg = document.querySelector("[data-testid='aim-delta-line']");
+    const line = svg?.querySelector("line");
+    const layer = svg?.closest(".flight-vector-layer");
+    if (
+      !(icon instanceof HTMLElement) ||
+      !(svg instanceof SVGSVGElement) ||
+      !(line instanceof SVGLineElement) ||
+      !(layer instanceof HTMLElement)
+    ) {
+      return null;
+    }
+
+    const parsePercent = (value: string | null): number | null => {
+      if (value === null || !value.endsWith("%")) {
+        return null;
+      }
+      const parsed = Number(value.slice(0, -1));
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+    const x2 = parsePercent(line.getAttribute("x2"));
+    const y2 = parsePercent(line.getAttribute("y2"));
+    if (x2 === null || y2 === null) {
+      return null;
+    }
+
+    const iconBox = icon.getBoundingClientRect();
+    const layerBox = layer.getBoundingClientRect();
+    return {
+      dx: Math.abs(
+        iconBox.left + iconBox.width / 2 - (layerBox.left + (layerBox.width * x2) / 100),
+      ),
+      dy: Math.abs(
+        iconBox.top + iconBox.height / 2 - (layerBox.top + (layerBox.height * y2) / 100),
+      ),
+    };
+  });
+
+  assert(alignment !== null, "aim delta overlay exposes measurable line and icon geometry");
+  assert(alignment.dx <= 1 && alignment.dy <= 1, "aim delta line endpoint aligns with icon center");
+
+  assert(
+    (await count(page, "[data-testid='angular-torque-cap']")) === 1,
+    "angular torque cap visible at max length",
+  );
+
+  await page.keyboard.press("AltLeft");
+  await page.waitForFunction(
+    () =>
+      document.querySelector("[data-testid='haystack-app']")?.getAttribute("data-flight-mode") ===
+      "cursor",
+  );
+}
+
+async function angularTorqueLineLength(page: Page): Promise<number | null> {
+  return page.evaluate(() => {
+    const line = document.querySelector("[data-testid='angular-torque-line'] line");
+    if (!(line instanceof SVGLineElement)) {
+      return null;
+    }
+    const parsePercent = (value: string | null): number | null => {
+      if (value === null || !value.endsWith("%")) {
+        return null;
+      }
+      const parsed = Number(value.slice(0, -1));
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+    const x1 = parsePercent(line.getAttribute("x1"));
+    const y1 = parsePercent(line.getAttribute("y1"));
+    const x2 = parsePercent(line.getAttribute("x2"));
+    const y2 = parsePercent(line.getAttribute("y2"));
+    if (x1 === null || y1 === null || x2 === null || y2 === null) {
+      return null;
+    }
+    return Math.hypot(x2 - x1, y2 - y1);
+  });
 }
 
 async function verifyCoreWindows(page: Page): Promise<void> {

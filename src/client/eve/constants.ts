@@ -3,6 +3,9 @@ import type { ChatChannel, WindowDefinition } from "./types";
 
 export const localPilotKey = "haystack.pilotId";
 export const flightInputIntervalMs = 50;
+export const flightInputScaleMax = 1;
+export const flightInputScaleMin = 0.001;
+export const flightInputScaleWheelDivisor = 480;
 export const mouseSensitivity = 0.0026;
 export const relativeMouseDecay = 0.9;
 export const throttleStep = 0.25;
