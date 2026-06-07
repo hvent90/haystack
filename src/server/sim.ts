@@ -172,10 +172,15 @@ export function getPilot(db: HaystackDb, pilotId: string): Pilot | null {
   return row === null ? null : mapPilot(row);
 }
 
-export function getSnapshot(db: HaystackDb, pilotId: string | null): WorldSnapshot {
+export function getSnapshot(
+  db: HaystackDb,
+  pilotId: string | null,
+  activePilotIds: readonly string[] = [],
+): WorldSnapshot {
   advanceWorld(db);
 
   const pilots = listCharacterCards(db);
+  const knownPilotIds = new Set(pilots.map((pilot) => pilot.id));
   const organizations = listOrganizations(pilots);
   const me = pilotId === null ? null : (pilots.find((pilot) => pilot.id === pilotId) ?? null);
   const ships = listShips(db);
@@ -190,6 +195,7 @@ export function getSnapshot(db: HaystackDb, pilotId: string | null): WorldSnapsh
     field: fieldSummary(),
     me,
     pilots,
+    activePilotIds: [...new Set(activePilotIds.filter((id) => knownPilotIds.has(id)))].sort(),
     organizations,
     ships,
     asteroids,

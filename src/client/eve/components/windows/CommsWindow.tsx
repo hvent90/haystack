@@ -31,6 +31,9 @@ export function CommsWindow({
   onSend: () => void;
 }): ReactNode {
   const logRef = useRef<HTMLDivElement>(null);
+  const activePilotIds = new Set(snapshot.activePilotIds);
+  activePilotIds.add(me.id);
+  const activePilots = snapshot.pilots.filter((pilot) => activePilotIds.has(pilot.id));
 
   useEffect(() => {
     const log = logRef.current;
@@ -67,7 +70,7 @@ export function CommsWindow({
             onChange={(event) => onTarget(event.currentTarget.value)}
           >
             <option value="">select pilot</option>
-            {snapshot.pilots
+            {activePilots
               .filter((pilot) => pilot.id !== me.id)
               .map((pilot) => (
                 <option key={pilot.id} value={pilot.id}>
@@ -109,10 +112,10 @@ export function CommsWindow({
       </div>
       <aside className="local-list">
         <div className="local-count" data-testid="comms-local-count">
-          {snapshot.pilots.length} local
+          {activePilots.length} local
         </div>
         <div data-testid="comms-local-list">
-          {snapshot.pilots.map((pilot) => (
+          {activePilots.map((pilot) => (
             <div
               key={pilot.id}
               className={pilot.id === me.id ? "local-row me" : "local-row"}

@@ -27,6 +27,7 @@ const worldSnapshotKeys: WorldSnapshotKey[] = [
   "field",
   "me",
   "pilots",
+  "activePilotIds",
   "organizations",
   "ships",
   "asteroids",
@@ -42,6 +43,7 @@ export class WorldStream {
   private readonly peers = new Map<string, WorldPeer>();
   private currentTick = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private publishing = false;
 
   constructor(private readonly world: ServerWorld) {}
 
@@ -69,11 +71,27 @@ export class WorldStream {
     };
     this.peers.set(peer.id, peer);
     this.subscribe(peer, pilotId);
+    if (this.peers.has(peer.id)) {
+      this.publishAll();
+    }
     return peer.id;
   }
 
   close(peerId: string): void {
-    this.peers.delete(peerId);
+    const removed = this.peers.delete(peerId);
+    if (removed && !this.publishing) {
+      this.publishAll();
+    }
+  }
+
+  activePilotIds(): string[] {
+    const ids = new Set<string>();
+    for (const peer of this.peers.values()) {
+      if (peer.pilotId !== null) {
+        ids.add(peer.pilotId);
+      }
+    }
+    return [...ids].sort();
   }
 
   handleMessage(peerId: string, data: WSMessageReceive): void {
@@ -107,10 +125,15 @@ export class WorldStream {
       return;
     }
 
-    this.world.advanceToNow();
-    this.currentTick += 1;
-    for (const peer of this.peers.values()) {
-      this.flushPeer(peer);
+    this.publishing = true;
+    try {
+      this.world.advanceToNow();
+      this.currentTick += 1;
+      for (const peer of this.peers.values()) {
+        this.flushPeer(peer);
+      }
+    } finally {
+      this.publishing = false;
     }
   }
 
@@ -124,7 +147,7 @@ export class WorldStream {
 
     peer.pilotId = pilotId;
     peer.shadowHashes.clear();
-    const snapshot = getSnapshot(this.world.db, pilotId);
+    const snapshot = getSnapshot(this.world.db, pilotId, this.activePilotIds());
     storeShadow(peer, snapshot);
     this.send(peer, {
       type: "hello",
@@ -169,7 +192,7 @@ export class WorldStream {
       return;
     }
 
-    const snapshot = getSnapshot(this.world.db, peer.pilotId);
+    const snapshot = getSnapshot(this.world.db, peer.pilotId, this.activePilotIds());
     const changed = collectChangedKeys(peer, snapshot);
     storeShadow(peer, snapshot);
     if (changed.length === 0) {

@@ -137,6 +137,7 @@ export type WorldSnapshot = {
   field: FieldSummary;
   me: CharacterCard | null;
   pilots: CharacterCard[];
+  activePilotIds: string[];
   organizations: OrganizationSummary[];
   ships: Ship[];
   asteroids: Asteroid[];

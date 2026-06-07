@@ -23,6 +23,7 @@ type SnapshotProbe = {
   field: { totalAsteroids: number; renderedLimit: number; indexKind: string };
   me: { callsign: string; credits: number } | null;
   pilots: Array<{ id: string; callsign: string; credits: number }>;
+  activePilotIds: string[];
   organizations: Array<{
     name: string;
     memberCount: number;
@@ -430,6 +431,66 @@ describe("haystack server", () => {
             ),
         );
         expect(scoutDelta.type).toBe("delta");
+      } finally {
+        scoutStream.socket.close();
+        haulerStream.socket.close();
+      }
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("tracks active websocket pilots separately from persisted pilots", async () => {
+    const scout = await createPilot("Verifier Active Scout");
+    const hauler = await createPilot("Verifier Active Hauler");
+    const serverWorld = getServerWorld(requireWorld().db);
+    const worldStream = new WorldStream(serverWorld);
+    const streamApp = createApp({ db: requireWorld().db, world: serverWorld, worldStream });
+    const server = Bun.serve({
+      port: 0,
+      fetch: streamApp.fetch,
+      websocket,
+    });
+
+    try {
+      const httpBaseUrl = `http://127.0.0.1:${server.port}`;
+      const wsBaseUrl = `ws://127.0.0.1:${server.port}`;
+      const persistedSnapshotResponse = await fetch(`${httpBaseUrl}/api/world?pilotId=${scout.id}`);
+      const persistedSnapshot = (await persistedSnapshotResponse.json()) as SnapshotProbe;
+      expect(persistedSnapshot.pilots.map((pilot) => pilot.id)).toContain(hauler.id);
+      expect(persistedSnapshot.activePilotIds).toEqual([]);
+
+      const scoutStream = await connectWorldSocket(
+        `${wsBaseUrl}/api/world/stream?pilotId=${scout.id}`,
+      );
+      const haulerStream = await connectWorldSocket(
+        `${wsBaseUrl}/api/world/stream?pilotId=${hauler.id}`,
+      );
+
+      try {
+        const activeSnapshot = await scoutStream.waitFor(
+          (message) =>
+            message.type === "delta" &&
+            message.changed.includes("activePilotIds") &&
+            (message.patch.activePilotIds ?? []).includes(hauler.id),
+        );
+        if (activeSnapshot.type !== "delta") {
+          throw new Error("Expected active-pilot delta.");
+        }
+        expect(activeSnapshot.patch.activePilotIds).toContain(scout.id);
+        expect(activeSnapshot.patch.activePilotIds).toContain(hauler.id);
+
+        haulerStream.socket.close();
+        const inactiveSnapshot = await scoutStream.waitFor(
+          (message) =>
+            message.type === "delta" &&
+            message.changed.includes("activePilotIds") &&
+            !(message.patch.activePilotIds ?? []).includes(hauler.id),
+        );
+        if (inactiveSnapshot.type !== "delta") {
+          throw new Error("Expected inactive-pilot delta.");
+        }
+        expect(inactiveSnapshot.patch.activePilotIds).toContain(scout.id);
       } finally {
         scoutStream.socket.close();
         haulerStream.socket.close();

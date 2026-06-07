@@ -64,7 +64,10 @@ export function createApp(dependencies: AppDependencies = {}): Hono {
       const request = await context.req.json<CreatePilotRequest>();
       const pilot = createPilot(db, request);
       worldStream.publishAll();
-      return context.json({ pilot, snapshot: getSnapshot(db, null) }, 201);
+      return context.json(
+        { pilot, snapshot: getSnapshot(db, pilot.id, worldStream.activePilotIds()) },
+        201,
+      );
     } catch (error) {
       return problem(context, error);
     }
@@ -80,7 +83,7 @@ export function createApp(dependencies: AppDependencies = {}): Hono {
 
   app.get("/api/world", (context) => {
     const pilotId = context.req.query("pilotId") ?? null;
-    return context.json(getSnapshot(db, pilotId));
+    return context.json(getSnapshot(db, pilotId, worldStream.activePilotIds()));
   });
 
   app.get("/api/engine", (context) => {

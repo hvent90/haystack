@@ -15,6 +15,7 @@ const clientUrl = externalAppUrl ?? `http://127.0.0.1:${clientPort}`;
 const runId = String(Date.now()).slice(-6);
 const scoutCallsign = `E2E-Scout-${runId}`;
 const haulerCallsign = `E2E-Hauler-${runId}`;
+const inactiveCallsign = `E2E-Inactive-${runId}`;
 
 const server =
   externalAppUrl === null
@@ -64,6 +65,12 @@ try {
       body: JSON.stringify({ callsign: haulerCallsign, organization: "Needle Testers" }),
     })
   ).pilot;
+  const inactive = (
+    await api<{ pilot: Pilot }>("/api/pilots", {
+      method: "POST",
+      body: JSON.stringify({ callsign: inactiveCallsign, organization: "Needle Testers" }),
+    })
+  ).pilot;
 
   browser = await chromium.launch();
   const scoutContext = await browser.newContext({ viewport: { width: 1280, height: 720 } });
@@ -75,6 +82,11 @@ try {
   await Promise.all([
     waitForPilotCard(scoutPage, haulerCallsign),
     waitForPilotCard(haulerPage, scoutCallsign),
+  ]);
+  await Promise.all([waitForCommsLocalCount(scoutPage, 2), waitForCommsLocalCount(haulerPage, 2)]);
+  await Promise.all([
+    assertNoCommsLocal(scoutPage, inactive.id),
+    assertNoCommsLocal(haulerPage, inactive.id),
   ]);
 
   await api<{ ship: Ship }>(`/api/ships/${encodeURIComponent(hauler.id)}/thrust`, {
@@ -132,6 +144,7 @@ try {
           { pilotId: scout.id, callsign: scout.callsign },
           { pilotId: hauler.id, callsign: hauler.callsign },
         ],
+        inactivePilotId: inactive.id,
         sharedWorld: {
           observerSaw: haulerCallsign,
           movedPilotId: movedShip.pilotId,
@@ -175,6 +188,23 @@ async function waitForPilotCardText(page: Page, callsign: string, text: RegExp):
     .locator(".pilot-card", { hasText: callsign })
     .filter({ hasText: text })
     .waitFor({ timeout: 20000 });
+}
+
+async function waitForCommsLocalCount(page: Page, expected: number): Promise<void> {
+  await page.waitForFunction(
+    (count) =>
+      document.querySelector("[data-testid='comms-local-count']")?.textContent?.trim() ===
+      `${count} local`,
+    expected,
+    { timeout: 15000 },
+  );
+}
+
+async function assertNoCommsLocal(page: Page, pilotId: string): Promise<void> {
+  const count = await page.locator(`[data-testid='comms-local-${pilotId}']`).count();
+  if (count !== 0) {
+    throw new Error(`Inactive pilot appeared in Comms Local: ${pilotId}`);
+  }
 }
 
 async function waitForMovedShip(observerPilotId: string, movedPilotId: string): Promise<Ship> {
