@@ -2,7 +2,7 @@ import type { ScanMode, UpgradeSystem } from "../../shared/types";
 import type { ChatChannel, WindowDefinition } from "./types";
 
 export const localPilotKey = "haystack.pilotId";
-export const flightInputIntervalMs = 50;
+export const flightInputIntervalMs = 1000 / 60;
 export const mouseSensitivity = 0.0026;
 export const relativeMouseDecay = 0.9;
 export const throttleStep = 0.25;

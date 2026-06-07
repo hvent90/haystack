@@ -181,6 +181,7 @@ export class WorldStream {
     this.send(peer, {
       type: "ack",
       tick: this.currentTick,
+      ackClientTick: clientTick,
       clientTick,
       ship,
     });
@@ -209,9 +210,33 @@ export class WorldStream {
 
   private send(peer: WorldPeer, message: WorldStreamServerMessage): void {
     if (peer.ws.readyState === 1) {
-      peer.ws.send(JSON.stringify(message));
+      const payload = JSON.stringify(message);
+      const delayMs = streamDelayMs(message);
+      if (delayMs > 0) {
+        setTimeout(() => {
+          if (peer.ws.readyState === 1) {
+            peer.ws.send(payload);
+          }
+        }, delayMs);
+        return;
+      }
+      peer.ws.send(payload);
     }
   }
+}
+
+function streamDelayMs(message: WorldStreamServerMessage): number {
+  if (message.type !== "ack" && message.type !== "delta") {
+    return 0;
+  }
+  const base = Number(process.env["HAYSTACK_STREAM_DELAY_MS"] ?? "0");
+  const jitter = Number(process.env["HAYSTACK_STREAM_JITTER_MS"] ?? "0");
+  const boundedBase = Number.isFinite(base) ? Math.max(0, base) : 0;
+  const boundedJitter = Number.isFinite(jitter) ? Math.max(0, jitter) : 0;
+  if (boundedBase <= 0 && boundedJitter <= 0) {
+    return 0;
+  }
+  return boundedBase + ((message.tick * 37) % (boundedJitter + 1));
 }
 
 function collectChangedKeys(peer: WorldPeer, snapshot: WorldSnapshot): WorldSnapshotKey[] {

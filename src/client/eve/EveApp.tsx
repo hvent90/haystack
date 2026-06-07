@@ -51,7 +51,7 @@ import {
   throttleStep,
   windowDefinitions,
 } from "./constants";
-import { isEditableTarget, isFlightKey, predictFlightSnapshot } from "./flight";
+import { isEditableTarget, isFlightKey } from "./flight";
 import {
   clampLayout,
   createDefaultLayout,
@@ -60,6 +60,12 @@ import {
   patchWindowState,
 } from "./layout";
 import { buildOverviewRows, filterOverviewRows, sameSelection, sortOverviewRows } from "./overview";
+import {
+  mergeWorldPatchForOwnedPrediction,
+  mergeWorldSnapshotForOwnedPrediction,
+  OwnedShipPrediction,
+  replaceOwnedShip,
+} from "./prediction";
 import type {
   ChatChannel,
   ContextMenuState,
@@ -109,7 +115,7 @@ export function EveApp(): ReactNode {
   const [mouseDeflection, setMouseDeflection] = useState<Vector3>({ x: 0, y: 0, z: 0 });
   const streamRef = useRef<WebSocket | null>(null);
   const sessionRef = useRef<Session | null>(null);
-  const clientTickRef = useRef(0);
+  const predictionRef = useRef(new OwnedShipPrediction());
   const heldKeysRef = useRef<Set<string>>(new Set());
   const stageRef = useRef<HTMLDivElement | null>(null);
   const flightModeRef = useRef<FlightMode>("cursor");
@@ -145,6 +151,7 @@ export function EveApp(): ReactNode {
           const world = await getWorld(pilot.id);
           if (!cancelled) {
             window.localStorage.setItem(localPilotKey, pilot.id);
+            resetPredictionFromSnapshot(world, pilot.id);
             setSession({ pilot, snapshot: world });
             setSnapshot(world);
           }
@@ -157,6 +164,7 @@ export function EveApp(): ReactNode {
       const world = await getWorld(nextSession.pilot.id);
       if (!cancelled) {
         window.localStorage.setItem(localPilotKey, nextSession.pilot.id);
+        resetPredictionFromSnapshot(world, nextSession.pilot.id);
         setSession({ pilot: nextSession.pilot, snapshot: world });
         setSnapshot(world);
       }
@@ -173,11 +181,19 @@ export function EveApp(): ReactNode {
       (message) => {
         switch (message.type) {
           case "hello":
+            resetPredictionFromSnapshot(message.snapshot, session.pilot.id);
             setSnapshot(message.snapshot);
             return;
           case "delta":
             setSnapshot((current) =>
-              current === null ? current : { ...current, ...message.patch },
+              current === null
+                ? current
+                : mergeWorldPatchForOwnedPrediction(
+                    current,
+                    message.patch,
+                    session.pilot.id,
+                    predictionRef.current.currentShip,
+                  ),
             );
             return;
           case "ack":
@@ -185,12 +201,8 @@ export function EveApp(): ReactNode {
               if (current === null) {
                 return current;
               }
-              return {
-                ...current,
-                ships: current.ships.map((ship) =>
-                  ship.pilotId === message.ship.pilotId ? message.ship : ship,
-                ),
-              };
+              const outcome = predictionRef.current.reconcile(message.ackClientTick, message.ship);
+              return replaceOwnedShip(current, session.pilot.id, outcome.ship);
             });
             return;
           case "error":
@@ -395,6 +407,7 @@ export function EveApp(): ReactNode {
       return;
     }
     syncedFlightPilotRef.current = myShip.pilotId;
+    predictionRef.current.reset(myShip);
     setThrottle(myShip.throttle);
     setCruiseLock(myShip.cruiseLock);
   }, [myShip]);
@@ -509,6 +522,11 @@ export function EveApp(): ReactNode {
       data-testid="haystack-app"
       data-flight-mode={flightMode}
       data-throttle={effectiveThrottle.toFixed(2)}
+      data-owned-x={myShip.position.x.toFixed(3)}
+      data-owned-y={myShip.position.y.toFixed(3)}
+      data-owned-z={myShip.position.z.toFixed(3)}
+      data-prediction-tick={predictionRef.current.currentPredictionTick}
+      data-ack-tick={predictionRef.current.lastAcknowledgedTick}
     >
       <WorldView
         rows={overviewRows}
@@ -702,9 +720,34 @@ export function EveApp(): ReactNode {
 
   async function refreshSnapshot(pilotId: string): Promise<void> {
     try {
-      setSnapshot(await getWorld(pilotId));
+      const world = await getWorld(pilotId);
+      setSnapshot((current) =>
+        mergeWorldSnapshotForOwnedPrediction(
+          current,
+          world,
+          pilotId,
+          predictionRef.current.currentShip,
+        ),
+      );
     } catch (nextError: unknown) {
       setError(messageFrom(nextError));
+    }
+  }
+
+  function resetPredictionFromSnapshot(world: WorldSnapshot, pilotId: string): void {
+    const ownedShip = world.ships.find((ship) => ship.pilotId === pilotId) ?? null;
+    if (ownedShip !== null) {
+      predictionRef.current.reset(ownedShip);
+    }
+  }
+
+  function ensurePredictionSeed(pilotId: string): void {
+    if (predictionRef.current.currentShip !== null) {
+      return;
+    }
+    const ownedShip = myShipRef.current;
+    if (ownedShip !== null && ownedShip.pilotId === pilotId) {
+      predictionRef.current.reset(ownedShip);
     }
   }
 
@@ -791,16 +834,7 @@ export function EveApp(): ReactNode {
     const command: ThrustCommand = stabilize
       ? { impulse, frame: "local", stabilize }
       : { impulse, frame: "local" };
-    const sent = sendWorldStreamMessage(streamRef.current, {
-      type: "input",
-      pilotId: session.pilot.id,
-      clientTick: (clientTickRef.current += 1),
-      command,
-    });
-    if (sent) {
-      setSnapshot((current) =>
-        current === null ? current : predictFlightSnapshot(current, session.pilot.id, command),
-      );
+    if (sendPredictedFlightCommand(session.pilot.id, command)) {
       return;
     }
     void withAction("thrust-rest", async () => {
@@ -813,23 +847,34 @@ export function EveApp(): ReactNode {
     if (currentSession === null) {
       return;
     }
+    if (!sendPredictedFlightCommand(currentSession.pilot.id, command) && command.active !== false) {
+      setError("World stream is unavailable for continuous flight input.");
+    }
+  }
+
+  function sendPredictedFlightCommand(
+    pilotId: string,
+    command: ThrustCommand | FlightInputCommand,
+  ): boolean {
+    ensurePredictionSeed(pilotId);
+    const clientTick = predictionRef.current.currentPredictionTick + 1;
     const sent = sendWorldStreamMessage(streamRef.current, {
       type: "input",
-      pilotId: currentSession.pilot.id,
-      clientTick: (clientTickRef.current += 1),
+      pilotId,
+      clientTick,
       command,
     });
-    if (!sent && command.active !== false) {
-      setError("World stream is unavailable for continuous flight input.");
-      return;
+    if (!sent) {
+      return false;
     }
-    if (sent) {
-      setSnapshot((current) =>
-        current === null
-          ? current
-          : predictFlightSnapshot(current, currentSession.pilot.id, command),
-      );
+    const predicted = predictionRef.current.predict(command);
+    if (predicted === null) {
+      return true;
     }
+    setSnapshot((current) =>
+      current === null ? current : replaceOwnedShip(current, pilotId, predicted.ship),
+    );
+    return true;
   }
 
   function requestFlightLock(): void {

@@ -417,7 +417,10 @@ function OtherShipMesh({
   origin: { x: number; y: number; z: number };
   audioContext: AudioContext | null;
 }): ReactNode {
-  const position = toScene(ship.position, origin);
+  const groupRef = useRef<Object3D>(null);
+  const targetPosition = useMemo(() => new ThreeVector3(), []);
+  const targetQuaternion = useMemo(() => new ThreeQuaternion(), []);
+  const initialized = useRef(false);
   const audioState = useMemo(
     () => ({
       throttle: ship.throttle,
@@ -426,8 +429,33 @@ function OtherShipMesh({
     }),
     [ship.heat, ship.throttle, ship.velocity.x, ship.velocity.y, ship.velocity.z],
   );
+
+  useFrame((_state, delta) => {
+    const group = groupRef.current;
+    if (group === null) {
+      return;
+    }
+
+    const position = toScene(ship.position, origin);
+    targetPosition.set(position.x, position.y, position.z);
+    targetQuaternion
+      .set(ship.orientation.x, ship.orientation.y, ship.orientation.z, ship.orientation.w)
+      .normalize();
+
+    if (!initialized.current) {
+      group.position.copy(targetPosition);
+      group.quaternion.copy(targetQuaternion);
+      initialized.current = true;
+      return;
+    }
+
+    const alpha = Math.min(1, delta * 8);
+    group.position.lerp(targetPosition, alpha);
+    group.quaternion.slerp(targetQuaternion, alpha);
+  });
+
   return (
-    <group position={[position.x, position.y, position.z]}>
+    <group ref={groupRef}>
       <mesh scale={[0.08, 0.08, 0.08]}>
         <coneGeometry args={[0.6, 1.4, 4]} />
         <meshStandardMaterial color="#b54f57" roughness={0.7} />

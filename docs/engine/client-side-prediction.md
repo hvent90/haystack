@@ -261,19 +261,46 @@ One concrete path: the local player holds thrust for one frame, and the server's
 
 haystack is Bun + Hono server + React/react-three-fiber + three.js client, vs mars's Bun + vanilla three + Rapier + unix-socket RPC. The prediction algorithm is transport- and renderer-agnostic; most of it ports directly. Concrete notes:
 
+### Current haystack implementation
+
+Haystack now uses the custom TypeScript ship simulation, not Rapier, for owned-ship
+prediction. The deterministic movement math lives in `src/shared/ship-motion.ts`; both
+`src/server/world.ts` and `src/client/eve/prediction.ts` call that module instead of
+duplicating thrust, cruise, boost, stabilizer, orientation, position, and heat formulas.
+The shared fixed step is `shipFixedDt = 1 / 60`.
+
+The browser-owned ship prediction loop is `OwnedShipPrediction` in
+`src/client/eve/prediction.ts`:
+
+- outgoing stream inputs are stamped with `currentPredictionTick + 1`;
+- each successful send advances local prediction once and buffers
+  `{ clientTick, command, postState }`;
+- ACK frames carry `ackClientTick` and the authoritative ship frame;
+- matching ACKs drop buffered entries without writing the ACKed server pose onto the
+  currently rendered owned ship;
+- divergent ACKs rewind to the server ship and replay still-unacknowledged commands.
+
+The Hono WebSocket world stream stays JSON-based for now. It sends `ack` messages with
+both `ackClientTick` and the older compatibility field `clientTick`; it sends normal
+snapshot `delta` messages for shared-world replication. The client applies remote ships
+from those snapshots normally, but owned-ship movement fields from snapshot/delta traffic
+are preserved from `OwnedShipPrediction` so ACKs and world deltas cannot hard-clobber the
+first-person camera/local-origin source of truth. Remote ships interpolate their rendered
+transform in `WorldView` to hide low-frequency snapshot stepping.
+
 ### Reuse almost verbatim
 
-- **`PredictionWorld`, `BodyState`, and the input-buffer helpers** (`pushEntry`, `dropEntriesThrough`, `findEntry`, `isWithinTolerance`) are pure logic with one dependency: Rapier for `PredictionWorld`. If haystack's sim core uses the same Rapier build, copy `prediction-world.ts` and `input-buffer.ts` as-is. The tolerance math (position euclidean AND `|quat dot| >= cos(rotTol/2)`, abs for double-cover) is renderer-independent.
+- **The input-buffer helpers** (`pushEntry`, `dropEntriesThrough`, `findEntry`, `isWithinTolerance`) are pure logic. In current Haystack they are represented inside `OwnedShipPrediction` rather than copied as standalone helpers, because the sim twin is a plain TypeScript `Ship` state instead of a Rapier body.
 - **The stamp → echo → `findEntry` contract.** Stamp outgoing input with a _client_ prediction tick (`currentPredictionTick + 1`), round-trip it back unchanged as `ackClientTick`, and key the buffer on it. Keep the increment-before-push ordering. This is the heart of the design and doesn't care about transport.
-- **Per-peer ack tracking.** A `Map<playerId, number>` on the server driver, set when an input message arrives, packed into every outbound frame for that peer.
+- **Per-peer ack tracking.** Haystack currently sends ACKs as explicit JSON `ack` frames on the subscribed peer's world stream. If/when the stream moves to binary envelopes, keep the same per-peer `ackClientTick` semantics in the envelope header.
 
 ### Adapt for haystack's stack
 
-- **Transport.** mars uses a single WebSocket multiplexing JSON text frames (input/spawn) and binary envelopes (replication) with no discriminant, branching on `typeof data`. With Hono you'll likely keep WebSockets but may route input over a separate channel or JSON-RPC; what matters is that the server echoes `ackClientTick` on the _replication_ channel header, regardless of which actors changed. If haystack's envelope format differs, preserve a fixed slot for `ackClientTick` (mars uses u32 LE at byte 4 of a 10-byte header, `net-envelope.ts:162`).
+- **Transport.** mars uses a single WebSocket multiplexing JSON text frames (input/spawn) and binary envelopes (replication) with no discriminant, branching on `typeof data`. Current Haystack uses typed JSON messages over Hono WebSockets: `input` client frames, `ack` server frames, and `delta` snapshot patches. What matters is that the server echoes `ackClientTick` for the owning peer and the client never treats owned-ship `delta` data as render-authoritative movement.
 
 - **Render integration (react-three-fiber).** mars writes the predicted pose directly onto `mesh.group.position`/`.quaternion` inside `updateAutonomous` (`:989`–`:990`), driven by an imperative rAF loop. In r3f, do the same imperative write inside a `useFrame` callback against a ref'd `Object3D` — do **not** route predicted pose through React state (a per-frame `setState` will tank you). The prediction loop is the source of truth for the owned actor's transform; React only owns mount/unmount.
 
-- **The "exclude owned actor from replication apply" rule.** mars implements this as a role check in `WebSocketClientDriver.apply` (`:90`). Whatever your client-side replication apply looks like, it must route the owned actor's inbound frames into a single-shot stash (the `LastServerFrame` pattern) that the prediction tick consumes, instead of writing them onto the rendered transform. Remote actors take the normal apply path.
+- **The "exclude owned actor from replication apply" rule.** mars implements this as a role check in `WebSocketClientDriver.apply` (`:90`). In current Haystack, `mergeWorldPatchForOwnedPrediction` and `mergeWorldSnapshotForOwnedPrediction` preserve the predicted owned movement fields while applying normal snapshot data for remote ships and non-motion data. Remote actors take the normal apply path.
 
 - **Tick-group ordering.** In mars, `apply()` runs at the top of `world.tick`, `updateAutonomous` runs in the `PostPhysics` group, and the renderer draws after `world.step` returns within the same rAF frame (see [world & actors](./world-and-actors.md) and [runtime topologies](./runtime-topologies.md)). Replicate the ordering: **drain inbound frames → reconcile + predict → render**. Reconcile must consume the stashed frame _before_ the live tick integrates.
 
@@ -282,7 +309,7 @@ haystack is Bun + Hono server + React/react-three-fiber + three.js client, vs ma
 ### Don't skip
 
 - Reset Rapier force/torque accumulators before every force application and on every `setState`.
-- Make the prediction body physically identical to the authoritative body (mass, inertia, timestep, gravity, colliders).
+- Make the prediction state use the same integrator as the authoritative server. In current Haystack that means `src/shared/ship-motion.ts`; do not reintroduce separate client/server thrust formulas.
 - Tolerate partial server snapshots in reconcile.
 - Rewrite `postState` during replay.
 - Bound the buffer and hard-snap when an ack is older than anything buffered.
