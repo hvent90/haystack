@@ -77,6 +77,11 @@ function migrate(db: HaystackDb): void {
       qy REAL NOT NULL DEFAULT 0,
       qz REAL NOT NULL DEFAULT 0,
       qw REAL NOT NULL DEFAULT 1,
+      wx REAL NOT NULL DEFAULT 0,
+      wy REAL NOT NULL DEFAULT 0,
+      wz REAL NOT NULL DEFAULT 0,
+      throttle REAL NOT NULL DEFAULT 0,
+      cruise_lock INTEGER NOT NULL DEFAULT 0,
       heat REAL NOT NULL,
       cargo_mass REAL NOT NULL,
       cargo_capacity REAL NOT NULL,
@@ -144,6 +149,21 @@ function migrate(db: HaystackDb): void {
   ensureColumn(db, "ships", "qy", "ALTER TABLE ships ADD COLUMN qy REAL NOT NULL DEFAULT 0");
   ensureColumn(db, "ships", "qz", "ALTER TABLE ships ADD COLUMN qz REAL NOT NULL DEFAULT 0");
   ensureColumn(db, "ships", "qw", "ALTER TABLE ships ADD COLUMN qw REAL NOT NULL DEFAULT 1");
+  ensureColumn(db, "ships", "wx", "ALTER TABLE ships ADD COLUMN wx REAL NOT NULL DEFAULT 0");
+  ensureColumn(db, "ships", "wy", "ALTER TABLE ships ADD COLUMN wy REAL NOT NULL DEFAULT 0");
+  ensureColumn(db, "ships", "wz", "ALTER TABLE ships ADD COLUMN wz REAL NOT NULL DEFAULT 0");
+  ensureColumn(
+    db,
+    "ships",
+    "throttle",
+    "ALTER TABLE ships ADD COLUMN throttle REAL NOT NULL DEFAULT 0",
+  );
+  ensureColumn(
+    db,
+    "ships",
+    "cruise_lock",
+    "ALTER TABLE ships ADD COLUMN cruise_lock INTEGER NOT NULL DEFAULT 0",
+  );
 }
 
 function ensureColumn(db: HaystackDb, table: string, column: string, ddl: string): void {

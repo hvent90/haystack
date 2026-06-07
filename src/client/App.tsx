@@ -12,8 +12,10 @@ import {
   Map as MapIcon,
   MessageSquare,
   Minus,
+  MousePointer2,
   Pickaxe,
   Radio,
+  Rocket,
   ScanLine,
   Send,
   Ship as ShipIcon,
@@ -24,6 +26,7 @@ import {
 import {
   type CSSProperties,
   type PointerEvent,
+  type RefObject,
   type ReactNode,
   useEffect,
   useLayoutEffect,
@@ -31,7 +34,13 @@ import {
   useRef,
   useState,
 } from "react";
-import { Object3D, type InstancedMesh, type Mesh } from "three";
+import {
+  Object3D,
+  Quaternion as ThreeQuaternion,
+  Vector3 as ThreeVector3,
+  type Group,
+  type InstancedMesh,
+} from "three";
 
 import {
   buildBase,
@@ -52,6 +61,8 @@ import {
 import type {
   Asteroid,
   Deposit,
+  FlightInputCommand,
+  Quaternion,
   ScanMode,
   ScanReport,
   Ship,
@@ -65,13 +76,23 @@ import type {
 const localPilotKey = "haystack.pilotId";
 const scannerModes: ScanMode[] = ["belt", "pocket", "surface"];
 const chatChannels = ["global", "belt", "dm"] as const;
-const heldInputIntervalMs = 120;
+const flightInputIntervalMs = 50;
+const mouseSensitivity = 0.0026;
+const relativeMouseDecay = 0.9;
+const throttleStep = 0.25;
 const upgradeSystems: UpgradeSystem[] = ["cargo", "scanner", "mining", "stabilizer"];
 const upgradeLabels: Record<UpgradeSystem, string> = {
   cargo: "Cargo Rack",
   scanner: "Scanner",
   mining: "Mining Head",
   stabilizer: "Stabilizer",
+};
+
+type FlightMode = "cursor" | "flight";
+
+type OneShotFlightInput = {
+  stabilize: boolean;
+  boost: boolean;
 };
 
 export function App(): ReactNode {
@@ -86,9 +107,24 @@ export function App(): ReactNode {
   const [chatDraft, setChatDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [flightMode, setFlightMode] = useState<FlightMode>("cursor");
+  const [throttle, setThrottle] = useState(0);
+  const [cruiseLock, setCruiseLock] = useState(false);
   const streamRef = useRef<WebSocket | null>(null);
+  const sessionRef = useRef<Session | null>(null);
   const clientTickRef = useRef(0);
   const heldKeysRef = useRef<Set<string>>(new Set());
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const flightModeRef = useRef<FlightMode>("cursor");
+  const mouseDeflectionRef = useRef<Vector3>({ x: 0, y: 0, z: 0 });
+  const flightStateRef = useRef({ throttle: 0, cruiseLock: false });
+  const oneShotRef = useRef<OneShotFlightInput>({ stabilize: false, boost: false });
+  const lastFlightActiveRef = useRef(false);
+  const syncedFlightPilotRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
 
   useEffect(() => {
     let cancelled = false;
@@ -182,18 +218,88 @@ export function App(): ReactNode {
   }, [session]);
 
   useEffect(() => {
+    flightStateRef.current = { throttle, cruiseLock };
+  }, [cruiseLock, throttle]);
+
+  useEffect(() => {
+    function pointerLockChanged(): void {
+      const locked = document.pointerLockElement === stageRef.current;
+      flightModeRef.current = locked ? "flight" : "cursor";
+      setFlightMode(locked ? "flight" : "cursor");
+      if (!locked) {
+        clearFlightInput();
+        sendFlightInput(buildFlightInput(false));
+      }
+    }
+
+    function mouseMove(event: MouseEvent): void {
+      if (document.pointerLockElement !== stageRef.current) {
+        return;
+      }
+      mouseDeflectionRef.current = {
+        x: clamp(mouseDeflectionRef.current.x - event.movementY * mouseSensitivity, -1, 1),
+        y: clamp(mouseDeflectionRef.current.y - event.movementX * mouseSensitivity, -1, 1),
+        z: mouseDeflectionRef.current.z,
+      };
+    }
+
+    function blur(): void {
+      if (document.pointerLockElement !== null) {
+        document.exitPointerLock();
+      }
+      clearFlightInput();
+      sendFlightInput(buildFlightInput(false));
+    }
+
+    document.addEventListener("pointerlockchange", pointerLockChanged);
+    document.addEventListener("mousemove", mouseMove);
+    window.addEventListener("blur", blur);
+    return () => {
+      document.removeEventListener("pointerlockchange", pointerLockChanged);
+      document.removeEventListener("mousemove", mouseMove);
+      window.removeEventListener("blur", blur);
+    };
+  }, []);
+
+  useEffect(() => {
     if (session === null) {
       return undefined;
     }
 
     function keyDown(event: KeyboardEvent): void {
-      if (isEditableTarget(event.target)) {
+      if (event.code === "AltLeft") {
+        event.preventDefault();
+        toggleFlightLock();
         return;
       }
-      if (!isFlightKey(event.code)) {
+      if (
+        isEditableTarget(event.target) ||
+        flightModeRef.current !== "flight" ||
+        !isFlightKey(event.code)
+      ) {
         return;
       }
       event.preventDefault();
+      if (event.code === "KeyW" && !event.repeat) {
+        setThrottle((current) => clamp(current + throttleStep, -1, 1));
+        return;
+      }
+      if (event.code === "KeyS" && !event.repeat) {
+        setThrottle((current) => clamp(current - throttleStep, -1, 1));
+        return;
+      }
+      if (event.code === "KeyX" && !event.repeat) {
+        oneShotRef.current.stabilize = true;
+        return;
+      }
+      if (event.code === "Tab" && !event.repeat) {
+        oneShotRef.current.boost = true;
+        return;
+      }
+      if (event.code === "KeyJ" && !event.repeat) {
+        setCruiseLock((current) => !current);
+        return;
+      }
       heldKeysRef.current.add(event.code);
     }
 
@@ -202,11 +308,19 @@ export function App(): ReactNode {
     }
 
     const interval = window.setInterval(() => {
-      const command = commandFromKeys(heldKeysRef.current);
-      if (command !== null) {
-        sendFlightCommand(command.impulse, command.stabilize);
+      const active = flightModeRef.current === "flight";
+      const hasOneShot = oneShotRef.current.stabilize || oneShotRef.current.boost;
+      if (!active && !lastFlightActiveRef.current && !hasOneShot) {
+        return;
       }
-    }, heldInputIntervalMs);
+      sendFlightInput(buildFlightInput(active));
+      lastFlightActiveRef.current = active;
+      mouseDeflectionRef.current = {
+        x: mouseDeflectionRef.current.x * relativeMouseDecay,
+        y: mouseDeflectionRef.current.y * relativeMouseDecay,
+        z: 0,
+      };
+    }, flightInputIntervalMs);
 
     window.addEventListener("keydown", keyDown);
     window.addEventListener("keyup", keyUp);
@@ -214,9 +328,10 @@ export function App(): ReactNode {
       window.clearInterval(interval);
       window.removeEventListener("keydown", keyDown);
       window.removeEventListener("keyup", keyUp);
-      heldKeysRef.current.clear();
+      clearFlightInput();
+      sendFlightInput(buildFlightInput(false));
     };
-  }, [session]);
+  }, [flightMode, session]);
 
   const myShip = useMemo(() => {
     if (snapshot === null || session === null) {
@@ -224,6 +339,15 @@ export function App(): ReactNode {
     }
     return snapshot.ships.find((ship) => ship.pilotId === session.pilot.id) ?? null;
   }, [snapshot, session]);
+
+  useEffect(() => {
+    if (myShip === null || syncedFlightPilotRef.current === myShip.pilotId) {
+      return;
+    }
+    syncedFlightPilotRef.current = myShip.pilotId;
+    setThrottle(myShip.throttle);
+    setCruiseLock(myShip.cruiseLock);
+  }, [myShip]);
 
   const visibleAsteroids = useMemo(() => {
     if (snapshot === null) {
@@ -287,15 +411,19 @@ export function App(): ReactNode {
     }
   }
 
-  function thrust(impulse: Vector3, stabilize = false): void {
-    sendFlightCommand(impulse, stabilize);
+  function thrust(impulse: Vector3, stabilize = false, frame: "world" | "local" = "local"): void {
+    sendFlightCommand(impulse, stabilize, frame);
   }
 
-  function sendFlightCommand(impulse: Vector3, stabilize = false): void {
+  function sendFlightCommand(
+    impulse: Vector3,
+    stabilize = false,
+    frame: "world" | "local" = "local",
+  ): void {
     if (session === null) {
       return;
     }
-    const command = stabilize ? { impulse, stabilize } : { impulse };
+    const command: ThrustCommand = stabilize ? { impulse, frame, stabilize } : { impulse, frame };
     const sent = sendWorldStreamMessage(streamRef.current, {
       type: "input",
       pilotId: session.pilot.id,
@@ -311,6 +439,94 @@ export function App(): ReactNode {
     void withAction(async () => {
       await sendThrust(session.pilot.id, command);
     });
+  }
+
+  function sendFlightInput(command: FlightInputCommand): void {
+    const currentSession = sessionRef.current;
+    if (currentSession === null) {
+      return;
+    }
+    const sent = sendWorldStreamMessage(streamRef.current, {
+      type: "input",
+      pilotId: currentSession.pilot.id,
+      clientTick: (clientTickRef.current += 1),
+      command,
+    });
+    if (!sent && command.active !== false) {
+      setError("World stream is unavailable for continuous flight input.");
+      return;
+    }
+    if (sent) {
+      setSnapshot((current) =>
+        current === null
+          ? current
+          : predictFlightSnapshot(current, currentSession.pilot.id, command),
+      );
+    }
+  }
+
+  function requestFlightLock(): void {
+    const stage = stageRef.current;
+    if (stage === null) {
+      return;
+    }
+    flightModeRef.current = "flight";
+    setFlightMode("flight");
+    try {
+      const lockRequest = stage.requestPointerLock();
+      if (lockRequest instanceof Promise) {
+        void lockRequest.catch(() => undefined);
+      }
+    } catch {
+      // Keep keyboard flight mode active even when a browser denies pointer lock.
+    }
+  }
+
+  function toggleFlightLock(): void {
+    if (flightModeRef.current === "flight") {
+      document.exitPointerLock();
+      flightModeRef.current = "cursor";
+      setFlightMode("cursor");
+      return;
+    }
+    requestFlightLock();
+  }
+
+  function clearFlightInput(): void {
+    heldKeysRef.current.clear();
+    mouseDeflectionRef.current = { x: 0, y: 0, z: 0 };
+    oneShotRef.current = { stabilize: false, boost: false };
+  }
+
+  function buildFlightInput(active: boolean): FlightInputCommand {
+    const oneShot = oneShotRef.current;
+    oneShotRef.current = { stabilize: false, boost: false };
+    const keys = heldKeysRef.current;
+    const keyboardYaw = Number(keys.has("KeyD")) - Number(keys.has("KeyA"));
+    return {
+      kind: "flight",
+      throttle: flightStateRef.current.throttle,
+      cruiseLock: flightStateRef.current.cruiseLock,
+      active,
+      strafe: active
+        ? {
+            x: Number(keys.has("KeyC")) - Number(keys.has("KeyZ")),
+            y:
+              Number(keys.has("Space")) -
+              Number(keys.has("ControlLeft") || keys.has("ControlRight")),
+            z: 0,
+          }
+        : { x: 0, y: 0, z: 0 },
+      rotation: active
+        ? {
+            x: mouseDeflectionRef.current.x,
+            y: clamp(mouseDeflectionRef.current.y + keyboardYaw * 0.35, -1, 1),
+            z: Number(keys.has("KeyE")) - Number(keys.has("KeyQ")),
+          }
+        : { x: 0, y: 0, z: 0 },
+      ...(oneShot.stabilize ? { stabilize: true } : {}),
+      ...(oneShot.boost ? { boost: true } : {}),
+    };
   }
 
   function scan(): void {
@@ -415,12 +631,20 @@ export function App(): ReactNode {
   }
 
   return (
-    <main className="app-shell" data-testid="haystack-app">
+    <main
+      className="app-shell"
+      data-flight-mode={flightMode}
+      data-testid="haystack-app"
+      data-throttle={throttle.toFixed(2)}
+    >
       <WorldView
         asteroids={visibleAsteroids}
         structures={visibleStructures}
         myShip={myShip}
         ships={snapshot.ships}
+        flightMode={flightMode}
+        stageRef={stageRef}
+        onRequestFlightLock={requestFlightLock}
       />
 
       <div className="top-rail">
@@ -447,6 +671,16 @@ export function App(): ReactNode {
           <ShipIcon size={16} />
           <span>{meters(myShip.position)}</span>
         </div>
+        <div className="rail-metric">
+          <MousePointer2 size={16} />
+          <span>{flightMode}</span>
+        </div>
+        <div className="rail-metric">
+          <Rocket size={16} />
+          <span>
+            {(throttle * 100).toFixed(0)}% {cruiseLock ? "CRZ" : "MAN"}
+          </span>
+        </div>
         {error !== null ? <div className="error-pill">{error}</div> : null}
       </div>
 
@@ -460,7 +694,7 @@ export function App(): ReactNode {
             type="button"
             disabled={!canFly}
             onClick={() => thrust({ x: 0, y: 0, z: -8 })}
-            title="Forward"
+            title="Local forward"
           >
             <ChevronUp size={20} />
           </button>
@@ -468,7 +702,7 @@ export function App(): ReactNode {
             type="button"
             disabled={!canFly}
             onClick={() => thrust({ x: -8, y: 0, z: 0 })}
-            title="Left"
+            title="Local left"
           >
             <ChevronLeft size={20} />
           </button>
@@ -476,7 +710,7 @@ export function App(): ReactNode {
             type="button"
             disabled={!canFly}
             onClick={() => thrust({ x: 0, y: 0, z: 8 })}
-            title="Reverse"
+            title="Local reverse"
           >
             <ChevronDown size={20} />
           </button>
@@ -484,7 +718,7 @@ export function App(): ReactNode {
             type="button"
             disabled={!canFly}
             onClick={() => thrust({ x: 8, y: 0, z: 0 })}
-            title="Right"
+            title="Local right"
           >
             <ChevronRight size={20} />
           </button>
@@ -494,7 +728,7 @@ export function App(): ReactNode {
             type="button"
             disabled={!canFly}
             onClick={() => thrust({ x: 0, y: 5, z: 0 })}
-            title="Rise"
+            title="Local rise"
           >
             +Y
           </button>
@@ -502,25 +736,77 @@ export function App(): ReactNode {
             type="button"
             disabled={!canFly}
             onClick={() => thrust({ x: 0, y: -5, z: 0 })}
-            title="Drop"
+            title="Local drop"
           >
             -Y
           </button>
           <button
             type="button"
-            disabled={!canFly}
+            disabled={!canFly || myShip.heat >= 96}
             className="danger"
             onClick={() => thrust({ x: 0, y: 0, z: 0 }, true)}
-            title="Stabilize"
+            title="Stabilize: 18 heat"
           >
             <Crosshair size={16} />
-            Stabilize
+            Stabilize 18
+          </button>
+        </div>
+        <div className="axis-row">
+          <button
+            type="button"
+            disabled={!canFly}
+            onClick={() => setThrottle((current) => clamp(current - throttleStep, -1, 1))}
+            title="Throttle down"
+          >
+            -25%
+          </button>
+          <button
+            type="button"
+            disabled={!canFly}
+            onClick={() => setThrottle(0)}
+            title="Throttle zero"
+          >
+            0%
+          </button>
+          <button
+            type="button"
+            disabled={!canFly}
+            onClick={() => setThrottle((current) => clamp(current + throttleStep, -1, 1))}
+            title="Throttle up"
+          >
+            +25%
+          </button>
+        </div>
+        <div className="axis-row">
+          <button
+            type="button"
+            disabled={!canFly || myShip.heat >= 96}
+            onClick={() => {
+              oneShotRef.current.boost = true;
+              sendFlightInput(buildFlightInput(flightMode === "flight"));
+            }}
+            title="Boost"
+          >
+            <Rocket size={16} />
+            Boost
+          </button>
+          <button
+            type="button"
+            disabled={!canFly}
+            className={cruiseLock ? "active" : ""}
+            onClick={() => setCruiseLock((current) => !current)}
+            title="Cruise lock"
+          >
+            <Gauge size={16} />
+            Cruise
           </button>
         </div>
         <StatGrid
           rows={[
             ["Velocity", `${vectorMagnitude(myShip.velocity).toFixed(1)} m/s`],
             ["Vector", meters(myShip.velocity)],
+            ["Angular", meters(myShip.angularVelocity)],
+            ["Throttle", `${(throttle * 100).toFixed(0)}%`],
             ["Scanner", `${myShip.scanPower.toFixed(1)}x`],
             ["Mining", `${myShip.miningPower.toFixed(1)}t`],
           ]}
@@ -923,21 +1209,36 @@ function WorldView({
   structures,
   ships,
   myShip,
+  flightMode,
+  stageRef,
+  onRequestFlightLock,
 }: {
   asteroids: Asteroid[];
   structures: Structure[];
   ships: Ship[];
   myShip: Ship;
+  flightMode: FlightMode;
+  stageRef: RefObject<HTMLDivElement | null>;
+  onRequestFlightLock: () => void;
 }): ReactNode {
   return (
-    <div className="world-stage">
+    <div
+      className={`world-stage ${flightMode === "flight" ? "flight-mode" : "cursor-mode"}`}
+      ref={stageRef}
+      onPointerDown={(event) => {
+        if (event.target === event.currentTarget || event.target instanceof HTMLCanvasElement) {
+          onRequestFlightLock();
+        }
+      }}
+    >
       <Canvas camera={{ position: [0, 9, 18], fov: 52 }} dpr={[1, 1.5]}>
+        <ChaseCamera orientation={myShip.orientation} />
         <color attach="background" args={["#10100f"]} />
         <ambientLight intensity={0.62} />
         <pointLight position={[8, 12, 10]} intensity={1.4} color="#f5c16f" />
-        <group rotation={[0.18, -0.24, 0]}>
+        <group>
           <GridStars />
-          <ShipMesh />
+          <ShipMesh orientation={myShip.orientation} />
           <InstancedAsteroids asteroids={asteroids} origin={myShip.position} />
           {structures.map((structure) => (
             <StructureMesh key={structure.id} structure={structure} origin={myShip.position} />
@@ -954,17 +1255,34 @@ function WorldView({
   );
 }
 
-function ShipMesh(): ReactNode {
-  const [mesh, setMesh] = useState<Mesh | null>(null);
-  useFrame((_, delta) => {
-    if (mesh !== null) {
-      mesh.rotation.z += delta * 0.55;
-    }
+function ChaseCamera({ orientation }: { orientation: Quaternion }): null {
+  const offset = useMemo(() => new ThreeVector3(), []);
+  const up = useMemo(() => new ThreeVector3(), []);
+  const quaternion = useMemo(() => new ThreeQuaternion(), []);
+
+  useFrame(({ camera }) => {
+    quaternion.set(orientation.x, orientation.y, orientation.z, orientation.w).normalize();
+    offset.set(0, 3.2, 9.2).applyQuaternion(quaternion);
+    up.set(0, 1, 0).applyQuaternion(quaternion);
+    camera.position.lerp(offset, 0.32);
+    camera.up.copy(up);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
   });
 
+  return null;
+}
+
+function ShipMesh({ orientation }: { orientation: Quaternion }): ReactNode {
+  const groupRef = useRef<Group>(null);
+
+  useLayoutEffect(() => {
+    groupRef.current?.quaternion.set(orientation.x, orientation.y, orientation.z, orientation.w);
+  }, [orientation]);
+
   return (
-    <group>
-      <mesh ref={setMesh} position={[0, 0, 0]}>
+    <group ref={groupRef}>
+      <mesh position={[0, 0, 0]} rotation={[Math.PI / 2, 0, 0]}>
         <coneGeometry args={[0.45, 1.6, 4]} />
         <meshStandardMaterial color="#e0dfcf" roughness={0.72} metalness={0.18} />
       </mesh>
@@ -1044,11 +1362,26 @@ function StructureMesh({
 
 function OtherShipMesh({ ship, origin }: { ship: Ship; origin: Vector3 }): ReactNode {
   const position = toScene(ship.position, origin);
+  const groupRef = useRef<Group>(null);
+  useLayoutEffect(() => {
+    groupRef.current?.quaternion.set(
+      ship.orientation.x,
+      ship.orientation.y,
+      ship.orientation.z,
+      ship.orientation.w,
+    );
+  }, [ship.orientation]);
   return (
-    <mesh position={[position.x, position.y, position.z]} scale={[0.42, 0.42, 0.42]}>
-      <coneGeometry args={[0.6, 1.4, 4]} />
-      <meshStandardMaterial color="#b54f57" roughness={0.7} />
-    </mesh>
+    <group
+      ref={groupRef}
+      position={[position.x, position.y, position.z]}
+      scale={[0.42, 0.42, 0.42]}
+    >
+      <mesh rotation={[Math.PI / 2, 0, 0]}>
+        <coneGeometry args={[0.6, 1.4, 4]} />
+        <meshStandardMaterial color="#b54f57" roughness={0.7} />
+      </mesh>
+    </group>
   );
 }
 
@@ -1173,18 +1506,19 @@ function StatGrid({ rows }: { rows: Array<[string, string]> }): ReactNode {
 function isFlightKey(code: string): boolean {
   return (
     code === "KeyW" ||
+    code === "KeyQ" ||
+    code === "KeyE" ||
     code === "KeyA" ||
     code === "KeyS" ||
     code === "KeyD" ||
-    code === "ArrowUp" ||
-    code === "ArrowDown" ||
-    code === "ArrowLeft" ||
-    code === "ArrowRight" ||
+    code === "KeyZ" ||
+    code === "KeyC" ||
     code === "Space" ||
     code === "ControlLeft" ||
     code === "ControlRight" ||
     code === "KeyX" ||
-    code === "KeyZ"
+    code === "KeyJ" ||
+    code === "Tab"
   );
 }
 
@@ -1196,31 +1530,10 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable;
 }
 
-function commandFromKeys(keys: Set<string>): ThrustCommand | null {
-  const xAxis =
-    Number(keys.has("KeyD") || keys.has("ArrowRight")) -
-    Number(keys.has("KeyA") || keys.has("ArrowLeft"));
-  const yAxis =
-    Number(keys.has("Space")) - Number(keys.has("ControlLeft") || keys.has("ControlRight"));
-  const zAxis =
-    Number(keys.has("KeyS") || keys.has("ArrowDown")) -
-    Number(keys.has("KeyW") || keys.has("ArrowUp"));
-  const stabilize = keys.has("KeyX") || keys.has("KeyZ");
-  const impulse = {
-    x: xAxis * 2.2,
-    y: yAxis * 1.6,
-    z: zAxis * 2.2,
-  };
-  if (!stabilize && vectorMagnitude(impulse) <= 0) {
-    return null;
-  }
-  return stabilize ? { impulse, stabilize } : { impulse };
-}
-
 function predictFlightSnapshot(
   snapshot: WorldSnapshot,
   pilotId: string,
-  command: ThrustCommand,
+  command: ThrustCommand | FlightInputCommand,
 ): WorldSnapshot {
   return {
     ...snapshot,
@@ -1230,17 +1543,51 @@ function predictFlightSnapshot(
   };
 }
 
-function predictShipAfterCommand(ship: Ship, command: ThrustCommand): Ship {
+function predictShipAfterCommand(ship: Ship, command: ThrustCommand | FlightInputCommand): Ship {
+  if (isFlightInputCommand(command)) {
+    const stabilized = command.stabilize === true && ship.heat < 96;
+    const boosted = command.boost === true && ship.heat < 96;
+    const dampening = stabilized ? 1 - ship.stabilizerEfficiency : 1;
+    const boost = boosted
+      ? rotateVectorByQuaternion({ x: 0, y: 0, z: -12 }, ship.orientation)
+      : { x: 0, y: 0, z: 0 };
+    return {
+      ...ship,
+      velocity: {
+        x: round((ship.velocity.x + boost.x) * dampening),
+        y: round((ship.velocity.y + boost.y) * dampening),
+        z: round((ship.velocity.z + boost.z) * dampening),
+      },
+      angularVelocity: {
+        x: round(ship.angularVelocity.x * dampening),
+        y: round(ship.angularVelocity.y * dampening),
+        z: round(ship.angularVelocity.z * dampening),
+      },
+      throttle: round(command.throttle),
+      cruiseLock: command.cruiseLock ?? ship.cruiseLock,
+      heat: round(Math.min(100, ship.heat + (stabilized ? 18 : 0) + (boosted ? 24 : 0))),
+    };
+  }
+
   const impulse = clampVector(command.impulse, 12);
+  const worldImpulse =
+    command.frame === "local" ? rotateVectorByQuaternion(impulse, ship.orientation) : impulse;
+  const angularImpulse = clampVector(command.angularImpulse ?? { x: 0, y: 0, z: 0 }, 1.55);
   const stabilization = command.stabilize === true && ship.heat < 96;
   const dampening = stabilization ? 1 - ship.stabilizerEfficiency : 1;
-  const heatAdded = vectorMagnitude(impulse) * 1.8 + (stabilization ? 18 : 0);
+  const heatAdded =
+    vectorMagnitude(impulse) * 1.8 + vectorMagnitude(angularImpulse) * 2 + (stabilization ? 18 : 0);
   return {
     ...ship,
     velocity: {
-      x: round((ship.velocity.x + impulse.x) * dampening),
-      y: round((ship.velocity.y + impulse.y) * dampening),
-      z: round((ship.velocity.z + impulse.z) * dampening),
+      x: round((ship.velocity.x + worldImpulse.x) * dampening),
+      y: round((ship.velocity.y + worldImpulse.y) * dampening),
+      z: round((ship.velocity.z + worldImpulse.z) * dampening),
+    },
+    angularVelocity: {
+      x: round((ship.angularVelocity.x + angularImpulse.x) * dampening),
+      y: round((ship.angularVelocity.y + angularImpulse.y) * dampening),
+      z: round((ship.angularVelocity.z + angularImpulse.z) * dampening),
     },
     heat: round(Math.min(100, ship.heat + heatAdded)),
   };
@@ -1412,6 +1759,38 @@ function clampVector(vector: Vector3, maxLength: number): Vector3 {
   };
 }
 
+function rotateVectorByQuaternion(vector: Vector3, quaternion: Quaternion): Vector3 {
+  const normalized = normalizeQuaternion(quaternion);
+  const ix = normalized.w * vector.x + normalized.y * vector.z - normalized.z * vector.y;
+  const iy = normalized.w * vector.y + normalized.z * vector.x - normalized.x * vector.z;
+  const iz = normalized.w * vector.z + normalized.x * vector.y - normalized.y * vector.x;
+  const iw = -normalized.x * vector.x - normalized.y * vector.y - normalized.z * vector.z;
+
+  return {
+    x: ix * normalized.w + iw * -normalized.x + iy * -normalized.z - iz * -normalized.y,
+    y: iy * normalized.w + iw * -normalized.y + iz * -normalized.x - ix * -normalized.z,
+    z: iz * normalized.w + iw * -normalized.z + ix * -normalized.y - iy * -normalized.x,
+  };
+}
+
+function normalizeQuaternion(quaternion: Quaternion): Quaternion {
+  const magnitude = Math.sqrt(
+    quaternion.x * quaternion.x +
+      quaternion.y * quaternion.y +
+      quaternion.z * quaternion.z +
+      quaternion.w * quaternion.w,
+  );
+  if (magnitude <= 0) {
+    return { x: 0, y: 0, z: 0, w: 1 };
+  }
+  return {
+    x: quaternion.x / magnitude,
+    y: quaternion.y / magnitude,
+    z: quaternion.z / magnitude,
+    w: quaternion.w / magnitude,
+  };
+}
+
 function rangeBetween(left: Vector3, right: Vector3): number {
   return vectorMagnitude({
     x: left.x - right.x,
@@ -1426,6 +1805,10 @@ function meters(vector: Vector3): string {
 
 function round(value: number): number {
   return Math.round(value * 1000) / 1000;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }
 
 function upgradeCostEstimate(ship: Ship, system: UpgradeSystem): number {
@@ -1456,4 +1839,10 @@ function upgradeEffect(system: UpgradeSystem): string {
 
 function messageFrom(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown error";
+}
+
+function isFlightInputCommand(
+  command: ThrustCommand | FlightInputCommand,
+): command is FlightInputCommand {
+  return "kind" in command && command.kind === "flight";
 }

@@ -73,6 +73,15 @@ button {
   inset: 0;
 }
 
+.world-stage.flight-mode,
+.world-stage.flight-mode canvas {
+  cursor: none;
+}
+
+.world-stage.cursor-mode canvas {
+  cursor: crosshair;
+}
+
 .reticle {
   position: absolute;
   left: 50%;
@@ -280,6 +289,11 @@ button {
 .axis-row .danger {
   border-color: rgb(200 123 60 / 48%);
   background: rgb(73 35 17 / 74%);
+}
+
+.axis-row .active {
+  border-color: #e2b15d;
+  background: rgb(101 74 39 / 82%);
 }
 
 button:disabled {

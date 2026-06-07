@@ -1,10 +1,17 @@
 # Flight Controls: Elite-Dangerous-style KB/M flight for Haystack
 
-> **Status:** Proposal / design contract. Not yet implemented.
+> **Status:** Baseline implemented in the `flight-controls` worktree; still a design
+> contract for follow-up tuning.
 > **Scope:** Recreate the _feel_ of Elite Dangerous flight for **keyboard + mouse only**
 > (no joystick/HOTAS), fitted to Haystack's existing zero-g, heat-costed, multiplayer model.
 > **Audience:** the `/goal` loop and anyone implementing the flight model.
 > Every non-obvious claim about the current build cites `src/<path>`.
+
+> **Implementation note:** The historical gap analysis below describes the pre-flight-controls
+> baseline that existed when this contract was written. The current implementation now includes
+> ship orientation, angular velocity, ship-local thrust, streamed KB/M flight input, heat-costed
+> linear/angular stabilization, boost, cruise lock, pointer-lock mouse steering, and an
+> orientation-following camera.
 
 This document answers two questions: _what will a KB/M player who knows Elite
 Dangerous expect the controls to do?_ and _what concretely needs to be built to
