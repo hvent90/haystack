@@ -1,7 +1,17 @@
 import { applyMix, createBusGraph, type BusGraph } from "./buses";
 import { createAudioContext, unlock } from "./context";
 import { defaultMix, type MixState } from "./mix";
-import { uiClick, type OneShotRender } from "./sfx/catalog";
+import {
+  boost,
+  brake,
+  chime,
+  comms,
+  scanHonk,
+  targetLock,
+  uiClick,
+  uiHover,
+  type OneShotRender,
+} from "./sfx/catalog";
 import { renderOneShot } from "./sfx/renderOneShot";
 import type { BusName, OneShotId } from "./types";
 
@@ -13,6 +23,13 @@ interface OneShotEntry {
 /** Registry of implemented one-shots. Plan 2 extends this map. */
 const ONE_SHOTS: Partial<Record<OneShotId, OneShotEntry>> = {
   uiClick: { spec: uiClick, bus: "ui" },
+  uiHover: { spec: uiHover, bus: "ui" },
+  targetLock: { spec: targetLock, bus: "ui" },
+  comms: { spec: comms, bus: "ui" },
+  chime: { spec: chime, bus: "ui" },
+  boost: { spec: boost, bus: "sfx" },
+  brake: { spec: brake, bus: "sfx" },
+  scanHonk: { spec: scanHonk, bus: "sfx" },
 };
 
 export class AudioEngine {
