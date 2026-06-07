@@ -7,6 +7,7 @@
     "dev:server": "bun src/server/main.ts",
     "dev:client": "vite --host 0.0.0.0",
     "dev": "bun run dev:server",
+    "dev:public": "bash scripts/dev-public.sh",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "format": "bunx oxfmt --check .",
