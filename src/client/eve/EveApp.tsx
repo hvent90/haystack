@@ -459,6 +459,10 @@ export function EveApp(): ReactNode {
     if (added.length === 0) {
       return;
     }
+    const fromOthers = added.some((message) => message.fromPilotId !== session?.pilot.id);
+    if (fromOthers) {
+      audio.engine.playOneShot("comms");
+    }
     const commsOpen = layout.comms.open && focusedWindow === "comms";
     if (commsOpen) {
       setUnreadComms(0);
@@ -501,7 +505,7 @@ export function EveApp(): ReactNode {
         flightMode={flightMode}
         mouseDeflection={mouseDeflection}
         stageRef={stageRef}
-        onSelect={setSelection}
+        onSelect={selectTarget}
         onContextMenu={openContextMenu}
         onRequestFlightLock={requestFlightLock}
       />
@@ -564,7 +568,7 @@ export function EveApp(): ReactNode {
                   onFilter={setOverviewFilter}
                   onScanMode={setScanMode}
                   onScan={() => runScan()}
-                  onSelect={setSelection}
+                  onSelect={selectTarget}
                   onContextMenu={openContextMenu}
                 />
               ) : definition.key === "cargo" ? (
@@ -661,7 +665,7 @@ export function EveApp(): ReactNode {
           row={contextMenuRow}
           markerActive={waypoint !== null}
           onClose={() => setContextMenu(null)}
-          onSelect={setSelection}
+          onSelect={selectTarget}
           onShowInfo={openShowInfo}
           onScan={(row) => runScan(row.kind === "asteroid" ? row.id : row.asteroidId)}
           onMine={() => contextMenuRow?.kind === "deposit" && mineDepositById(contextMenuRow.id)}
@@ -886,7 +890,17 @@ export function EveApp(): ReactNode {
     setKeyboardThrottle(Number(keys.has("KeyW")) - Number(keys.has("KeyS")));
   }
 
+  function selectTarget(next: Selection | null): void {
+    if (next !== null) {
+      audio.engine.playOneShot("targetLock");
+    }
+    setSelection(next);
+  }
+
   function setFlightThrottle(value: number, sendNow = false): void {
+    if (value === 0 && sendNow) {
+      audio.engine.playOneShot("brake");
+    }
     const next = clamp(value, -1, 1);
     setThrottle(next);
     flightStateRef.current = { ...flightStateRef.current, throttle: next };
@@ -909,11 +923,13 @@ export function EveApp(): ReactNode {
   }
 
   function sendBoostInput(): void {
+    audio.engine.playOneShot("boost");
     oneShotRef.current.boost = true;
     sendFlightInput(buildFlightInput(flightModeRef.current === "flight"));
   }
 
   function runScan(targetAsteroidId = selectedAsteroidId): void {
+    audio.engine.playOneShot("scanHonk");
     if (session === null) {
       return;
     }
@@ -970,6 +986,7 @@ export function EveApp(): ReactNode {
   }
 
   function deployHab(): void {
+    audio.engine.playOneShot("chime");
     if (session === null) {
       return;
     }
