@@ -2,7 +2,7 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
-import { chromium } from "playwright";
+import { chromium, type Page } from "playwright";
 import { PNG } from "pngjs";
 
 const serverPort = 8798;
@@ -220,6 +220,9 @@ async function inspectCanvas(
     const canvas = page.locator("canvas").first();
     await canvas.waitFor({ timeout: 15000 });
     await page.waitForTimeout(700);
+    if (viewport.isMobile === true) {
+      await assertMobileChromeSpacing(page);
+    }
     const screenshot = await canvas.screenshot();
     const stats = inspectPng(screenshot);
     return {
@@ -230,6 +233,38 @@ async function inspectCanvas(
     };
   } finally {
     await browser.close();
+  }
+}
+
+async function assertMobileChromeSpacing(page: Page): Promise<void> {
+  const topRail = await page.getByTestId("top-rail").boundingBox();
+  const flightWindow = await page.getByTestId("window-flight").boundingBox();
+  const firstNeocomButton = await page.locator("[data-testid^='neocom-']").first().boundingBox();
+  const windowLayer = await page.locator(".window-layer").boundingBox();
+  const hud = await page.getByTestId("hud-cluster").boundingBox();
+  if (
+    topRail === null ||
+    flightWindow === null ||
+    firstNeocomButton === null ||
+    windowLayer === null ||
+    hud === null
+  ) {
+    throw new Error("Mobile chrome spacing check could not find required UI bounds.");
+  }
+
+  const reservedBottom = topRail.y + topRail.height + 6;
+  if (flightWindow.y < reservedBottom) {
+    throw new Error(
+      `Mobile flight window overlaps top rail: ${JSON.stringify({ topRail, flightWindow })}`,
+    );
+  }
+  if (firstNeocomButton.y < reservedBottom) {
+    throw new Error(
+      `Mobile Neocom overlaps top rail: ${JSON.stringify({ topRail, firstNeocomButton })}`,
+    );
+  }
+  if (windowLayer.y + windowLayer.height > hud.y - 6) {
+    throw new Error(`Mobile window layer overlaps HUD: ${JSON.stringify({ windowLayer, hud })}`);
   }
 }
 

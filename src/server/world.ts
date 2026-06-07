@@ -219,11 +219,12 @@ export class ShipActor extends Actor {
         strafe: clampAxes(command.strafe),
         rotation: clampAxes(command.rotation),
         active: true,
+        stabilize: command.stabilize === true,
         cruiseLock: this.cruiseLock,
       };
       this.inputFreshFor = inputFreshSeconds;
     }
-    if (command.stabilize === true) {
+    if (command.stabilize === true && command.active === false) {
       this.applyStabilizer();
     }
     if (command.boost === true) {
@@ -263,6 +264,9 @@ export class ShipActor extends Actor {
       this.integrateCruise(dt, strafe);
     } else {
       this.integrateLocalThrust(dt, strafe, this.throttle);
+    }
+    if (input.stabilize === true) {
+      this.integrateStabilizer(dt);
     }
 
     const angularLoad =
@@ -322,6 +326,18 @@ export class ShipActor extends Actor {
     this.velocity = scaleVector(this.velocity, dampening);
     this.angularVelocity = scaleVector(this.angularVelocity, dampening);
     this.heat = Math.min(100, this.heat + 18);
+  }
+
+  private integrateStabilizer(dt: number): void {
+    if (this.heat >= 96) {
+      return;
+    }
+    const linearSpeed = length(this.velocity);
+    const angularSpeed = length(this.angularVelocity);
+    const dampening = Math.max(0, 1 - this.stabilizerEfficiency * dt * 3.2);
+    this.velocity = scaleVector(this.velocity, dampening);
+    this.angularVelocity = scaleVector(this.angularVelocity, dampening);
+    this.heat = Math.min(100, this.heat + dt * (4 + linearSpeed * 0.012 + angularSpeed * 1.8));
   }
 
   private applyBoost(): void {

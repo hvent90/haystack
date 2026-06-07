@@ -15,7 +15,8 @@
     "verify": "bun run typecheck && bun run format && bun test tests/integration",
     "verify:screenshot": "bun tests/e2e/screenshot.ts",
     "verify:multiplayer": "bun tests/e2e/multiplayer.ts",
-    "verify:e2e": "bun run verify:screenshot && bun run verify:multiplayer",
+    "verify:ui": "bun tests/e2e/ui.ts",
+    "verify:e2e": "bun run verify:screenshot && bun run verify:multiplayer && bun run verify:ui",
     "cli": "bun src/cli/main.ts"
   },
   "dependencies": {

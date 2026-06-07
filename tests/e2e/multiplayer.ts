@@ -85,7 +85,7 @@ try {
   const movedShip = await waitForMovedShip(scout.id, hauler.id);
   await waitForPilotCardText(scoutPage, haulerCallsign, /4\.0m\/s/);
 
-  await haulerPage.mouse.click(640, 64);
+  await haulerPage.getByTestId("flight-mode-toggle").click();
   await haulerPage.waitForFunction(
     () =>
       document.querySelector("[data-testid='haystack-app']")?.getAttribute("data-flight-mode") ===
@@ -100,12 +100,28 @@ try {
   );
   await Bun.sleep(800);
   await haulerPage.keyboard.up("w");
+  await haulerPage.waitForFunction(
+    () =>
+      Number(
+        document.querySelector("[data-testid='haystack-app']")?.getAttribute("data-throttle"),
+      ) === 0,
+  );
 
   const keyboardMovedShip = await waitForShipVelocity(
     scout.id,
     hauler.id,
     (ship) => ship.velocity.z <= -3,
   );
+  await Bun.sleep(700);
+  const releasedShip = await findShip(scout.id, hauler.id);
+  if (releasedShip.velocity.z < keyboardMovedShip.velocity.z - 0.75) {
+    throw new Error(
+      `W continued accelerating after keyup: ${JSON.stringify({
+        before: keyboardMovedShip.velocity,
+        after: releasedShip.velocity,
+      })}`,
+    );
+  }
 
   console.log(
     JSON.stringify(
@@ -124,6 +140,7 @@ try {
           keyboardInput: {
             velocity: keyboardMovedShip.velocity,
             position: keyboardMovedShip.position,
+            releasedVelocity: releasedShip.velocity,
           },
         },
       },
@@ -180,6 +197,16 @@ async function waitForShipVelocity(
     await Bun.sleep(250);
   }
   throw new Error("Timed out waiting for expected ship velocity in shared world snapshot.");
+}
+
+async function findShip(observerPilotId: string, movedPilotId: string): Promise<Ship> {
+  const query = new URLSearchParams({ pilotId: observerPilotId });
+  const snapshot = await api<WorldSnapshot>(`/api/world?${query.toString()}`);
+  const movedShip = snapshot.ships.find((ship) => ship.pilotId === movedPilotId);
+  if (movedShip === undefined) {
+    throw new Error(`Could not find ship ${movedPilotId} in world snapshot.`);
+  }
+  return movedShip;
 }
 
 async function waitFor(url: string): Promise<void> {
