@@ -49,6 +49,7 @@ Modified: `package.json` (deps + scripts), `.gitignore` (`samples/`), `src/clien
 ## Task 1: Add jsfxr dependency + smoke test
 
 **Files:**
+
 - Modify: `package.json` (dependencies, scripts)
 - Create: `tests/audio/jsfxr.test.ts`
 
@@ -108,6 +109,7 @@ git commit -m "feat(audio): add jsfxr dependency with render smoke test"
 ## Task 2: Shared audio types
 
 **Files:**
+
 - Create: `src/client/audio/types.ts`
 
 - [ ] **Step 1: Write the types**
@@ -157,6 +159,7 @@ git commit -m "feat(audio): add shared audio types"
 ## Task 3: Pure per-category mix model (TDD)
 
 **Files:**
+
 - Create: `src/client/audio/mix.ts`
 - Test: `tests/audio/mix.test.ts`
 
@@ -304,6 +307,7 @@ git commit -m "feat(audio): add pure per-category mix model"
 These build Web Audio graphs, so they cannot run under Bun; the gate is typecheck now and the render harness (Task 11/12) later.
 
 **Files:**
+
 - Create: `src/client/audio/synth/noise.ts`
 - Create: `src/client/audio/synth/env.ts`
 - Create: `src/client/audio/synth/filters.ts`
@@ -413,7 +417,11 @@ export function createLowpass(ctx: BaseAudioContext, frequency: number, q = 0.7)
   return filter;
 }
 
-export function createHighpass(ctx: BaseAudioContext, frequency: number, q = 0.7): BiquadFilterNode {
+export function createHighpass(
+  ctx: BaseAudioContext,
+  frequency: number,
+  q = 0.7,
+): BiquadFilterNode {
   const filter = ctx.createBiquadFilter();
   filter.type = "highpass";
   filter.frequency.value = frequency;
@@ -457,6 +465,7 @@ git commit -m "feat(audio): add raw Web Audio synth toolkit (noise/env/filters/r
 ## Task 5: One-shot catalog + renderOneShot (the uiClick recipe)
 
 **Files:**
+
 - Create: `src/client/audio/sfx/catalog.ts`
 - Create: `src/client/audio/sfx/renderOneShot.ts`
 
@@ -526,6 +535,7 @@ git commit -m "feat(audio): add one-shot catalog with uiClick recipe + offline r
 ## Task 6: AudioContext + bus graph
 
 **Files:**
+
 - Create: `src/client/audio/context.ts`
 - Create: `src/client/audio/buses.ts`
 
@@ -594,6 +604,7 @@ git commit -m "feat(audio): add AudioContext lifecycle and bus graph"
 ## Task 7: AudioEngine facade
 
 **Files:**
+
 - Create: `src/client/audio/AudioEngine.ts`
 
 - [ ] **Step 1: Implement the facade**
@@ -703,6 +714,7 @@ git commit -m "feat(audio): add AudioEngine facade (init/unlock/playOneShot/mix)
 ## Task 8: React bridge hook + mix UI
 
 **Files:**
+
 - Create: `src/client/audio/useAudio.ts`
 - Create: `src/client/audio/AudioControls.tsx`
 
@@ -852,6 +864,7 @@ git commit -m "feat(audio): add useAudio bridge hook and per-category mix UI"
 ## Task 9: Wire audio into EveApp (gesture-unlock + uiClick on window toggles)
 
 **Files:**
+
 - Modify: `src/client/eve/EveApp.tsx`
 
 - [ ] **Step 1: Import the bridge**
@@ -868,7 +881,7 @@ import { useAudio } from "../audio/useAudio";
 Inside `EveApp`, immediately after the existing `const [session, setSession] = useState<Session | null>(null);` (line 81), add:
 
 ```ts
-  const audio = useAudio();
+const audio = useAudio();
 ```
 
 - [ ] **Step 3: Fire uiClick on window toggles**
@@ -876,14 +889,14 @@ Inside `EveApp`, immediately after the existing `const [session, setSession] = u
 In `EveApp`'s `toggleWindow` function (currently lines 736-742), add a click sound as the first statement:
 
 ```ts
-  function toggleWindow(key: WindowKey): void {
-    audio.engine.playOneShot("uiClick");
-    const nextOpen = !layout[key].open;
-    patchWindow(key, { open: nextOpen, minimized: false });
-    if (nextOpen) {
-      focusWindow(key);
-    }
+function toggleWindow(key: WindowKey): void {
+  audio.engine.playOneShot("uiClick");
+  const nextOpen = !layout[key].open;
+  patchWindow(key, { open: nextOpen, minimized: false });
+  if (nextOpen) {
+    focusWindow(key);
   }
+}
 ```
 
 - [ ] **Step 4: Mount the mix UI**
@@ -953,6 +966,7 @@ git commit -m "feat(audio): wire audio engine + mix UI into EveApp"
 ## Task 10: WAV encoder + browser render entry
 
 **Files:**
+
 - Create: `src/client/audio/wav.ts`
 - Create: `src/client/audio/renderEntry.ts`
 
@@ -962,7 +976,10 @@ Create `src/client/audio/wav.ts`:
 
 ```ts
 /** Encode mono Float32 PCM into a 16-bit PCM WAV byte array. */
-export function encodeWav(pcm: ReadonlyArray<number> | Float32Array, sampleRate: number): Uint8Array {
+export function encodeWav(
+  pcm: ReadonlyArray<number> | Float32Array,
+  sampleRate: number,
+): Uint8Array {
   const frames = pcm.length;
   const bytes = new Uint8Array(44 + frames * 2);
   const view = new DataView(bytes.buffer);
@@ -1038,9 +1055,10 @@ git commit -m "feat(audio): add WAV encoder and browser render entry"
 
 ---
 
-## Task 11: Playwright render harness CLI (samples/*.wav)
+## Task 11: Playwright render harness CLI (samples/\*.wav)
 
 **Files:**
+
 - Create: `src/cli/render-sfx.ts`
 - Modify: `package.json` (scripts)
 - Modify: `.gitignore`
@@ -1128,6 +1146,7 @@ git commit -m "feat(audio): add Playwright .wav render harness CLI"
 ## Task 12: Playwright audio verification test
 
 **Files:**
+
 - Create: `tests/e2e/audio.ts`
 - Modify: `package.json` (fold into verify:e2e)
 

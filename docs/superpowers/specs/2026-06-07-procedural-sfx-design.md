@@ -22,14 +22,14 @@ Hard constraints:
 
 ## 2. Decisions (locked)
 
-| Decision | Choice | Rationale |
-|---|---|---|
-| **Scope of first pass** | Everything: one-shots + real-time engine drone + 3D spatialization | User call; full flight-sim bed in one pass. |
-| **Synthesis approach** | **jsfxr cores + raw-Web-Audio layering** for one-shots; **hand-rolled raw Web Audio** for the continuous engine drone and ambience | jsfxr gives fast one-shot iteration; a raw-WA layering chain (filter/pitch/reverb/sub) sands off its chiptune character for the ED aesthetic. The drone needs per-frame param control, so it's hand-rolled. |
-| **Player controls** | **Per-category mix**: master + engine / sfx / ui / alarm bus sliders + mute | User call; the bus graph is useful internally regardless. |
-| **Library posture** | Raw Web Audio graph + `jsfxr` (one small MIT dep). No Tone.js, no Howler. | Howler is playback-only (no synthesis). Tone.js is too heavy for a lean codebase and reduces low-level control over voicing. |
-| **3D audio** | Three.js `AudioListener` + `PositionalAudio` (wrappers over Web Audio `PannerNode`) | Already in the dep tree; integrates with object transforms. |
-| **Asset strategy** | SFX defined as code; rendered to `AudioBuffer`s at runtime via `OfflineAudioContext`; a Playwright harness renders the same recipes to `.wav` for review/Discord | No hand-authored assets; `.wav` are derived artifacts for review only. |
+| Decision                | Choice                                                                                                                                                           | Rationale                                                                                                                                                                                                   |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Scope of first pass** | Everything: one-shots + real-time engine drone + 3D spatialization                                                                                               | User call; full flight-sim bed in one pass.                                                                                                                                                                 |
+| **Synthesis approach**  | **jsfxr cores + raw-Web-Audio layering** for one-shots; **hand-rolled raw Web Audio** for the continuous engine drone and ambience                               | jsfxr gives fast one-shot iteration; a raw-WA layering chain (filter/pitch/reverb/sub) sands off its chiptune character for the ED aesthetic. The drone needs per-frame param control, so it's hand-rolled. |
+| **Player controls**     | **Per-category mix**: master + engine / sfx / ui / alarm bus sliders + mute                                                                                      | User call; the bus graph is useful internally regardless.                                                                                                                                                   |
+| **Library posture**     | Raw Web Audio graph + `jsfxr` (one small MIT dep). No Tone.js, no Howler.                                                                                        | Howler is playback-only (no synthesis). Tone.js is too heavy for a lean codebase and reduces low-level control over voicing.                                                                                |
+| **3D audio**            | Three.js `AudioListener` + `PositionalAudio` (wrappers over Web Audio `PannerNode`)                                                                              | Already in the dep tree; integrates with object transforms.                                                                                                                                                 |
+| **Asset strategy**      | SFX defined as code; rendered to `AudioBuffer`s at runtime via `OfflineAudioContext`; a Playwright harness renders the same recipes to `.wav` for review/Discord | No hand-authored assets; `.wav` are derived artifacts for review only.                                                                                                                                      |
 
 ## 3. Architecture
 
@@ -83,26 +83,26 @@ Two channels into the facade:
 
 Every sound applies the distilled ED principles: **layer a tonal core over a filtered-noise body, add low-end weight, share one UI sonic family, parameterize by ship state.**
 
-| Sound | Type | Recipe |
-|---|---|---|
-| **Engine drone** | continuous | sub sine (~30–60 Hz) + low saw (throttle->pitch+gain) + filtered brown-noise body (throttle->cutoff+gain); smoothed via `setTargetAtTime`. Keystone "feel" sound. |
-| **Boost** | one-shot + mod | drone bright-noise swell + pitch bump; layered upward noise-sweep whoosh + sub thump |
-| **Brake / stabilize** | one-shot | short filtered-noise burst + descending tone; heat-locked variant = dull clunk |
-| **Heat / overheat alarm** | repeating | pulsing two-tone warning, lookahead-scheduled, intensifies toward lockout |
-| **Scan honk** | one-shot | big resonant low->high sweep (the "honk") |
-| **Scan pulse** | repeating | rhythmic filtered ping loop while scanning |
-| **Mining laser** | continuous | gritty mid-band buzz + sub, modulated while mining |
-| **Docking / gear / deploy** | one-shot | clean two-note tonal chime (UI family) |
-| **Target-lock blip** | one-shot | short rising two-blip |
-| **UI click / hover** | one-shot | tiny filtered transient, shared waveform/filter family |
-| **Comms received** | one-shot | soft blip (UI family) |
-| **Low rumble / ambience** | continuous | very-low filtered-noise bed under everything |
+| Sound                       | Type           | Recipe                                                                                                                                                            |
+| --------------------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Engine drone**            | continuous     | sub sine (~30–60 Hz) + low saw (throttle->pitch+gain) + filtered brown-noise body (throttle->cutoff+gain); smoothed via `setTargetAtTime`. Keystone "feel" sound. |
+| **Boost**                   | one-shot + mod | drone bright-noise swell + pitch bump; layered upward noise-sweep whoosh + sub thump                                                                              |
+| **Brake / stabilize**       | one-shot       | short filtered-noise burst + descending tone; heat-locked variant = dull clunk                                                                                    |
+| **Heat / overheat alarm**   | repeating      | pulsing two-tone warning, lookahead-scheduled, intensifies toward lockout                                                                                         |
+| **Scan honk**               | one-shot       | big resonant low->high sweep (the "honk")                                                                                                                         |
+| **Scan pulse**              | repeating      | rhythmic filtered ping loop while scanning                                                                                                                        |
+| **Mining laser**            | continuous     | gritty mid-band buzz + sub, modulated while mining                                                                                                                |
+| **Docking / gear / deploy** | one-shot       | clean two-note tonal chime (UI family)                                                                                                                            |
+| **Target-lock blip**        | one-shot       | short rising two-blip                                                                                                                                             |
+| **UI click / hover**        | one-shot       | tiny filtered transient, shared waveform/filter family                                                                                                            |
+| **Comms received**          | one-shot       | soft blip (UI family)                                                                                                                                             |
+| **Low rumble / ambience**   | continuous     | very-low filtered-noise bed under everything                                                                                                                      |
 
 **UI sonic family:** click, hover, chime, target-lock, and comms share a waveform + filter family so the interface "sounds like one machine."
 
 ## 6. Spatialization
 
-`AudioListener` mounts on the R3F camera in `WorldView`. My own ship's engine/UI/alarms are **non-positional** (first-person) on the buses. **Remote ships** get a lighter `PositionalAudio` engine drone attached to their mesh; mining beams are positional at their target. The floating-origin rebase (own ship pinned at origin, world ÷9000 around it) *helps*: the listener is at origin = me, and remote ships are already positioned relative to me, so panning/distance are correct without extra work.
+`AudioListener` mounts on the R3F camera in `WorldView`. My own ship's engine/UI/alarms are **non-positional** (first-person) on the buses. **Remote ships** get a lighter `PositionalAudio` engine drone attached to their mesh; mining beams are positional at their target. The floating-origin rebase (own ship pinned at origin, world ÷9000 around it) _helps_: the listener is at origin = me, and remote ships are already positioned relative to me, so panning/distance are correct without extra work.
 
 ## 7. Lifecycle, scheduling, performance (non-negotiables)
 
@@ -150,7 +150,7 @@ Matches the repo's verifier ethos (`bun run verify` = typecheck + format + integ
 
 ## Sources (verified during research)
 
-- MDN — Web Audio API *Advanced techniques* (noise, BiquadFilterNode, gain envelopes), *Best practices* (autoplay, library guidance), *Using AudioWorklet*, *Audio for Web Games*.
+- MDN — Web Audio API _Advanced techniques_ (noise, BiquadFilterNode, gain envelopes), _Best practices_ (autoplay, library guidance), _Using AudioWorklet_, _Audio for Web Games_.
 - jsfxr (chr15m) — canonical modern sfxr port; `toBuffer`/`toWave` offline generation.
 - Bfxr (increpare) — sfxr lineage, subtractive synthesis + 12-waveform palette + ADSR/LP-HP model.
 - Three.js docs — `PositionalAudio` (PannerNode-backed) + `AudioListener` setup.
