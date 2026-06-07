@@ -76,9 +76,12 @@ import type {
   WindowState,
 } from "./types";
 import { clamp } from "./vector";
+import { AudioControls } from "../audio/AudioControls";
+import { useAudio } from "../audio/useAudio";
 
 export function EveApp(): ReactNode {
   const [session, setSession] = useState<Session | null>(null);
+  const audio = useAudio();
   const [snapshot, setSnapshot] = useState<WorldSnapshot | null>(null);
   const [layout, setLayout] = useState<LayoutState>(() => createDefaultLayout());
   const [layoutLoadedFor, setLayoutLoadedFor] = useState<string | null>(null);
@@ -671,6 +674,7 @@ export function EveApp(): ReactNode {
           onInspectBase={openBases}
         />
       ) : null}
+      <AudioControls mix={audio.mix} unlocked={audio.unlocked} onChange={audio.setMix} />
     </main>
   );
 
@@ -734,6 +738,7 @@ export function EveApp(): ReactNode {
   }
 
   function toggleWindow(key: WindowKey): void {
+    audio.engine.playOneShot("uiClick");
     const nextOpen = !layout[key].open;
     patchWindow(key, { open: nextOpen, minimized: false });
     if (nextOpen) {
