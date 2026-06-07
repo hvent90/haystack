@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "format": "bunx oxfmt --check .",
     "format:write": "bunx oxfmt .",
-    "test": "bun test tests/integration",
+    "test": "bun test tests/integration tests/audio",
     "verify": "bun run typecheck && bun run format && bun test tests/integration",
     "verify:screenshot": "bun tests/e2e/screenshot.ts",
     "verify:multiplayer": "bun tests/e2e/multiplayer.ts",
@@ -22,6 +22,7 @@
   "dependencies": {
     "@react-three/fiber": "^9.1.2",
     "hono": "^4.7.11",
+    "jsfxr": "^1.4.1",
     "lucide-react": "^0.513.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
