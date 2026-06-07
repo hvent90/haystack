@@ -68,7 +68,7 @@ export function FlightWindow({
         <button
           type="button"
           className="danger"
-          disabled={!canUse || myShip.heat >= 96}
+          disabled={!canUse}
           onClick={() => onThrust({ x: 0, y: 0, z: 0 }, true)}
         >
           <Crosshair size={14} />

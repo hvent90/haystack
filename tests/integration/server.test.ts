@@ -134,6 +134,21 @@ describe("haystack server", () => {
     expect(stabilizePayload.ship.heat).toBeGreaterThan(thrustPayload.ship.heat);
   });
 
+  test("does not add heat when stabilization performs no damping work", async () => {
+    const pilot = await createPilot("Verifier Idle Stabilizer");
+
+    const stabilizeResponse = typed<{ ship: { heat: number } }>(
+      await requireWorld().app.request(`/api/ships/${pilot.id}/thrust`, {
+        method: "POST",
+        body: JSON.stringify({ impulse: { x: 0, y: 0, z: 0 }, stabilize: true }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const stabilizePayload = await stabilizeResponse.json();
+
+    expect(stabilizePayload.ship.heat).toBe(0);
+  });
+
   test("rotates local-frame thrust through the ship orientation", async () => {
     const pilot = await createPilot("Verifier Local Frame");
     const yawQuarterTurn = Math.SQRT1_2;
@@ -168,7 +183,8 @@ describe("haystack server", () => {
     );
     const boostPayload = await boostResponse.json();
     expect(boostPayload.ship.velocity.z).toBeLessThan(-11);
-    expect(boostPayload.ship.heat).toBeGreaterThan(20);
+    expect(boostPayload.ship.heat).toBeGreaterThan(1);
+    expect(boostPayload.ship.heat).toBeLessThan(3);
 
     requireWorld().db.query("UPDATE ships SET vz = 0, heat = 100 WHERE pilot_id = ?").run(pilot.id);
     const lockedResponse = typed<{ ship: { velocity: { z: number }; heat: number } }>(
@@ -518,6 +534,29 @@ describe("haystack server", () => {
 
       try {
         await stream.waitFor((message) => message.type === "hello");
+        stream.socket.send(
+          JSON.stringify({
+            type: "input",
+            pilotId: pilot.id,
+            clientTick: 40,
+            command: {
+              kind: "flight",
+              throttle: 0,
+              active: true,
+              stabilize: true,
+              strafe: { x: 0, y: 0, z: 0 },
+              rotation: { x: 0, y: 0, z: 0 },
+            },
+          }),
+        );
+        const idleStabilizeAck = await stream.waitFor(
+          (message) => message.type === "ack" && message.clientTick === 40,
+        );
+        if (idleStabilizeAck.type !== "ack") {
+          throw new Error("Expected idle stabilizer acknowledgement.");
+        }
+        expect(idleStabilizeAck.ship.heat).toBe(0);
+
         stream.socket.send(
           JSON.stringify({
             type: "input",

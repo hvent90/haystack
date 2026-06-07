@@ -75,6 +75,8 @@ const cruiseAcceleration = 42;
 const cruiseSpeed = 220;
 const boostImpulse = 12;
 const inputFreshSeconds = 0.3;
+const linearThrusterHeatPerImpulse = 0.16;
+const angularThrusterHeatPerImpulse = 0.8;
 const angularAcceleration: Vector3 = { x: 1.65, y: 0.95, z: 2.3 };
 const maxAngularRate: Vector3 = { x: 1.15, y: 0.72, z: 1.55 };
 
@@ -197,7 +199,7 @@ export class ShipActor extends Actor {
       y: this.angularVelocity.y + angularImpulse.y,
       z: this.angularVelocity.z + angularImpulse.z,
     });
-    this.heat = Math.min(100, this.heat + length(impulse) * 1.8 + length(angularImpulse) * 2);
+    this.addThrusterHeat(impulse, angularImpulse);
     if (command.stabilize === true) {
       this.applyStabilizer();
     }
@@ -253,11 +255,16 @@ export class ShipActor extends Actor {
     this.inputFreshFor = Math.max(0, this.inputFreshFor - dt);
     const input = this.heldInput;
     const rotation = input.rotation;
+    const previousAngularVelocity = this.angularVelocity;
     this.angularVelocity = clampAngularVector({
       x: this.angularVelocity.x + rotation.x * angularAcceleration.x * dt,
       y: this.angularVelocity.y + rotation.y * angularAcceleration.y * dt,
       z: this.angularVelocity.z + rotation.z * angularAcceleration.z * dt,
     });
+    this.addThrusterHeat(
+      zeroVector(),
+      subtractVectors(this.angularVelocity, previousAngularVelocity),
+    );
 
     const strafe = input.strafe;
     if (this.cruiseLock) {
@@ -268,12 +275,6 @@ export class ShipActor extends Actor {
     if (input.stabilize === true) {
       this.integrateStabilizer(dt);
     }
-
-    const angularLoad =
-      Math.abs(rotation.x) * angularAcceleration.x +
-      Math.abs(rotation.y) * angularAcceleration.y +
-      Math.abs(rotation.z) * angularAcceleration.z;
-    this.heat = Math.min(100, this.heat + angularLoad * dt * 0.8);
   }
 
   private integrateLocalThrust(dt: number, strafe: Vector3, throttle: number): void {
@@ -287,7 +288,7 @@ export class ShipActor extends Actor {
     }
     const worldImpulse = rotateVectorByQuaternion(localImpulse, this.orientation);
     this.velocity = addVectors(this.velocity, worldImpulse);
-    this.heat = Math.min(100, this.heat + length(localImpulse) * 1.8);
+    this.addThrusterHeat(localImpulse);
   }
 
   private integrateCruise(dt: number, strafe: Vector3): void {
@@ -302,7 +303,7 @@ export class ShipActor extends Actor {
       cruiseAcceleration * dt,
     );
     this.velocity = addVectors(this.velocity, correction);
-    this.heat = Math.min(100, this.heat + length(correction) * 0.8 + dt * 4);
+    this.addThrusterHeat(correction);
     this.integrateLocalThrust(dt, strafe, 0);
   }
 
@@ -319,25 +320,27 @@ export class ShipActor extends Actor {
   }
 
   private applyStabilizer(): void {
-    if (this.heat >= 96) {
-      return;
-    }
     const dampening = 1 - this.stabilizerEfficiency;
+    const previousVelocity = this.velocity;
+    const previousAngularVelocity = this.angularVelocity;
     this.velocity = scaleVector(this.velocity, dampening);
     this.angularVelocity = scaleVector(this.angularVelocity, dampening);
-    this.heat = Math.min(100, this.heat + 18);
+    this.addThrusterHeat(
+      subtractVectors(this.velocity, previousVelocity),
+      subtractVectors(this.angularVelocity, previousAngularVelocity),
+    );
   }
 
   private integrateStabilizer(dt: number): void {
-    if (this.heat >= 96) {
-      return;
-    }
-    const linearSpeed = length(this.velocity);
-    const angularSpeed = length(this.angularVelocity);
     const dampening = Math.max(0, 1 - this.stabilizerEfficiency * dt * 3.2);
+    const previousVelocity = this.velocity;
+    const previousAngularVelocity = this.angularVelocity;
     this.velocity = scaleVector(this.velocity, dampening);
     this.angularVelocity = scaleVector(this.angularVelocity, dampening);
-    this.heat = Math.min(100, this.heat + dt * (4 + linearSpeed * 0.012 + angularSpeed * 1.8));
+    this.addThrusterHeat(
+      subtractVectors(this.velocity, previousVelocity),
+      subtractVectors(this.angularVelocity, previousAngularVelocity),
+    );
   }
 
   private applyBoost(): void {
@@ -349,7 +352,17 @@ export class ShipActor extends Actor {
       this.orientation,
     );
     this.velocity = addVectors(this.velocity, worldImpulse);
-    this.heat = Math.min(100, this.heat + 24);
+    this.addThrusterHeat({ x: 0, y: 0, z: -boostImpulse });
+  }
+
+  private addThrusterHeat(linearImpulse: Vector3, angularImpulse: Vector3 = zeroVector()): void {
+    const heatAdded =
+      length(linearImpulse) * linearThrusterHeatPerImpulse +
+      length(angularImpulse) * angularThrusterHeatPerImpulse;
+    if (heatAdded <= 0) {
+      return;
+    }
+    this.heat = Math.min(100, this.heat + heatAdded);
   }
 
   toShip(): Ship {
