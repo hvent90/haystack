@@ -1,0 +1,41 @@
+{
+  "name": "haystack",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:server": "bun src/server/main.ts",
+    "dev:client": "vite --host 0.0.0.0",
+    "dev": "bun run dev:server",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "format": "bunx oxfmt --check .",
+    "format:write": "bunx oxfmt .",
+    "test": "bun test tests/integration",
+    "verify": "bun run typecheck && bun run format && bun test tests/integration",
+    "verify:screenshot": "bun tests/e2e/screenshot.ts",
+    "verify:multiplayer": "bun tests/e2e/multiplayer.ts",
+    "verify:e2e": "bun run verify:screenshot && bun run verify:multiplayer",
+    "cli": "bun src/cli/main.ts"
+  },
+  "dependencies": {
+    "@react-three/fiber": "^9.1.2",
+    "hono": "^4.7.11",
+    "lucide-react": "^0.513.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "three": "^0.177.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.15",
+    "@types/pngjs": "^6.0.5",
+    "@types/react": "^19.1.6",
+    "@types/react-dom": "^19.1.5",
+    "@types/three": "^0.177.0",
+    "@vitejs/plugin-react": "^4.5.1",
+    "playwright": "^1.52.0",
+    "pngjs": "^7.0.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}

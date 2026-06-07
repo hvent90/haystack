@@ -1,0 +1,768 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { websocket } from "hono/bun";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { createApp } from "../../src/server/app";
+import { openDatabase, type HaystackDb } from "../../src/server/db";
+import { WorldStream } from "../../src/server/realtime";
+import type { WorldStreamServerMessage } from "../../src/shared/types";
+import { getServerWorld } from "../../src/server/world";
+
+type TestWorld = {
+  db: HaystackDb;
+  app: ReturnType<typeof createApp>;
+};
+
+type JsonResponse<T> = Response & {
+  json(): Promise<T>;
+};
+
+type SnapshotProbe = {
+  field: { totalAsteroids: number; renderedLimit: number; indexKind: string };
+  me: { callsign: string; credits: number } | null;
+  pilots: Array<{ id: string; callsign: string; credits: number }>;
+  organizations: Array<{
+    name: string;
+    memberCount: number;
+    activeShipCount: number;
+    totalCargoMass: number;
+    totalCredits: number;
+  }>;
+  ships: Array<{ pilotId: string }>;
+  asteroids: unknown[];
+  structures: Array<{ id: string; kind: string; ownerPilotId: string | null; discovered: boolean }>;
+  cargo: unknown[];
+  chat: Array<{ body: string; channel: string; toPilotId: string | null }>;
+};
+
+type MineProbe = {
+  result: {
+    minedMass: number;
+    cargo: Array<{ mineral: string; mass: number }>;
+  };
+};
+
+type EngineProbe = {
+  engine: {
+    fixedDt: number;
+    currentTick: number;
+    actorCount: number;
+    authoritativeCount: number;
+    actors: Array<{
+      id: string;
+      className: string;
+      role: string;
+      replicatedFields: string[];
+    }>;
+    lastCapture: Record<string, { pos?: unknown; vel?: { x: number }; heat?: number }>;
+  };
+};
+
+type CliThrustProbe = {
+  protocol: string;
+  ship: {
+    velocity: {
+      x: number;
+    };
+  };
+};
+
+type CliWatchProbe = {
+  pilotId: string;
+  frames: Array<{
+    type: string;
+    callsign?: string | null;
+    ships?: number;
+  }>;
+};
+
+let world: TestWorld | null = null;
+
+beforeEach(() => {
+  const db = openDatabase(":memory:");
+  world = {
+    db,
+    app: createApp({ db }),
+  };
+});
+
+afterEach(() => {
+  world?.db.close();
+  world = null;
+});
+
+describe("haystack server", () => {
+  test("creates a persistent pilot, ship, and seeded world snapshot", async () => {
+    const pilot = await createPilot("Verifier One");
+    const snapshotResponse = await requireWorld().app.request(`/api/world?pilotId=${pilot.id}`);
+    const snapshot = (await snapshotResponse.json()) as SnapshotProbe;
+
+    expect(snapshot.me?.callsign).toBe("Verifier One");
+    expect(snapshot.ships).toHaveLength(1);
+    expect(snapshot.asteroids.length).toBeGreaterThanOrEqual(30);
+    expect(snapshot.structures.some((structure) => structure.kind === "station")).toBe(true);
+  });
+
+  test("applies no-flight-assist thrust and optional heat-cost stabilization", async () => {
+    const pilot = await createPilot("Verifier Two");
+
+    const thrustResponse = typed<{
+      ship: { velocity: { x: number; y: number; z: number }; heat: number };
+    }>(
+      await requireWorld().app.request(`/api/ships/${pilot.id}/thrust`, {
+        method: "POST",
+        body: JSON.stringify({ impulse: { x: 8, y: 0, z: 0 } }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const thrustPayload = await thrustResponse.json();
+    expect(thrustPayload.ship.velocity.x).toBeGreaterThan(0);
+
+    const stabilizeResponse = typed<{ ship: { velocity: { x: number }; heat: number } }>(
+      await requireWorld().app.request(`/api/ships/${pilot.id}/thrust`, {
+        method: "POST",
+        body: JSON.stringify({ impulse: { x: 0, y: 0, z: 0 }, stabilize: true }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const stabilizePayload = await stabilizeResponse.json();
+
+    expect(stabilizePayload.ship.velocity.x).toBeLessThan(thrustPayload.ship.velocity.x);
+    expect(stabilizePayload.ship.heat).toBeGreaterThan(thrustPayload.ship.heat);
+  });
+
+  test("spends wallet credits on ship system upgrades", async () => {
+    const pilot = await createPilot("Verifier Upgrade");
+
+    const scannerResponse = typed<{
+      result: {
+        ship: { scanPower: number; cargoCapacity: number };
+        system: string;
+        cost: number;
+        credits: number;
+      };
+    }>(
+      await requireWorld().app.request(`/api/ships/${pilot.id}/upgrade`, {
+        method: "POST",
+        body: JSON.stringify({ system: "scanner" }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const scannerPayload = await scannerResponse.json();
+    expect(scannerPayload.result.system).toBe("scanner");
+    expect(scannerPayload.result.cost).toBe(420);
+    expect(scannerPayload.result.credits).toBe(580);
+    expect(scannerPayload.result.ship.scanPower).toBeGreaterThan(1);
+
+    const cargoResponse = typed<{
+      result: {
+        ship: { cargoCapacity: number };
+        system: string;
+        cost: number;
+        credits: number;
+      };
+    }>(
+      await requireWorld().app.request(`/api/ships/${pilot.id}/upgrade`, {
+        method: "POST",
+        body: JSON.stringify({ system: "cargo" }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const cargoPayload = await cargoResponse.json();
+    expect(cargoPayload.result.system).toBe("cargo");
+    expect(cargoPayload.result.ship.cargoCapacity).toBe(240);
+    expect(cargoPayload.result.credits).toBe(280);
+
+    const snapshotResponse = await requireWorld().app.request(`/api/world?pilotId=${pilot.id}`);
+    const snapshot = (await snapshotResponse.json()) as SnapshotProbe;
+    expect(snapshot.me?.credits).toBe(280);
+  });
+
+  test("returns belt, pocket, and surface scan signals", async () => {
+    const pilot = await createPilot("Verifier Three");
+    const asteroid = firstAsteroid();
+
+    const belt = await scan(pilot.id, { mode: "belt" });
+    expect(belt.report.hits.some((hit) => hit.kind === "pocket")).toBe(true);
+
+    const pocket = await scan(pilot.id, { mode: "pocket" });
+    expect(
+      pocket.report.hits.some((hit) => hit.kind === "asteroid" || hit.kind === "structure"),
+    ).toBe(true);
+
+    moveShipNear(pilot.id, asteroid.id);
+    const surface = await scan(pilot.id, { mode: "surface", targetAsteroidId: asteroid.id });
+    expect(surface.report.hits.some((hit) => hit.kind === "deposit")).toBe(true);
+  });
+
+  test("mines nearby cargo and sells it at the station", async () => {
+    const pilot = await createPilot("Verifier Four");
+    const asteroid = firstAsteroid();
+    const deposit = firstDeposit(asteroid.id);
+    moveShipNear(pilot.id, asteroid.id);
+
+    const mineResponse = typed<{
+      result: { minedMass: number; cargo: Array<{ mineral: string; mass: number }> };
+    }>(
+      await requireWorld().app.request(`/api/ships/${pilot.id}/mine`, {
+        method: "POST",
+        body: JSON.stringify({ asteroidId: asteroid.id, depositId: deposit.id }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const minePayload = (await mineResponse.json()) as MineProbe;
+
+    expect(minePayload.result.minedMass).toBeGreaterThan(0);
+    expect(minePayload.result.cargo.some((item) => item.mass > 0)).toBe(true);
+
+    const snapshotResponse = await requireWorld().app.request(`/api/world?pilotId=${pilot.id}`);
+    const snapshot = (await snapshotResponse.json()) as SnapshotProbe;
+    expect(snapshot.cargo.length).toBeGreaterThan(0);
+
+    moveShipToStation(pilot.id);
+    const sellResponse = typed<{
+      result: { soldMass: number; creditsEarned: number; credits: number; cargo: unknown[] };
+    }>(
+      await requireWorld().app.request(`/api/ships/${pilot.id}/sell`, {
+        method: "POST",
+        body: JSON.stringify({}),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const sellPayload = await sellResponse.json();
+    expect(sellPayload.result.soldMass).toBeGreaterThan(0);
+    expect(sellPayload.result.creditsEarned).toBeGreaterThan(0);
+    expect(sellPayload.result.credits).toBeGreaterThan(1000);
+    expect(sellPayload.result.cargo).toHaveLength(0);
+  });
+
+  test("posts global chat and filters messages into world snapshots", async () => {
+    const pilot = await createPilot("Verifier Five");
+    const chatResponse = typed<{ message: { body: string; fromCallsign: string } }>(
+      await requireWorld().app.request("/api/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          channel: "global",
+          fromPilotId: pilot.id,
+          body: "needle ping online",
+        }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const chatPayload = await chatResponse.json();
+    expect(chatPayload.message.fromCallsign).toBe("Verifier Five");
+
+    const snapshotResponse = await requireWorld().app.request(`/api/world?pilotId=${pilot.id}`);
+    const snapshot = (await snapshotResponse.json()) as SnapshotProbe;
+    expect(snapshot.chat.some((message) => message.body === "needle ping online")).toBe(true);
+  });
+
+  test("summarizes player organizations in public world snapshots", async () => {
+    const scout = await createPilot("Verifier Org Scout", "Helio Cartel");
+    const hauler = await createPilot("Verifier Org Hauler", "Helio Cartel");
+
+    const asteroid = firstAsteroid();
+    const deposit = firstDeposit(asteroid.id);
+    moveShipNear(hauler.id, asteroid.id);
+    await requireWorld().app.request(`/api/ships/${hauler.id}/mine`, {
+      method: "POST",
+      body: JSON.stringify({ asteroidId: asteroid.id, depositId: deposit.id }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const snapshotResponse = await requireWorld().app.request(`/api/world?pilotId=${scout.id}`);
+    const snapshot = (await snapshotResponse.json()) as SnapshotProbe;
+    const organization = snapshot.organizations.find(
+      (candidate) => candidate.name === "Helio Cartel",
+    );
+
+    expect(organization?.memberCount).toBe(2);
+    expect(organization?.activeShipCount).toBe(2);
+    expect(organization?.totalCredits).toBe(2000);
+    expect(organization?.totalCargoMass).toBeGreaterThan(0);
+  });
+
+  test("supports two pilots in one shared world and direct messages", async () => {
+    const scout = await createPilot("Verifier Scout");
+    const hauler = await createPilot("Verifier Hauler");
+
+    await requireWorld().app.request(`/api/ships/${hauler.id}/thrust`, {
+      method: "POST",
+      body: JSON.stringify({ impulse: { x: 4, y: 0, z: 0 } }),
+      headers: { "Content-Type": "application/json" },
+    });
+    await requireWorld().app.request("/api/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        channel: "dm",
+        fromPilotId: scout.id,
+        toPilotId: hauler.id,
+        body: "private relay test",
+      }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const scoutSnapshotResponse = await requireWorld().app.request(
+      `/api/world?pilotId=${scout.id}`,
+    );
+    const scoutSnapshot = (await scoutSnapshotResponse.json()) as SnapshotProbe;
+    expect(scoutSnapshot.pilots.map((pilot) => pilot.callsign)).toContain("Verifier Hauler");
+    expect(scoutSnapshot.ships.map((ship) => ship.pilotId)).toContain(hauler.id);
+    expect(
+      scoutSnapshot.chat.some(
+        (message) => message.channel === "dm" && message.body === "private relay test",
+      ),
+    ).toBe(true);
+
+    const dmResponse = typed<{ messages: Array<{ body: string; toPilotId: string | null }> }>(
+      await requireWorld().app.request(`/api/chat?pilotId=${hauler.id}&channel=dm`),
+    );
+    const dmPayload = (await dmResponse.json()) as {
+      messages: Array<{ body: string; toPilotId: string | null }>;
+    };
+    expect(dmPayload.messages.some((message) => message.body === "private relay test")).toBe(true);
+  });
+
+  test("replicates public websocket input and shared world deltas between two clients", async () => {
+    const scout = await createPilot("Verifier WS Scout");
+    const hauler = await createPilot("Verifier WS Hauler");
+    const serverWorld = getServerWorld(requireWorld().db);
+    const worldStream = new WorldStream(serverWorld);
+    const streamApp = createApp({ db: requireWorld().db, world: serverWorld, worldStream });
+    const server = Bun.serve({
+      port: 0,
+      fetch: streamApp.fetch,
+      websocket,
+    });
+
+    try {
+      const baseUrl = `ws://127.0.0.1:${server.port}`;
+      const scoutStream = await connectWorldSocket(
+        `${baseUrl}/api/world/stream?pilotId=${scout.id}`,
+      );
+      const haulerStream = await connectWorldSocket(
+        `${baseUrl}/api/world/stream?pilotId=${hauler.id}`,
+      );
+
+      try {
+        const scoutHello = await scoutStream.waitFor((message) => message.type === "hello");
+        if (scoutHello.type !== "hello") {
+          throw new Error("Expected stream hello.");
+        }
+        expect(scoutHello.snapshot.pilots.map((pilot) => pilot.callsign)).toContain(
+          "Verifier WS Hauler",
+        );
+
+        haulerStream.socket.send(
+          JSON.stringify({
+            type: "input",
+            pilotId: hauler.id,
+            clientTick: 17,
+            command: { impulse: { x: 5, y: 0, z: 0 } },
+          }),
+        );
+
+        const ack = await haulerStream.waitFor(
+          (message) => message.type === "ack" && message.clientTick === 17,
+        );
+        if (ack.type !== "ack") {
+          throw new Error("Expected stream acknowledgement.");
+        }
+        expect(ack.ship.velocity.x).toBeGreaterThan(0);
+
+        const scoutDelta = await scoutStream.waitFor(
+          (message) =>
+            message.type === "delta" &&
+            message.changed.includes("ships") &&
+            (message.patch.ships ?? []).some(
+              (ship) => ship.pilotId === hauler.id && ship.velocity.x > 0,
+            ),
+        );
+        expect(scoutDelta.type).toBe("delta");
+      } finally {
+        scoutStream.socket.close();
+        haulerStream.socket.close();
+      }
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("stateful CLI joins, watches, and moves through the public world stream", async () => {
+    const serverWorld = getServerWorld(requireWorld().db);
+    const worldStream = new WorldStream(serverWorld);
+    const streamApp = createApp({ db: requireWorld().db, world: serverWorld, worldStream });
+    const server = Bun.serve({
+      port: 0,
+      fetch: streamApp.fetch,
+      websocket,
+    });
+    const stateDirectory = mkdtempSync(join(tmpdir(), "haystack-cli-stream-"));
+    const statePath = join(stateDirectory, "state.json");
+
+    try {
+      const serverUrl = `http://127.0.0.1:${server.port}`;
+      await runCliCommand([
+        "join",
+        "Verifier CLI Stream",
+        "--server",
+        serverUrl,
+        "--state",
+        statePath,
+      ]);
+      const watch = (await runCliCommand([
+        "watch",
+        "--frames",
+        "1",
+        "--server",
+        serverUrl,
+        "--state",
+        statePath,
+      ])) as CliWatchProbe;
+      const thrust = (await runCliCommand([
+        "thrust",
+        "--x",
+        "6",
+        "--y",
+        "0",
+        "--z",
+        "0",
+        "--server",
+        serverUrl,
+        "--state",
+        statePath,
+      ])) as CliThrustProbe;
+
+      expect(watch.frames[0]?.type).toBe("hello");
+      expect(watch.frames[0]?.callsign).toBe("Verifier CLI Stream");
+      expect(watch.frames[0]?.ships).toBeGreaterThan(0);
+      expect(thrust.protocol).toBe("world-stream");
+      expect(thrust.ship.velocity.x).toBeGreaterThan(0);
+    } finally {
+      rmSync(stateDirectory, { recursive: true, force: true });
+      server.stop(true);
+    }
+  });
+
+  test("exposes fixed-step authoritative ship actors and replication capture diagnostics", async () => {
+    const pilot = await createPilot("Verifier Engine");
+
+    await requireWorld().app.request(`/api/ships/${pilot.id}/thrust`, {
+      method: "POST",
+      body: JSON.stringify({ impulse: { x: 3, y: 0, z: -2 } }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const response = typed<EngineProbe>(await requireWorld().app.request("/api/engine"));
+    const payload = (await response.json()) as EngineProbe;
+    const actor = payload.engine.actors.find((candidate) => candidate.id === pilot.id);
+
+    expect(payload.engine.fixedDt).toBe(1 / 60);
+    expect(payload.engine.currentTick).toBeGreaterThan(0);
+    expect(payload.engine.actorCount).toBeGreaterThan(0);
+    expect(payload.engine.authoritativeCount).toBe(payload.engine.actorCount);
+    expect(actor?.className).toBe("ShipActor");
+    expect(actor?.role).toBe("authoritative");
+    expect(actor?.replicatedFields).toEqual(["pos", "vel", "heat", "cargoMass"]);
+    expect(payload.engine.lastCapture[pilot.id]?.vel?.x).toBeGreaterThan(0);
+  });
+
+  test("deploys a hidden player HAB that persists in shared world visibility", async () => {
+    const owner = await createPilot("Verifier Builder");
+    const observer = await createPilot("Verifier Observer");
+    moveShipDeep(owner.id);
+
+    const buildResponse = typed<{
+      result: {
+        structure: { id: string; ownerPilotId: string; hidden: boolean; discovered: boolean };
+        credits: number;
+      };
+    }>(
+      await requireWorld().app.request(`/api/ships/${owner.id}/bases`, {
+        method: "POST",
+        body: JSON.stringify({ name: "Verifier Cold HAB", hidden: true }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const buildPayload = await buildResponse.json();
+    expect(buildPayload.result.structure.ownerPilotId).toBe(owner.id);
+    expect(buildPayload.result.structure.hidden).toBe(true);
+    expect(buildPayload.result.credits).toBe(500);
+
+    const ownerSnapshotResponse = await requireWorld().app.request(
+      `/api/world?pilotId=${owner.id}`,
+    );
+    const ownerSnapshot = (await ownerSnapshotResponse.json()) as SnapshotProbe;
+    expect(
+      ownerSnapshot.structures.some(
+        (structure) => structure.id === buildPayload.result.structure.id && structure.discovered,
+      ),
+    ).toBe(true);
+
+    const observerSnapshotResponse = await requireWorld().app.request(
+      `/api/world?pilotId=${observer.id}`,
+    );
+    const observerSnapshot = (await observerSnapshotResponse.json()) as SnapshotProbe;
+    const observerHab = observerSnapshot.structures.find(
+      (structure) => structure.id === buildPayload.result.structure.id,
+    );
+    expect(observerHab?.discovered).toBe(false);
+  });
+
+  test("diagnoses million-scale virtual asteroid index without materializing the field", async () => {
+    const pilot = await createPilot("Verifier Scale");
+    const response = typed<{
+      diagnostic: {
+        totalAsteroids: number;
+        indexKind: string;
+        cellsVisited: number;
+        materializedAsteroids: number;
+        hits: unknown[];
+      };
+    }>(
+      await requireWorld().app.request(
+        `/api/ships/${pilot.id}/field-diagnostic?radius=52000&limit=16`,
+      ),
+    );
+    const payload = await response.json();
+
+    expect(payload.diagnostic.totalAsteroids).toBe(1_000_000);
+    expect(payload.diagnostic.indexKind).toBe("cubicCellHierarchy");
+    expect(payload.diagnostic.cellsVisited).toBeLessThan(1_000_000);
+    expect(payload.diagnostic.materializedAsteroids).toBeLessThan(10_000);
+    expect(payload.diagnostic.hits.length).toBeGreaterThan(0);
+
+    const snapshotResponse = await requireWorld().app.request(`/api/world?pilotId=${pilot.id}`);
+    const snapshot = (await snapshotResponse.json()) as SnapshotProbe;
+    expect(snapshot.field.totalAsteroids).toBe(1_000_000);
+    expect(snapshot.asteroids.length).toBeLessThanOrEqual(30 + snapshot.field.renderedLimit);
+  });
+
+  test("persists pilots, wallets, and chat after reopening sqlite storage", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "haystack-persist-"));
+    const path = join(directory, "world.sqlite");
+    try {
+      const db = openDatabase(path);
+      const app = createApp({ db });
+      const response = typed<{ pilot: { id: string } }>(
+        await app.request("/api/pilots", {
+          method: "POST",
+          body: JSON.stringify({ callsign: "Verifier Durable" }),
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      const pilot = (await response.json()).pilot;
+      await app.request("/api/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          channel: "global",
+          fromPilotId: pilot.id,
+          body: "persist me",
+        }),
+        headers: { "Content-Type": "application/json" },
+      });
+      db.close();
+
+      const reopened = openDatabase(path);
+      const reopenedApp = createApp({ db: reopened });
+      const snapshotResponse = await reopenedApp.request(`/api/world?pilotId=${pilot.id}`);
+      const snapshot = (await snapshotResponse.json()) as SnapshotProbe;
+      expect(snapshot.me?.callsign).toBe("Verifier Durable");
+      expect(snapshot.me?.credits).toBe(1000);
+      expect(snapshot.chat.some((message) => message.body === "persist me")).toBe(true);
+      reopened.close();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+async function createPilot(
+  callsign: string,
+  organization?: string,
+): Promise<{ id: string; callsign: string }> {
+  const body =
+    organization === undefined
+      ? { callsign }
+      : {
+          callsign,
+          organization,
+        };
+  const response = typed<{ pilot: { id: string; callsign: string } }>(
+    await requireWorld().app.request("/api/pilots", {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    }),
+  );
+  const payload = await response.json();
+  return payload.pilot;
+}
+
+async function scan(
+  pilotId: string,
+  request: { mode: string; targetAsteroidId?: string },
+): Promise<{
+  report: {
+    hits: Array<{
+      kind: string;
+    }>;
+  };
+}> {
+  const response = typed<{
+    report: {
+      hits: Array<{
+        kind: string;
+      }>;
+    };
+  }>(
+    await requireWorld().app.request(`/api/ships/${pilotId}/scan`, {
+      method: "POST",
+      body: JSON.stringify(request),
+      headers: { "Content-Type": "application/json" },
+    }),
+  );
+  return response.json();
+}
+
+function firstAsteroid(): { id: string; x: number; y: number; z: number; radius: number } {
+  const row = requireWorld()
+    .db.query("SELECT id, x, y, z, radius FROM asteroids ORDER BY id ASC LIMIT 1")
+    .get() as { id: string; x: number; y: number; z: number; radius: number } | null;
+  if (row === null) {
+    throw new Error("Expected seeded asteroid.");
+  }
+  return row;
+}
+
+function firstDeposit(asteroidId: string): { id: string } {
+  const row = requireWorld()
+    .db.query("SELECT id FROM deposits WHERE asteroid_id = ? ORDER BY id ASC LIMIT 1")
+    .get(asteroidId) as { id: string } | null;
+  if (row === null) {
+    throw new Error("Expected seeded deposit.");
+  }
+  return row;
+}
+
+function moveShipNear(pilotId: string, asteroidId: string): void {
+  const asteroid = requireWorld()
+    .db.query("SELECT x, y, z, radius FROM asteroids WHERE id = ?")
+    .get(asteroidId) as { x: number; y: number; z: number; radius: number } | null;
+  if (asteroid === null) {
+    throw new Error("Expected asteroid.");
+  }
+  requireWorld()
+    .db.query("UPDATE ships SET x = ?, y = ?, z = ?, vx = 0, vy = 0, vz = 0 WHERE pilot_id = ?")
+    .run(asteroid.x + asteroid.radius + 40, asteroid.y, asteroid.z, pilotId);
+}
+
+function moveShipToStation(pilotId: string): void {
+  requireWorld()
+    .db.query("UPDATE ships SET x = ?, y = ?, z = ?, vx = 0, vy = 0, vz = 0 WHERE pilot_id = ?")
+    .run(-7100, 20, 250, pilotId);
+}
+
+function moveShipDeep(pilotId: string): void {
+  requireWorld()
+    .db.query("UPDATE ships SET x = ?, y = ?, z = ?, vx = 0, vy = 0, vz = 0 WHERE pilot_id = ?")
+    .run(76000, -3200, -41000, pilotId);
+}
+
+function requireWorld(): TestWorld {
+  if (world === null) {
+    throw new Error("Test world was not initialized.");
+  }
+  return world;
+}
+
+function typed<T>(response: Response): JsonResponse<T> {
+  return response as JsonResponse<T>;
+}
+
+async function runCliCommand(argv: string[]): Promise<unknown> {
+  const proc = Bun.spawn(["bun", "src/cli/main.ts", ...argv], {
+    cwd: process.cwd(),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [exitCode, stdout, stderr] = await Promise.all([
+    proc.exited,
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  if (exitCode !== 0) {
+    throw new Error(`CLI failed: bun src/cli/main.ts ${argv.join(" ")}\n${stdout}\n${stderr}`);
+  }
+  return JSON.parse(stdout) as unknown;
+}
+
+type StreamProbe = {
+  socket: WebSocket;
+  waitFor: (
+    predicate: (message: WorldStreamServerMessage) => boolean,
+  ) => Promise<WorldStreamServerMessage>;
+};
+
+async function connectWorldSocket(url: string): Promise<StreamProbe> {
+  const socket = new WebSocket(url);
+  const messages: WorldStreamServerMessage[] = [];
+  const waiters: Array<{
+    predicate: (message: WorldStreamServerMessage) => boolean;
+    resolve: (message: WorldStreamServerMessage) => void;
+    reject: (error: Error) => void;
+    timeout: ReturnType<typeof setTimeout>;
+  }> = [];
+
+  socket.addEventListener("message", (event) => {
+    const message = JSON.parse(String(event.data)) as WorldStreamServerMessage;
+    messages.push(message);
+    for (const waiter of [...waiters]) {
+      if (waiter.predicate(message)) {
+        clearTimeout(waiter.timeout);
+        waiters.splice(waiters.indexOf(waiter), 1);
+        waiter.resolve(message);
+      }
+    }
+  });
+  socket.addEventListener("error", () => {
+    for (const waiter of waiters.splice(0)) {
+      clearTimeout(waiter.timeout);
+      waiter.reject(new Error("WebSocket stream failed."));
+    }
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    socket.addEventListener("open", () => resolve(), { once: true });
+    socket.addEventListener("error", () => reject(new Error("WebSocket failed to open.")), {
+      once: true,
+    });
+  });
+
+  return {
+    socket,
+    waitFor: (predicate: (message: WorldStreamServerMessage) => boolean) => {
+      const existing = messages.find(predicate);
+      if (existing !== undefined) {
+        return Promise.resolve(existing);
+      }
+      return new Promise<WorldStreamServerMessage>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          const index = waiters.findIndex((waiter) => waiter.reject === reject);
+          if (index >= 0) {
+            waiters.splice(index, 1);
+          }
+          reject(new Error("Timed out waiting for world stream message."));
+        }, 5000);
+        waiters.push({
+          predicate,
+          resolve,
+          reject,
+          timeout,
+        });
+      });
+    },
+  };
+}
