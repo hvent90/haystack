@@ -133,6 +133,55 @@ describe("haystack server", () => {
     expect(stabilizePayload.ship.heat).toBeGreaterThan(thrustPayload.ship.heat);
   });
 
+  test("rotates local-frame thrust through the ship orientation", async () => {
+    const pilot = await createPilot("Verifier Local Frame");
+    const yawQuarterTurn = Math.SQRT1_2;
+    requireWorld()
+      .db.query("UPDATE ships SET qx = 0, qy = ?, qz = 0, qw = ? WHERE pilot_id = ?")
+      .run(yawQuarterTurn, yawQuarterTurn, pilot.id);
+
+    const thrustResponse = typed<{
+      ship: { velocity: { x: number; y: number; z: number } };
+    }>(
+      await requireWorld().app.request(`/api/ships/${pilot.id}/thrust`, {
+        method: "POST",
+        body: JSON.stringify({ impulse: { x: 0, y: 0, z: -8 }, frame: "local" }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const thrustPayload = await thrustResponse.json();
+
+    expect(Math.abs(thrustPayload.ship.velocity.x)).toBeGreaterThan(7);
+    expect(Math.abs(thrustPayload.ship.velocity.z)).toBeLessThan(0.5);
+  });
+
+  test("applies heat-gated local boost without bypassing overheat lockout", async () => {
+    const pilot = await createPilot("Verifier Boost");
+
+    const boostResponse = typed<{ ship: { velocity: { z: number }; heat: number } }>(
+      await requireWorld().app.request(`/api/ships/${pilot.id}/thrust`, {
+        method: "POST",
+        body: JSON.stringify({ impulse: { x: 0, y: 0, z: 0 }, frame: "local", boost: true }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const boostPayload = await boostResponse.json();
+    expect(boostPayload.ship.velocity.z).toBeLessThan(-11);
+    expect(boostPayload.ship.heat).toBeGreaterThan(20);
+
+    requireWorld().db.query("UPDATE ships SET vz = 0, heat = 100 WHERE pilot_id = ?").run(pilot.id);
+    const lockedResponse = typed<{ ship: { velocity: { z: number }; heat: number } }>(
+      await requireWorld().app.request(`/api/ships/${pilot.id}/thrust`, {
+        method: "POST",
+        body: JSON.stringify({ impulse: { x: 0, y: 0, z: 0 }, frame: "local", boost: true }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const lockedPayload = await lockedResponse.json();
+    expect(lockedPayload.ship.velocity.z).toBe(0);
+    expect(lockedPayload.ship.heat).toBeGreaterThanOrEqual(96);
+  });
+
   test("spends wallet credits on ship system upgrades", async () => {
     const pilot = await createPilot("Verifier Upgrade");
 
@@ -390,6 +439,100 @@ describe("haystack server", () => {
     }
   });
 
+  test("streams continuous flight input for throttle, rotation, cruise, and angular stabilization", async () => {
+    const pilot = await createPilot("Verifier Flight Stream");
+    const serverWorld = getServerWorld(requireWorld().db);
+    const worldStream = new WorldStream(serverWorld);
+    const streamApp = createApp({ db: requireWorld().db, world: serverWorld, worldStream });
+    const server = Bun.serve({
+      port: 0,
+      fetch: streamApp.fetch,
+      websocket,
+    });
+
+    try {
+      const stream = await connectWorldSocket(
+        `ws://127.0.0.1:${server.port}/api/world/stream?pilotId=${pilot.id}`,
+      );
+
+      try {
+        await stream.waitFor((message) => message.type === "hello");
+        stream.socket.send(
+          JSON.stringify({
+            type: "input",
+            pilotId: pilot.id,
+            clientTick: 41,
+            command: {
+              kind: "flight",
+              throttle: 0.5,
+              cruiseLock: true,
+              strafe: { x: 0, y: 0, z: 0 },
+              rotation: { x: 1, y: 0, z: 0 },
+            },
+          }),
+        );
+
+        await stream.waitFor((message) => message.type === "ack" && message.clientTick === 41);
+        stream.socket.send(
+          JSON.stringify({
+            type: "input",
+            pilotId: pilot.id,
+            clientTick: 42,
+            command: {
+              kind: "flight",
+              throttle: 0.5,
+              cruiseLock: true,
+              strafe: { x: 0, y: 0, z: 0 },
+              rotation: { x: 1, y: 0, z: 0 },
+            },
+          }),
+        );
+        const flightAck = await stream.waitFor(
+          (message) => message.type === "ack" && message.clientTick === 42,
+        );
+        if (flightAck.type !== "ack") {
+          throw new Error("Expected flight stream acknowledgement.");
+        }
+        expect(flightAck.ship.throttle).toBe(0.5);
+        expect(flightAck.ship.cruiseLock).toBe(true);
+        expect(flightAck.ship.angularVelocity.x).toBeGreaterThan(0);
+        expect(Math.abs(flightAck.ship.orientation.x)).toBeGreaterThan(0);
+        expect(flightAck.ship.velocity.z).toBeLessThan(0);
+
+        stream.socket.send(
+          JSON.stringify({
+            type: "input",
+            pilotId: pilot.id,
+            clientTick: 43,
+            command: {
+              kind: "flight",
+              throttle: 0.5,
+              active: false,
+              stabilize: true,
+              strafe: { x: 0, y: 0, z: 0 },
+              rotation: { x: 0, y: 0, z: 0 },
+            },
+          }),
+        );
+        const stabilizeAck = await stream.waitFor(
+          (message) => message.type === "ack" && message.clientTick === 43,
+        );
+        if (stabilizeAck.type !== "ack") {
+          throw new Error("Expected stabilizer acknowledgement.");
+        }
+        expect(stabilizeAck.ship.angularVelocity.x).toBeLessThan(flightAck.ship.angularVelocity.x);
+        expect(vectorMagnitude(stabilizeAck.ship.velocity)).toBeLessThan(
+          vectorMagnitude(flightAck.ship.velocity),
+        );
+        expect(stabilizeAck.ship.heat).toBeGreaterThan(flightAck.ship.heat);
+      } finally {
+        stream.socket.close();
+      }
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("stateful CLI joins, watches, and moves through the public world stream", async () => {
     const serverWorld = getServerWorld(requireWorld().db);
     const worldStream = new WorldStream(serverWorld);
@@ -465,7 +608,16 @@ describe("haystack server", () => {
     expect(payload.engine.authoritativeCount).toBe(payload.engine.actorCount);
     expect(actor?.className).toBe("ShipActor");
     expect(actor?.role).toBe("authoritative");
-    expect(actor?.replicatedFields).toEqual(["pos", "vel", "heat", "cargoMass"]);
+    expect(actor?.replicatedFields).toEqual([
+      "pos",
+      "vel",
+      "orient",
+      "angVel",
+      "throttle",
+      "cruiseLock",
+      "heat",
+      "cargoMass",
+    ]);
     expect(payload.engine.lastCapture[pilot.id]?.vel?.x).toBeGreaterThan(0);
   });
 
@@ -669,6 +821,10 @@ function moveShipDeep(pilotId: string): void {
   requireWorld()
     .db.query("UPDATE ships SET x = ?, y = ?, z = ?, vx = 0, vy = 0, vz = 0 WHERE pilot_id = ?")
     .run(76000, -3200, -41000, pilotId);
+}
+
+function vectorMagnitude(vector: { x: number; y: number; z: number }): number {
+  return Math.sqrt(vector.x * vector.x + vector.y * vector.y + vector.z * vector.z);
 }
 
 function requireWorld(): TestWorld {

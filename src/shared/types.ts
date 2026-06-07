@@ -45,6 +45,9 @@ export type Ship = {
   position: Vector3;
   velocity: Vector3;
   orientation: Quaternion;
+  angularVelocity: Vector3;
+  throttle: number;
+  cruiseLock: boolean;
   heat: number;
   cargoMass: number;
   cargoCapacity: number;
@@ -150,8 +153,21 @@ export type CreatePilotRequest = {
 
 export type ThrustCommand = {
   impulse: Vector3;
+  angularImpulse?: Vector3;
   frame?: "world" | "local";
   stabilize?: boolean;
+  boost?: boolean;
+};
+
+export type FlightInputCommand = {
+  kind: "flight";
+  throttle: number;
+  strafe: Vector3;
+  rotation: Vector3;
+  active?: boolean;
+  stabilize?: boolean;
+  boost?: boolean;
+  cruiseLock?: boolean;
 };
 
 export type ScanRequest = {
@@ -232,7 +248,7 @@ export type WorldStreamClientMessage =
       type: "input";
       pilotId: string;
       clientTick: number;
-      command: ThrustCommand;
+      command: ThrustCommand | FlightInputCommand;
     };
 
 export type WorldStreamServerMessage =

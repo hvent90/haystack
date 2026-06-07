@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { WSContext, WSMessageReceive } from "hono/ws";
 
 import type {
+  FlightInputCommand,
   Ship,
   ThrustCommand,
   WorldSnapshot,
@@ -145,7 +146,7 @@ export class WorldStream {
       throw new Error("Stream input pilot does not match the subscribed pilot.");
     }
 
-    const ship = this.world.applyThrust(message.pilotId, message.command);
+    const ship = this.world.applyCommand(message.pilotId, message.command);
     this.currentTick += 1;
     this.sendAck(peer, message.clientTick, ship);
     for (const nextPeer of this.peers.values()) {
@@ -236,7 +237,7 @@ function decodeClientMessage(data: WSMessageReceive): WorldStreamClientMessage |
       value["type"] === "input" &&
       typeof value["pilotId"] === "string" &&
       typeof value["clientTick"] === "number" &&
-      isThrustCommand(value["command"])
+      isInputCommand(value["command"])
     ) {
       return {
         type: "input",
@@ -252,12 +253,46 @@ function decodeClientMessage(data: WSMessageReceive): WorldStreamClientMessage |
   return null;
 }
 
+function isInputCommand(value: unknown): value is ThrustCommand | FlightInputCommand {
+  return isThrustCommand(value) || isFlightInputCommand(value);
+}
+
 function isThrustCommand(value: unknown): value is ThrustCommand {
   if (!isRecord(value) || !isVector(value["impulse"])) {
     return false;
   }
   const stabilize = value["stabilize"];
-  return stabilize === undefined || typeof stabilize === "boolean";
+  const boost = value["boost"];
+  const angularImpulse = value["angularImpulse"];
+  const frame = value["frame"];
+  return (
+    (stabilize === undefined || typeof stabilize === "boolean") &&
+    (boost === undefined || typeof boost === "boolean") &&
+    (angularImpulse === undefined || isVector(angularImpulse)) &&
+    (frame === undefined || frame === "world" || frame === "local")
+  );
+}
+
+function isFlightInputCommand(value: unknown): value is FlightInputCommand {
+  if (
+    !isRecord(value) ||
+    value["kind"] !== "flight" ||
+    typeof value["throttle"] !== "number" ||
+    !isVector(value["strafe"]) ||
+    !isVector(value["rotation"])
+  ) {
+    return false;
+  }
+  const active = value["active"];
+  const stabilize = value["stabilize"];
+  const boost = value["boost"];
+  const cruiseLock = value["cruiseLock"];
+  return (
+    (active === undefined || typeof active === "boolean") &&
+    (stabilize === undefined || typeof stabilize === "boolean") &&
+    (boost === undefined || typeof boost === "boolean") &&
+    (cruiseLock === undefined || typeof cruiseLock === "boolean")
+  );
 }
 
 function isVector(value: unknown): value is { x: number; y: number; z: number } {

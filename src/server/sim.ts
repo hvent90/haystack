@@ -46,6 +46,11 @@ type ShipRow = {
   qy: number;
   qz: number;
   qw: number;
+  wx: number;
+  wy: number;
+  wz: number;
+  throttle: number;
+  cruise_lock: number;
   heat: number;
   cargo_mass: number;
   cargo_capacity: number;
@@ -712,8 +717,8 @@ function ensureShip(db: HaystackDb, pilotId: string, callsign: string): void {
 
   db.query(
     `INSERT INTO ships
-      (pilot_id, name, x, y, z, vx, vy, vz, qx, qy, qz, qw, heat, cargo_mass, cargo_capacity, scan_power, mining_power, stabilizer_efficiency)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (pilot_id, name, x, y, z, vx, vy, vz, qx, qy, qz, qw, wx, wy, wz, throttle, cruise_lock, heat, cargo_mass, cargo_capacity, scan_power, mining_power, stabilizer_efficiency)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     pilotId,
     `${callsign} Brickrunner`,
@@ -727,6 +732,11 @@ function ensureShip(db: HaystackDb, pilotId: string, callsign: string): void {
     0,
     0,
     1,
+    0,
+    0,
+    0,
+    0,
+    0,
     0,
     0,
     180,
@@ -951,6 +961,13 @@ function mapShip(row: ShipRow): Ship {
       z: round(row.vz),
     },
     orientation: roundQuaternion({ x: row.qx, y: row.qy, z: row.qz, w: row.qw }),
+    angularVelocity: {
+      x: round(row.wx),
+      y: round(row.wy),
+      z: round(row.wz),
+    },
+    throttle: round(row.throttle),
+    cruiseLock: row.cruise_lock === 1,
     heat: round(row.heat),
     cargoMass: round(row.cargo_mass),
     cargoCapacity: row.cargo_capacity,

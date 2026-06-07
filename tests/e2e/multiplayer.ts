@@ -85,8 +85,19 @@ try {
   const movedShip = await waitForMovedShip(scout.id, hauler.id);
   await waitForPilotCardText(scoutPage, haulerCallsign, /4\.0m\/s/);
 
-  await haulerPage.locator("[data-testid='haystack-app']").click();
+  await haulerPage.mouse.click(640, 64);
+  await haulerPage.waitForFunction(
+    () =>
+      document.querySelector("[data-testid='haystack-app']")?.getAttribute("data-flight-mode") ===
+      "flight",
+  );
   await haulerPage.keyboard.down("w");
+  await haulerPage.waitForFunction(
+    () =>
+      Number(
+        document.querySelector("[data-testid='haystack-app']")?.getAttribute("data-throttle"),
+      ) > 0,
+  );
   await Bun.sleep(800);
   await haulerPage.keyboard.up("w");
 

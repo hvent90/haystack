@@ -1,4 +1,4 @@
-import type { Quaternion, Ship, ThrustCommand, Vector3 } from "../shared/types";
+import type { FlightInputCommand, Quaternion, Ship, ThrustCommand, Vector3 } from "../shared/types";
 import type { HaystackDb } from "./db";
 
 export enum ActorRole {
@@ -50,6 +50,11 @@ type ShipRow = {
   qy: number;
   qz: number;
   qw: number;
+  wx: number;
+  wy: number;
+  wz: number;
+  throttle: number;
+  cruise_lock: number;
   heat: number;
   cargo_mass: number;
   cargo_capacity: number;
@@ -60,8 +65,18 @@ type ShipRow = {
 
 type PendingInput = {
   pilotId: string;
-  command: ThrustCommand;
+  command: ThrustCommand | FlightInputCommand;
 };
+
+const mainAcceleration = 34;
+const lateralAcceleration = 18;
+const verticalAcceleration = 14;
+const cruiseAcceleration = 42;
+const cruiseSpeed = 220;
+const boostImpulse = 12;
+const inputFreshSeconds = 0.3;
+const angularAcceleration: Vector3 = { x: 1.65, y: 0.95, z: 2.3 };
+const maxAngularRate: Vector3 = { x: 1.15, y: 0.72, z: 1.55 };
 
 export type EngineActorDiagnostic = {
   id: string;
@@ -98,6 +113,18 @@ export class ShipActor extends Actor {
       get: (actor) => cloneQuaternion((actor as ShipActor).orientation),
     },
     {
+      name: "angVel",
+      get: (actor) => cloneVector((actor as ShipActor).angularVelocity),
+    },
+    {
+      name: "throttle",
+      get: (actor) => (actor as ShipActor).throttle,
+    },
+    {
+      name: "cruiseLock",
+      get: (actor) => ((actor as ShipActor).cruiseLock ? 1 : 0),
+    },
+    {
       name: "heat",
       get: (actor) => (actor as ShipActor).heat,
     },
@@ -113,12 +140,17 @@ export class ShipActor extends Actor {
   position: Vector3;
   velocity: Vector3;
   orientation: Quaternion;
+  angularVelocity: Vector3;
+  throttle: number;
+  cruiseLock: boolean;
   heat: number;
   cargoMass: number;
   cargoCapacity: number;
   scanPower: number;
   miningPower: number;
   stabilizerEfficiency: number;
+  private heldInput: FlightInputCommand | null = null;
+  private inputFreshFor = 0;
 
   constructor(row: ShipRow) {
     super();
@@ -127,6 +159,9 @@ export class ShipActor extends Actor {
     this.position = { x: row.x, y: row.y, z: row.z };
     this.velocity = { x: row.vx, y: row.vy, z: row.vz };
     this.orientation = normalizeQuaternion({ x: row.qx, y: row.qy, z: row.qz, w: row.qw });
+    this.angularVelocity = { x: row.wx, y: row.wy, z: row.wz };
+    this.throttle = clamp(row.throttle, -1, 1);
+    this.cruiseLock = row.cruise_lock === 1;
     this.heat = row.heat;
     this.cargoMass = row.cargo_mass;
     this.cargoCapacity = row.cargo_capacity;
@@ -140,6 +175,9 @@ export class ShipActor extends Actor {
     this.position = { x: row.x, y: row.y, z: row.z };
     this.velocity = { x: row.vx, y: row.vy, z: row.vz };
     this.orientation = normalizeQuaternion({ x: row.qx, y: row.qy, z: row.qz, w: row.qw });
+    this.angularVelocity = { x: row.wx, y: row.wy, z: row.wz };
+    this.throttle = clamp(row.throttle, -1, 1);
+    this.cruiseLock = row.cruise_lock === 1;
     this.heat = row.heat;
     this.cargoMass = row.cargo_mass;
     this.cargoCapacity = row.cargo_capacity;
@@ -152,24 +190,150 @@ export class ShipActor extends Actor {
     const impulse = clampVector(command.impulse, 12);
     const worldImpulse =
       command.frame === "local" ? rotateVectorByQuaternion(impulse, this.orientation) : impulse;
-    const stabilization = command.stabilize === true && this.heat < 96;
-    const dampening = stabilization ? 1 - this.stabilizerEfficiency : 1;
-    const heatAdded = length(impulse) * 1.8 + (stabilization ? 18 : 0);
-    this.velocity = {
-      x: (this.velocity.x + worldImpulse.x) * dampening,
-      y: (this.velocity.y + worldImpulse.y) * dampening,
-      z: (this.velocity.z + worldImpulse.z) * dampening,
-    };
-    this.heat = Math.min(100, this.heat + heatAdded);
+    const angularImpulse = clampAngularVector(command.angularImpulse ?? zeroVector());
+    this.velocity = addVectors(this.velocity, worldImpulse);
+    this.angularVelocity = clampAngularVector({
+      x: this.angularVelocity.x + angularImpulse.x,
+      y: this.angularVelocity.y + angularImpulse.y,
+      z: this.angularVelocity.z + angularImpulse.z,
+    });
+    this.heat = Math.min(100, this.heat + length(impulse) * 1.8 + length(angularImpulse) * 2);
+    if (command.stabilize === true) {
+      this.applyStabilizer();
+    }
+    if (command.boost === true) {
+      this.applyBoost();
+    }
+  }
+
+  applyFlightInput(command: FlightInputCommand): void {
+    this.throttle = clamp(command.throttle, -1, 1);
+    this.cruiseLock = command.cruiseLock ?? this.cruiseLock;
+    if (command.active === false) {
+      this.heldInput = null;
+      this.inputFreshFor = 0;
+    } else {
+      this.heldInput = {
+        kind: "flight",
+        throttle: this.throttle,
+        strafe: clampAxes(command.strafe),
+        rotation: clampAxes(command.rotation),
+        active: true,
+        cruiseLock: this.cruiseLock,
+      };
+      this.inputFreshFor = inputFreshSeconds;
+    }
+    if (command.stabilize === true) {
+      this.applyStabilizer();
+    }
+    if (command.boost === true) {
+      this.applyBoost();
+    }
   }
 
   override update(dt: number): void {
+    this.integrateHeldInput(dt);
+    this.integrateOrientation(dt);
     this.position = {
       x: this.position.x + this.velocity.x * dt,
       y: this.position.y + this.velocity.y * dt,
       z: this.position.z + this.velocity.z * dt,
     };
     this.heat = Math.max(0, this.heat - dt * 0.85);
+  }
+
+  private integrateHeldInput(dt: number): void {
+    if (this.heldInput === null || this.inputFreshFor <= 0) {
+      this.heldInput = null;
+      this.inputFreshFor = 0;
+      return;
+    }
+
+    this.inputFreshFor = Math.max(0, this.inputFreshFor - dt);
+    const input = this.heldInput;
+    const rotation = input.rotation;
+    this.angularVelocity = clampAngularVector({
+      x: this.angularVelocity.x + rotation.x * angularAcceleration.x * dt,
+      y: this.angularVelocity.y + rotation.y * angularAcceleration.y * dt,
+      z: this.angularVelocity.z + rotation.z * angularAcceleration.z * dt,
+    });
+
+    const strafe = input.strafe;
+    if (this.cruiseLock) {
+      this.integrateCruise(dt, strafe);
+    } else {
+      this.integrateLocalThrust(dt, strafe, this.throttle);
+    }
+
+    const angularLoad =
+      Math.abs(rotation.x) * angularAcceleration.x +
+      Math.abs(rotation.y) * angularAcceleration.y +
+      Math.abs(rotation.z) * angularAcceleration.z;
+    this.heat = Math.min(100, this.heat + angularLoad * dt * 0.8);
+  }
+
+  private integrateLocalThrust(dt: number, strafe: Vector3, throttle: number): void {
+    const localImpulse = {
+      x: strafe.x * lateralAcceleration * dt,
+      y: strafe.y * verticalAcceleration * dt,
+      z: (-throttle * mainAcceleration + strafe.z * lateralAcceleration) * dt,
+    };
+    if (length(localImpulse) <= 0) {
+      return;
+    }
+    const worldImpulse = rotateVectorByQuaternion(localImpulse, this.orientation);
+    this.velocity = addVectors(this.velocity, worldImpulse);
+    this.heat = Math.min(100, this.heat + length(localImpulse) * 1.8);
+  }
+
+  private integrateCruise(dt: number, strafe: Vector3): void {
+    if (this.heat >= 96) {
+      this.cruiseLock = false;
+      return;
+    }
+    const forward = rotateVectorByQuaternion({ x: 0, y: 0, z: -1 }, this.orientation);
+    const targetVelocity = scaleVector(forward, this.throttle * cruiseSpeed);
+    const correction = clampVector(
+      subtractVectors(targetVelocity, this.velocity),
+      cruiseAcceleration * dt,
+    );
+    this.velocity = addVectors(this.velocity, correction);
+    this.heat = Math.min(100, this.heat + length(correction) * 0.8 + dt * 4);
+    this.integrateLocalThrust(dt, strafe, 0);
+  }
+
+  private integrateOrientation(dt: number): void {
+    const angularSpeed = length(this.angularVelocity);
+    if (angularSpeed <= 0.000001) {
+      return;
+    }
+    const delta = quaternionFromAxisAngle(
+      scaleVector(this.angularVelocity, 1 / angularSpeed),
+      angularSpeed * dt,
+    );
+    this.orientation = normalizeQuaternion(multiplyQuaternions(this.orientation, delta));
+  }
+
+  private applyStabilizer(): void {
+    if (this.heat >= 96) {
+      return;
+    }
+    const dampening = 1 - this.stabilizerEfficiency;
+    this.velocity = scaleVector(this.velocity, dampening);
+    this.angularVelocity = scaleVector(this.angularVelocity, dampening);
+    this.heat = Math.min(100, this.heat + 18);
+  }
+
+  private applyBoost(): void {
+    if (this.heat >= 96) {
+      return;
+    }
+    const worldImpulse = rotateVectorByQuaternion(
+      { x: 0, y: 0, z: -boostImpulse },
+      this.orientation,
+    );
+    this.velocity = addVectors(this.velocity, worldImpulse);
+    this.heat = Math.min(100, this.heat + 24);
   }
 
   toShip(): Ship {
@@ -179,6 +343,9 @@ export class ShipActor extends Actor {
       position: roundVector(this.position),
       velocity: roundVector(this.velocity),
       orientation: roundQuaternion(this.orientation),
+      angularVelocity: roundVector(this.angularVelocity),
+      throttle: round(this.throttle),
+      cruiseLock: this.cruiseLock,
       heat: round(this.heat),
       cargoMass: round(this.cargoMass),
       cargoCapacity: this.cargoCapacity,
@@ -241,6 +408,10 @@ export class ServerWorld {
   }
 
   applyThrust(pilotId: string, command: ThrustCommand): Ship {
+    return this.applyCommand(pilotId, command);
+  }
+
+  applyCommand(pilotId: string, command: ThrustCommand | FlightInputCommand): Ship {
     this.advanceToNow();
     this.pendingInputs.push({ pilotId, command });
     this.tick();
@@ -303,7 +474,11 @@ export class ServerWorld {
       if (ship === undefined) {
         throw new Error("Ship not found.");
       }
-      ship.applyThrust(input.command);
+      if (isFlightInputCommand(input.command)) {
+        ship.applyFlightInput(input.command);
+      } else {
+        ship.applyThrust(input.command);
+      }
     }
   }
 
@@ -355,7 +530,8 @@ export class ServerWorld {
   private persistShips(): void {
     const update = this.db.query(
       `UPDATE ships
-          SET x = ?, y = ?, z = ?, vx = ?, vy = ?, vz = ?, qx = ?, qy = ?, qz = ?, qw = ?, heat = ?
+          SET x = ?, y = ?, z = ?, vx = ?, vy = ?, vz = ?, qx = ?, qy = ?, qz = ?, qw = ?,
+              wx = ?, wy = ?, wz = ?, throttle = ?, cruise_lock = ?, heat = ?
         WHERE pilot_id = ?`,
     );
     for (const ship of this.shipActors.values()) {
@@ -371,6 +547,11 @@ export class ServerWorld {
         orientation.y,
         orientation.z,
         orientation.w,
+        ship.angularVelocity.x,
+        ship.angularVelocity.y,
+        ship.angularVelocity.z,
+        ship.throttle,
+        ship.cruiseLock ? 1 : 0,
         ship.heat,
         ship.id,
       );
@@ -427,6 +608,34 @@ function cloneQuaternion(quaternion: Quaternion): Quaternion {
   };
 }
 
+function zeroVector(): Vector3 {
+  return { x: 0, y: 0, z: 0 };
+}
+
+function addVectors(left: Vector3, right: Vector3): Vector3 {
+  return {
+    x: left.x + right.x,
+    y: left.y + right.y,
+    z: left.z + right.z,
+  };
+}
+
+function subtractVectors(left: Vector3, right: Vector3): Vector3 {
+  return {
+    x: left.x - right.x,
+    y: left.y - right.y,
+    z: left.z - right.z,
+  };
+}
+
+function scaleVector(vector: Vector3, scale: number): Vector3 {
+  return {
+    x: vector.x * scale,
+    y: vector.y * scale,
+    z: vector.z * scale,
+  };
+}
+
 function clampVector(vector: Vector3, maxLength: number): Vector3 {
   const magnitude = length(vector);
   if (magnitude <= maxLength) {
@@ -437,6 +646,22 @@ function clampVector(vector: Vector3, maxLength: number): Vector3 {
     x: vector.x * scale,
     y: vector.y * scale,
     z: vector.z * scale,
+  };
+}
+
+function clampAxes(vector: Vector3): Vector3 {
+  return {
+    x: clamp(vector.x, -1, 1),
+    y: clamp(vector.y, -1, 1),
+    z: clamp(vector.z, -1, 1),
+  };
+}
+
+function clampAngularVector(vector: Vector3): Vector3 {
+  return {
+    x: clamp(vector.x, -maxAngularRate.x, maxAngularRate.x),
+    y: clamp(vector.y, -maxAngularRate.y, maxAngularRate.y),
+    z: clamp(vector.z, -maxAngularRate.z, maxAngularRate.z),
   };
 }
 
@@ -480,13 +705,32 @@ function normalizeQuaternion(quaternion: Quaternion): Quaternion {
   };
 }
 
+function quaternionFromAxisAngle(axis: Vector3, angle: number): Quaternion {
+  const halfAngle = angle / 2;
+  const scale = Math.sin(halfAngle);
+  return normalizeQuaternion({
+    x: axis.x * scale,
+    y: axis.y * scale,
+    z: axis.z * scale,
+    w: Math.cos(halfAngle),
+  });
+}
+
+function multiplyQuaternions(left: Quaternion, right: Quaternion): Quaternion {
+  return {
+    x: left.w * right.x + left.x * right.w + left.y * right.z - left.z * right.y,
+    y: left.w * right.y - left.x * right.z + left.y * right.w + left.z * right.x,
+    z: left.w * right.z + left.x * right.y - left.y * right.x + left.z * right.w,
+    w: left.w * right.w - left.x * right.x - left.y * right.y - left.z * right.z,
+  };
+}
+
 function rotateVectorByQuaternion(vector: Vector3, quaternion: Quaternion): Vector3 {
   const normalized = normalizeQuaternion(quaternion);
   const ix = normalized.w * vector.x + normalized.y * vector.z - normalized.z * vector.y;
   const iy = normalized.w * vector.y + normalized.z * vector.x - normalized.x * vector.z;
   const iz = normalized.w * vector.z + normalized.x * vector.y - normalized.y * vector.x;
-  const iw =
-    -normalized.x * vector.x - normalized.y * vector.y - normalized.z * vector.z;
+  const iw = -normalized.x * vector.x - normalized.y * vector.y - normalized.z * vector.z;
 
   return {
     x: ix * normalized.w + iw * -normalized.x + iy * -normalized.z - iz * -normalized.y,
@@ -497,4 +741,14 @@ function rotateVectorByQuaternion(vector: Vector3, quaternion: Quaternion): Vect
 
 function round(value: number): number {
   return Math.round(value * 1000) / 1000;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function isFlightInputCommand(
+  command: ThrustCommand | FlightInputCommand,
+): command is FlightInputCommand {
+  return "kind" in command && command.kind === "flight";
 }
