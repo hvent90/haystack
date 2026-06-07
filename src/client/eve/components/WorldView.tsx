@@ -418,13 +418,21 @@ function OtherShipMesh({
   audioContext: AudioContext | null;
 }): ReactNode {
   const position = toScene(ship.position, origin);
+  const audioState = useMemo(
+    () => ({
+      throttle: ship.throttle,
+      heat: ship.heat,
+      speed: vectorMagnitude(ship.velocity),
+    }),
+    [ship.heat, ship.throttle, ship.velocity.x, ship.velocity.y, ship.velocity.z],
+  );
   return (
     <group position={[position.x, position.y, position.z]}>
       <mesh scale={[0.08, 0.08, 0.08]}>
         <coneGeometry args={[0.6, 1.4, 4]} />
         <meshStandardMaterial color="#b54f57" roughness={0.7} />
       </mesh>
-      {audioContext !== null ? <RemoteShipAudio ctx={audioContext} /> : null}
+      {audioContext !== null ? <RemoteShipAudio ctx={audioContext} state={audioState} /> : null}
     </group>
   );
 }

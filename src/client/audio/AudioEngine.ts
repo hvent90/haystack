@@ -1,6 +1,6 @@
 import { AlarmVoice } from "./alarm";
 import { applyMix, createBusGraph, type BusGraph } from "./buses";
-import { AmbienceVoice, MiningVoice } from "./continuous";
+import { MiningVoice } from "./continuous";
 import { createAudioContext, unlock } from "./context";
 import { EngineDrone } from "./drone";
 import { alarmTransition } from "./events";
@@ -44,7 +44,6 @@ export class AudioEngine {
   private ready = false;
   private drone: EngineDrone | null = null;
   private mining: MiningVoice | null = null;
-  private ambience: AmbienceVoice | null = null;
   private alarm: AlarmVoice | null = null;
   private lastHeat = 0;
 
@@ -67,7 +66,6 @@ export class AudioEngine {
     }
     this.drone = new EngineDrone(ctx, graph.buses.engine);
     this.mining = new MiningVoice(ctx, graph.buses.sfx);
-    this.ambience = new AmbienceVoice(ctx, graph.buses.sfx);
     this.alarm = new AlarmVoice(ctx, graph.buses.alarm);
     this.ready = true;
   }
@@ -77,7 +75,6 @@ export class AudioEngine {
     if (this.ctx !== null) {
       await unlock(this.ctx);
       this.drone?.start();
-      this.ambience?.start();
     }
   }
 
