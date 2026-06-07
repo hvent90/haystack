@@ -27,6 +27,7 @@
 ## Task 1: jsfxr-core → AudioBuffer helper
 
 **Files:**
+
 - Create: `src/client/audio/sfx/jsfxrCore.ts`
 
 - [ ] **Step 1: Implement the helper**
@@ -74,6 +75,7 @@ git commit -m "feat(audio): add jsfxr-core to AudioBuffer decode helper"
 ## Task 2: Add the seven one-shot recipes
 
 **Files:**
+
 - Modify: `src/client/audio/sfx/catalog.ts`
 
 - [ ] **Step 1: Add recipes**
@@ -256,6 +258,7 @@ git commit -m "feat(audio): add seven one-shot SFX recipes (UI family + ship + s
 ## Task 3: Register the sounds in the engine + render entry
 
 **Files:**
+
 - Modify: `src/client/audio/AudioEngine.ts`
 - Modify: `src/client/audio/renderEntry.ts`
 
@@ -327,6 +330,7 @@ git commit -m "feat(audio): register all one-shots in engine and render entry"
 ## Task 4: Verification — durations + non-silence for all sounds
 
 **Files:**
+
 - Modify: `tests/e2e/audio.ts`
 
 - [ ] **Step 1: Extend expected durations**
@@ -370,6 +374,7 @@ git commit -m "test(audio): verify all eight one-shots render non-silent at expe
 ## Task 5: Trigger the sounds at EveApp event sites
 
 **Files:**
+
 - Modify: `src/client/eve/EveApp.tsx`
 
 Wire `audio.engine.playOneShot(...)` into the existing handlers. Read each function first to confirm the anchor, then add the call as shown.
@@ -379,12 +384,12 @@ Wire `audio.engine.playOneShot(...)` into the existing handlers. Read each funct
 In `EveApp`, the selection setter is `setSelection` (a `useState` setter passed around). Add a wrapper `selectTarget` near the other handler functions and use it where a user actively selects a contact (the `onSelect` props on `WorldView`, `ScannerWindow`, and `ContextMenu`). Add:
 
 ```ts
-  function selectTarget(next: Selection | null): void {
-    if (next !== null) {
-      audio.engine.playOneShot("targetLock");
-    }
-    setSelection(next);
+function selectTarget(next: Selection | null): void {
+  if (next !== null) {
+    audio.engine.playOneShot("targetLock");
   }
+  setSelection(next);
+}
 ```
 
 Then replace `onSelect={setSelection}` with `onSelect={selectTarget}` on `WorldView` (line ~501), `ScannerWindow` (line ~564), and `ContextMenu` `onSelect` (line ~660). Leave internal/auto `setSelection` calls (e.g. inside `runScan`) untouched — those are not user selections.
@@ -394,7 +399,7 @@ Then replace `onSelect={setSelection}` with `onSelect={selectTarget}` on `WorldV
 In `runScan` (the `void withAction("scan", ...)` function), add as the first statement inside `runScan` (before `withAction`):
 
 ```ts
-    audio.engine.playOneShot("scanHonk");
+audio.engine.playOneShot("scanHonk");
 ```
 
 - [ ] **Step 3: boost on boost**
@@ -402,7 +407,7 @@ In `runScan` (the `void withAction("scan", ...)` function), add as the first sta
 In `sendBoostInput`, add as the first statement:
 
 ```ts
-    audio.engine.playOneShot("boost");
+audio.engine.playOneShot("boost");
 ```
 
 - [ ] **Step 4: chime on deploy/dock and sell**
@@ -410,7 +415,7 @@ In `sendBoostInput`, add as the first statement:
 In `deployHab`, add as the first statement:
 
 ```ts
-    audio.engine.playOneShot("chime");
+audio.engine.playOneShot("chime");
 ```
 
 - [ ] **Step 5: comms on new chat received**
@@ -418,10 +423,10 @@ In `deployHab`, add as the first statement:
 In the existing `useEffect` that tracks added chat messages (the one computing `added` from `previousChatIdsRef`), inside the `if (added.length === 0) { return; }` guard's fall-through (i.e., when `added.length > 0`), add — but only when the messages aren't from the local pilot to avoid self-blips:
 
 ```ts
-    const fromOthers = added.some((message) => message.fromPilotId !== session?.pilot.id);
-    if (fromOthers) {
-      audio.engine.playOneShot("comms");
-    }
+const fromOthers = added.some((message) => message.fromPilotId !== session?.pilot.id);
+if (fromOthers) {
+  audio.engine.playOneShot("comms");
+}
 ```
 
 Place this after `previousChatIdsRef.current = nextIds;` and the early return. Confirm `session` is in scope in that effect (it is — it's a component-level value).
@@ -431,13 +436,13 @@ Place this after `previousChatIdsRef.current = nextIds;` and the early return. C
 Stabilize is the `KeyX` flag in `buildFlightInput` (continuous input), not a discrete handler — wiring it cleanly needs an edge-detect that belongs in Plan 3's continuous path. For Plan 2, instead trigger `brake` from the HUD/Flight "stabilize"/all-stop button if one calls `setFlightThrottle(0, true)`. Add `audio.engine.playOneShot("brake");` as the first statement of `setFlightThrottle` ONLY when `value === 0` and `sendNow === true`:
 
 ```ts
-  function setFlightThrottle(value: number, sendNow = false): void {
-    if (value === 0 && sendNow) {
-      audio.engine.playOneShot("brake");
-    }
-    const next = clamp(value, -1, 1);
-    // ...rest unchanged
+function setFlightThrottle(value: number, sendNow = false): void {
+  if (value === 0 && sendNow) {
+    audio.engine.playOneShot("brake");
   }
+  const next = clamp(value, -1, 1);
+  // ...rest unchanged
+}
 ```
 
 - [ ] **Step 7: uiHover on Neocom buttons (optional polish)**
