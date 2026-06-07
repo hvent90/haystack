@@ -76,9 +76,13 @@ import type {
   WindowState,
 } from "./types";
 import { clamp } from "./vector";
+import { AudioControls } from "../audio/AudioControls";
+import { spatialMasterVolume } from "../audio/spatial";
+import { useAudio } from "../audio/useAudio";
 
 export function EveApp(): ReactNode {
   const [session, setSession] = useState<Session | null>(null);
+  const audio = useAudio();
   const [snapshot, setSnapshot] = useState<WorldSnapshot | null>(null);
   const [layout, setLayout] = useState<LayoutState>(() => createDefaultLayout());
   const [layoutLoadedFor, setLayoutLoadedFor] = useState<string | null>(null);
@@ -114,6 +118,7 @@ export function EveApp(): ReactNode {
   const oneShotRef = useRef<OneShotFlightInput>({ boost: false });
   const lastFlightActiveRef = useRef(false);
   const syncedFlightPilotRef = useRef<string | null>(null);
+  const myShipRef = useRef<Ship | null>(null);
   const previousChatIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -342,6 +347,16 @@ export function EveApp(): ReactNode {
       };
       mouseDeflectionRef.current = nextMouseDeflection;
       setMouseDeflection(nextMouseDeflection);
+      const ship = sessionRef.current === null ? null : myShipRef.current;
+      if (ship !== null) {
+        audio.engine.setEngineState({
+          throttle: ship.throttle,
+          boost: false,
+          heat: ship.heat,
+          cruiseLock: ship.cruiseLock,
+          speed: Math.hypot(ship.velocity.x, ship.velocity.y, ship.velocity.z),
+        });
+      }
     }, flightInputIntervalMs);
 
     window.addEventListener("keydown", keyDown);
@@ -370,6 +385,10 @@ export function EveApp(): ReactNode {
     }
     return snapshot.ships.find((ship) => ship.pilotId === session.pilot.id) ?? null;
   }, [snapshot, session]);
+
+  useEffect(() => {
+    myShipRef.current = myShip;
+  }, [myShip]);
 
   useEffect(() => {
     if (myShip === null || syncedFlightPilotRef.current === myShip.pilotId) {
@@ -456,6 +475,10 @@ export function EveApp(): ReactNode {
     if (added.length === 0) {
       return;
     }
+    const fromOthers = added.some((message) => message.fromPilotId !== session?.pilot.id);
+    if (fromOthers) {
+      audio.engine.playOneShot("comms");
+    }
     const commsOpen = layout.comms.open && focusedWindow === "comms";
     if (commsOpen) {
       setUnreadComms(0);
@@ -498,9 +521,11 @@ export function EveApp(): ReactNode {
         flightMode={flightMode}
         mouseDeflection={mouseDeflection}
         stageRef={stageRef}
-        onSelect={setSelection}
+        onSelect={selectTarget}
         onContextMenu={openContextMenu}
         onRequestFlightLock={requestFlightLock}
+        audioContext={audio.unlocked ? audio.engine.getContext() : null}
+        audioVolume={spatialMasterVolume(audio.mix)}
       />
 
       <TopRail
@@ -561,7 +586,7 @@ export function EveApp(): ReactNode {
                   onFilter={setOverviewFilter}
                   onScanMode={setScanMode}
                   onScan={() => runScan()}
-                  onSelect={setSelection}
+                  onSelect={selectTarget}
                   onContextMenu={openContextMenu}
                 />
               ) : definition.key === "cargo" ? (
@@ -658,7 +683,7 @@ export function EveApp(): ReactNode {
           row={contextMenuRow}
           markerActive={waypoint !== null}
           onClose={() => setContextMenu(null)}
-          onSelect={setSelection}
+          onSelect={selectTarget}
           onShowInfo={openShowInfo}
           onScan={(row) => runScan(row.kind === "asteroid" ? row.id : row.asteroidId)}
           onMine={() => contextMenuRow?.kind === "deposit" && mineDepositById(contextMenuRow.id)}
@@ -671,6 +696,7 @@ export function EveApp(): ReactNode {
           onInspectBase={openBases}
         />
       ) : null}
+      <AudioControls mix={audio.mix} unlocked={audio.unlocked} onChange={audio.setMix} />
     </main>
   );
 
@@ -734,6 +760,7 @@ export function EveApp(): ReactNode {
   }
 
   function toggleWindow(key: WindowKey): void {
+    audio.engine.playOneShot("uiClick");
     const nextOpen = !layout[key].open;
     patchWindow(key, { open: nextOpen, minimized: false });
     if (nextOpen) {
@@ -881,7 +908,17 @@ export function EveApp(): ReactNode {
     setKeyboardThrottle(Number(keys.has("KeyW")) - Number(keys.has("KeyS")));
   }
 
+  function selectTarget(next: Selection | null): void {
+    if (next !== null) {
+      audio.engine.playOneShot("targetLock");
+    }
+    setSelection(next);
+  }
+
   function setFlightThrottle(value: number, sendNow = false): void {
+    if (value === 0 && sendNow) {
+      audio.engine.playOneShot("brake");
+    }
     const next = clamp(value, -1, 1);
     setThrottle(next);
     flightStateRef.current = { ...flightStateRef.current, throttle: next };
@@ -904,11 +941,13 @@ export function EveApp(): ReactNode {
   }
 
   function sendBoostInput(): void {
+    audio.engine.playOneShot("boost");
     oneShotRef.current.boost = true;
     sendFlightInput(buildFlightInput(flightModeRef.current === "flight"));
   }
 
   function runScan(targetAsteroidId = selectedAsteroidId): void {
+    audio.engine.playOneShot("scanHonk");
     if (session === null) {
       return;
     }
@@ -934,10 +973,15 @@ export function EveApp(): ReactNode {
       return;
     }
     void withAction(`mine-${deposit.id}`, async () => {
-      await mine(session.pilot.id, {
-        asteroidId: deposit.asteroidId,
-        depositId: deposit.id,
-      });
+      audio.engine.setMining(true);
+      try {
+        await mine(session.pilot.id, {
+          asteroidId: deposit.asteroidId,
+          depositId: deposit.id,
+        });
+      } finally {
+        audio.engine.setMining(false);
+      }
     });
   }
 
@@ -965,6 +1009,7 @@ export function EveApp(): ReactNode {
   }
 
   function deployHab(): void {
+    audio.engine.playOneShot("chime");
     if (session === null) {
       return;
     }
