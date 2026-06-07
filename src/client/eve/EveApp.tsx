@@ -117,6 +117,7 @@ export function EveApp(): ReactNode {
   const oneShotRef = useRef<OneShotFlightInput>({ boost: false });
   const lastFlightActiveRef = useRef(false);
   const syncedFlightPilotRef = useRef<string | null>(null);
+  const myShipRef = useRef<Ship | null>(null);
   const previousChatIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -345,6 +346,16 @@ export function EveApp(): ReactNode {
       };
       mouseDeflectionRef.current = nextMouseDeflection;
       setMouseDeflection(nextMouseDeflection);
+      const ship = sessionRef.current === null ? null : myShipRef.current;
+      if (ship !== null) {
+        audio.engine.setEngineState({
+          throttle: ship.throttle,
+          boost: false,
+          heat: ship.heat,
+          cruiseLock: ship.cruiseLock,
+          speed: Math.hypot(ship.velocity.x, ship.velocity.y, ship.velocity.z),
+        });
+      }
     }, flightInputIntervalMs);
 
     window.addEventListener("keydown", keyDown);
@@ -373,6 +384,10 @@ export function EveApp(): ReactNode {
     }
     return snapshot.ships.find((ship) => ship.pilotId === session.pilot.id) ?? null;
   }, [snapshot, session]);
+
+  useEffect(() => {
+    myShipRef.current = myShip;
+  }, [myShip]);
 
   useEffect(() => {
     if (myShip === null || syncedFlightPilotRef.current === myShip.pilotId) {
@@ -955,10 +970,15 @@ export function EveApp(): ReactNode {
       return;
     }
     void withAction(`mine-${deposit.id}`, async () => {
-      await mine(session.pilot.id, {
-        asteroidId: deposit.asteroidId,
-        depositId: deposit.id,
-      });
+      audio.engine.setMining(true);
+      try {
+        await mine(session.pilot.id, {
+          asteroidId: deposit.asteroidId,
+          depositId: deposit.id,
+        });
+      } finally {
+        audio.engine.setMining(false);
+      }
     });
   }
 
