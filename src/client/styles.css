@@ -175,10 +175,21 @@ tr:focus-visible {
 }
 
 .velocity-vector {
-  border: 1px solid rgb(226 177 93 / 88%);
+  --flight-vector-rgb: 226 177 93;
+  --flight-vector-fill: transparent;
+
+  border: 1px solid rgb(var(--flight-vector-rgb) / 88%);
+  background: var(--flight-vector-fill);
   box-shadow:
     0 0 0 1px rgb(20 19 18 / 74%),
-    0 0 16px rgb(226 177 93 / 24%);
+    0 0 16px rgb(var(--flight-vector-rgb) / 24%);
+}
+
+.reverse-velocity-vector {
+  --flight-vector-rgb: 181 79 87;
+  --flight-vector-fill: rgb(48 16 20 / 34%);
+
+  border-style: dashed;
 }
 
 .velocity-vector::before,
@@ -189,7 +200,7 @@ tr:focus-visible {
 
 .velocity-vector::before {
   inset: 4px;
-  border: 1px solid rgb(226 177 93 / 58%);
+  border: 1px solid rgb(var(--flight-vector-rgb) / 58%);
 }
 
 .velocity-vector::after {
@@ -197,8 +208,13 @@ tr:focus-visible {
   top: 50%;
   width: 22px;
   height: 1px;
-  background: rgb(226 177 93 / 62%);
+  background: rgb(var(--flight-vector-rgb) / 62%);
   transform: translate(-50%, -50%) rotate(-45deg);
+}
+
+.reverse-velocity-vector::after {
+  width: 18px;
+  transform: translate(-50%, -50%) rotate(45deg);
 }
 
 .aim-delta-line {

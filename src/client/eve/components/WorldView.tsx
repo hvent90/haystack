@@ -108,6 +108,7 @@ export function WorldView({
       <div className="reticle" data-testid="hud-reticle" />
       <FlightVectorLayer
         velocityPoint={screenPoints["velocity"]}
+        reverseVelocityPoint={screenPoints["reverseVelocity"]}
         flightMode={flightMode}
         mouseDeflection={mouseDeflection}
       />
@@ -209,11 +210,26 @@ function SceneProjection({
     const speed = vectorMagnitude(myShip.velocity);
     if (speed > 0.35) {
       const projectionDistance = Math.max(1800, Math.min(14000, speed * 42));
+      const velocityDirection = {
+        x: myShip.velocity.x / speed,
+        y: myShip.velocity.y / speed,
+        z: myShip.velocity.z / speed,
+      };
       next["velocity"] = projectWorldPoint(
         {
-          x: myShip.position.x + (myShip.velocity.x / speed) * projectionDistance,
-          y: myShip.position.y + (myShip.velocity.y / speed) * projectionDistance,
-          z: myShip.position.z + (myShip.velocity.z / speed) * projectionDistance,
+          x: myShip.position.x + velocityDirection.x * projectionDistance,
+          y: myShip.position.y + velocityDirection.y * projectionDistance,
+          z: myShip.position.z + velocityDirection.z * projectionDistance,
+        },
+        myShip.position,
+        camera,
+        projected,
+      );
+      next["reverseVelocity"] = projectWorldPoint(
+        {
+          x: myShip.position.x - velocityDirection.x * projectionDistance,
+          y: myShip.position.y - velocityDirection.y * projectionDistance,
+          z: myShip.position.z - velocityDirection.z * projectionDistance,
         },
         myShip.position,
         camera,
@@ -235,10 +251,12 @@ function SceneProjection({
 
 function FlightVectorLayer({
   velocityPoint,
+  reverseVelocityPoint,
   flightMode,
   mouseDeflection,
 }: {
   velocityPoint: ScreenPoint | undefined;
+  reverseVelocityPoint: ScreenPoint | undefined;
   flightMode: FlightMode;
   mouseDeflection: { x: number; y: number; z: number };
 }): ReactNode {
@@ -259,6 +277,13 @@ function FlightVectorLayer({
           className="velocity-vector"
           data-testid="velocity-vector"
           style={{ left: `${velocityPoint.x}%`, top: `${velocityPoint.y}%` }}
+        />
+      ) : null}
+      {reverseVelocityPoint?.visible === true ? (
+        <div
+          className="velocity-vector reverse-velocity-vector"
+          data-testid="reverse-velocity-vector"
+          style={{ left: `${reverseVelocityPoint.x}%`, top: `${reverseVelocityPoint.y}%` }}
         />
       ) : null}
       {showAim ? (

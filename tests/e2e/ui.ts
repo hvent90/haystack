@@ -259,6 +259,8 @@ async function verifyHudAndFlight(page: Page, pilotId: string): Promise<void> {
   assert((await count(page, "[data-testid='hud-stabilize']")) === 1, "stabilize present");
   assert((await count(page, "[data-testid='hud-throttle']")) === 1, "throttle readout present");
 
+  await verifyFlightVectorPips(page, pilotId);
+
   const before = await world(pilotId);
   await page.getByTestId("hud-thrust-fwd").click();
   const after = await pollUntil(
@@ -271,6 +273,28 @@ async function verifyHudAndFlight(page: Page, pilotId: string): Promise<void> {
     10000,
   );
   assert(after.me !== null, "world still returns pilot scoped me");
+}
+
+async function verifyFlightVectorPips(page: Page, pilotId: string): Promise<void> {
+  await api(`/api/ships/${encodeURIComponent(pilotId)}/thrust`, {
+    method: "POST",
+    body: JSON.stringify({ impulse: { x: 0, y: 0, z: -8 }, frame: "world" }),
+  });
+  await page.waitForSelector("[data-testid='velocity-vector']");
+  assert(
+    (await page.getByTestId("velocity-vector").boundingBox()) !== null,
+    "velocity vector pip visible",
+  );
+
+  await api(`/api/ships/${encodeURIComponent(pilotId)}/thrust`, {
+    method: "POST",
+    body: JSON.stringify({ impulse: { x: 0, y: 0, z: 12 }, frame: "world" }),
+  });
+  await page.waitForSelector("[data-testid='reverse-velocity-vector']");
+  assert(
+    (await page.getByTestId("reverse-velocity-vector").boundingBox()) !== null,
+    "reverse velocity vector pip visible",
+  );
 }
 
 async function verifyCoreWindows(page: Page): Promise<void> {
