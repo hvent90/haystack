@@ -77,6 +77,7 @@ import type {
 } from "./types";
 import { clamp } from "./vector";
 import { AudioControls } from "../audio/AudioControls";
+import { spatialMasterVolume } from "../audio/spatial";
 import { useAudio } from "../audio/useAudio";
 
 export function EveApp(): ReactNode {
@@ -523,6 +524,8 @@ export function EveApp(): ReactNode {
         onSelect={selectTarget}
         onContextMenu={openContextMenu}
         onRequestFlightLock={requestFlightLock}
+        audioContext={audio.unlocked ? audio.engine.getContext() : null}
+        audioVolume={spatialMasterVolume(audio.mix)}
       />
 
       <TopRail

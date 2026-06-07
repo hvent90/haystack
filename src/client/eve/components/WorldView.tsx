@@ -12,6 +12,7 @@ import type { Asteroid, Quaternion, Ship, Structure } from "../../../shared/type
 import type { FlightMode, OverviewRow, Selection, Waypoint } from "../types";
 import { formatDistance, toScene, vectorMagnitude } from "../vector";
 import { sameSelection } from "../overview";
+import { AudioListenerRig, RemoteShipAudio } from "./SpatialAudio";
 
 type ScreenPoint = {
   x: number;
@@ -33,6 +34,8 @@ export function WorldView({
   onSelect,
   onContextMenu,
   onRequestFlightLock,
+  audioContext,
+  audioVolume,
 }: {
   rows: OverviewRow[];
   asteroids: Asteroid[];
@@ -47,6 +50,8 @@ export function WorldView({
   onSelect: (selection: Selection) => void;
   onContextMenu: (event: ReactMouseEvent<HTMLElement>, target: Selection | null) => void;
   onRequestFlightLock: () => void;
+  audioContext: AudioContext | null;
+  audioVolume: number;
 }): ReactNode {
   const bracketRows = useMemo(
     () => rows.filter((row) => row.position !== null).slice(0, 32),
@@ -80,18 +85,25 @@ export function WorldView({
         <color attach="background" args={["#10100f"]} />
         <ambientLight intensity={0.62} />
         <pointLight position={[8, 12, 10]} intensity={1.4} color="#f5c16f" />
-        <group>
-          <GridStars />
-          <InstancedAsteroids asteroids={asteroids} origin={myShip.position} />
-          {structures.map((structure) => (
-            <StructureMesh key={structure.id} structure={structure} origin={myShip.position} />
-          ))}
-          {ships
-            .filter((ship) => ship.pilotId !== myShip.pilotId)
-            .map((ship) => (
-              <OtherShipMesh key={ship.pilotId} ship={ship} origin={myShip.position} />
+        <ConditionalListenerRig ctx={audioContext} volume={audioVolume}>
+          <group>
+            <GridStars />
+            <InstancedAsteroids asteroids={asteroids} origin={myShip.position} />
+            {structures.map((structure) => (
+              <StructureMesh key={structure.id} structure={structure} origin={myShip.position} />
             ))}
-        </group>
+            {ships
+              .filter((ship) => ship.pilotId !== myShip.pilotId)
+              .map((ship) => (
+                <OtherShipMesh
+                  key={ship.pilotId}
+                  ship={ship}
+                  origin={myShip.position}
+                  audioContext={audioContext}
+                />
+              ))}
+          </group>
+        </ConditionalListenerRig>
       </Canvas>
       <div className="reticle" data-testid="hud-reticle" />
       <FlightVectorLayer
@@ -377,19 +389,43 @@ function StructureMesh({
   );
 }
 
+function ConditionalListenerRig({
+  ctx,
+  volume,
+  children,
+}: {
+  ctx: AudioContext | null;
+  volume: number;
+  children: ReactNode;
+}): ReactNode {
+  if (ctx === null) {
+    return <>{children}</>;
+  }
+  return (
+    <AudioListenerRig ctx={ctx} volume={volume}>
+      {children}
+    </AudioListenerRig>
+  );
+}
+
 function OtherShipMesh({
   ship,
   origin,
+  audioContext,
 }: {
   ship: Ship;
   origin: { x: number; y: number; z: number };
+  audioContext: AudioContext | null;
 }): ReactNode {
   const position = toScene(ship.position, origin);
   return (
-    <mesh position={[position.x, position.y, position.z]} scale={[0.08, 0.08, 0.08]}>
-      <coneGeometry args={[0.6, 1.4, 4]} />
-      <meshStandardMaterial color="#b54f57" roughness={0.7} />
-    </mesh>
+    <group position={[position.x, position.y, position.z]}>
+      <mesh scale={[0.08, 0.08, 0.08]}>
+        <coneGeometry args={[0.6, 1.4, 4]} />
+        <meshStandardMaterial color="#b54f57" roughness={0.7} />
+      </mesh>
+      {audioContext !== null ? <RemoteShipAudio ctx={audioContext} /> : null}
+    </group>
   );
 }
 
