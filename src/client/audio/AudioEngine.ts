@@ -4,6 +4,7 @@ import { MiningVoice } from "./continuous";
 import { createAudioContext, unlock } from "./context";
 import { EngineDrone } from "./drone";
 import { alarmTransition } from "./events";
+import { RcsNozzle } from "./nozzle";
 import { defaultMix, type MixState } from "./mix";
 import {
   boost,
@@ -43,6 +44,7 @@ export class AudioEngine {
   private readonly bank = new Map<OneShotId, AudioBuffer>();
   private ready = false;
   private drone: EngineDrone | null = null;
+  private nozzle: RcsNozzle | null = null;
   private mining: MiningVoice | null = null;
   private alarm: AlarmVoice | null = null;
   private lastHeat = 0;
@@ -65,6 +67,7 @@ export class AudioEngine {
       this.bank.set(id, await renderOneShot(entry.spec));
     }
     this.drone = new EngineDrone(ctx, graph.buses.engine);
+    this.nozzle = new RcsNozzle(ctx, graph.buses.engine);
     this.mining = new MiningVoice(ctx, graph.buses.sfx);
     this.alarm = new AlarmVoice(ctx, graph.buses.alarm);
     this.ready = true;
@@ -75,11 +78,13 @@ export class AudioEngine {
     if (this.ctx !== null) {
       await unlock(this.ctx);
       this.drone?.start();
+      this.nozzle?.start();
     }
   }
 
   setEngineState(state: EngineState): void {
     this.drone?.setState(state);
+    this.nozzle?.setState(state);
     const transition = alarmTransition(this.lastHeat, state.heat);
     if (transition === "on") {
       this.alarm?.setActive(true);
