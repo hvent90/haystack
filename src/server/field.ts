@@ -20,9 +20,9 @@ type QueryResult = {
 };
 
 const fieldSeed = 424242;
-const cellSize = 6000;
+const cellSize = 1130; // ~6000 / ∛150 for 150x asteroid density
 const cellsPerAxis = 100;
-const renderedLimit = 72;
+const renderedLimit = 2000;
 const originOffset = -(cellsPerAxis * cellSize) / 2;
 const minerals: Mineral[] = ["nickel", "waterIce", "cobalt", "silicates", "platinum", "xenotime"];
 
@@ -41,7 +41,7 @@ export function queryVirtualAsteroids(
   radius: number,
   limit = renderedLimit,
 ): QueryResult {
-  const boundedRadius = Math.max(cellSize, Math.min(radius, cellSize * 12));
+  const boundedRadius = Math.max(cellSize, Math.min(radius, cellSize * 120));
   const min = worldToCell({
     x: origin.x - boundedRadius,
     y: origin.y - boundedRadius,

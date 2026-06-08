@@ -861,7 +861,7 @@ function listAsteroids(db: HaystackDb, pilotId: string | null): Asteroid[] {
   });
   const virtualAsteroids = queryVirtualAsteroids(
     ship.position,
-    52000,
+    520000,
     fieldSummary().renderedLimit,
   ).asteroids;
   return [...seededAsteroids, ...virtualAsteroids];

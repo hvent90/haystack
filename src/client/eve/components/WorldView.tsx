@@ -113,7 +113,7 @@ export function WorldView({
     >
       <Canvas
         data-testid="world-canvas"
-        camera={{ position: [0, 0.12, 0], fov: 68, near: 0.01, far: 2000 }}
+        camera={{ position: [0, 0.12, 0], fov: 68, near: 0.01, far: 20000 }}
         dpr={[1, 1.5]}
       >
         <RenderDriver fallbackShip={myShip} />
@@ -1030,8 +1030,9 @@ function InstancedAsteroids({
     asteroids.forEach((asteroid, index) => {
       const position = toScene(asteroid.position, origin);
       const size = Math.max(0.04, asteroid.radius / 1000);
+      const seed = asteroid.id.split("-").slice(1).reduce((a, b) => a + Number(b) * 7919, 0);
       transform.position.set(position.x, position.y, position.z);
-      transform.rotation.set(index * 0.43, index * 0.27, 0);
+      transform.rotation.set(seed * 0.43, seed * 0.27, seed * 0.17);
       transform.scale.set(size, size, size);
       transform.updateMatrix();
       mesh.setMatrixAt(index, transform.matrix);
@@ -1044,7 +1045,7 @@ function InstancedAsteroids({
   }
 
   return (
-    <instancedMesh ref={meshRef} args={[undefined, undefined, asteroids.length]}>
+    <instancedMesh ref={meshRef} args={[undefined, undefined, 2000]}>
       <dodecahedronGeometry args={[1, 0]} />
       <meshStandardMaterial color="#6f6a60" roughness={0.96} />
     </instancedMesh>
