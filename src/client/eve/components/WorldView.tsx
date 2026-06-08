@@ -1,6 +1,6 @@
 import { Canvas, useFrame } from "@react-three/fiber";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode, RefObject } from "react";
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Object3D,
   Quaternion as ThreeQuaternion,
@@ -8,12 +8,20 @@ import {
   type Camera,
   type InstancedMesh,
 } from "three";
-import type { Asteroid, Quaternion, Ship, Structure } from "../../../shared/types";
+import type { Asteroid, Ship, Structure, Vector3 } from "../../../shared/types";
 import type { FlightMode, OverviewRow, Selection, Waypoint } from "../types";
 import { flightInputScaleMax, flightInputScaleMin } from "../constants";
 import { clamp, formatDistance, toScene, vectorMagnitude } from "../vector";
 import { sameSelection } from "../overview";
+import { flightRenderStore } from "../renderStore";
 import { AudioListenerRig, RemoteShipAudio } from "./SpatialAudio";
+
+// Live owned-ship origin used to position every world object relative to the
+// camera. Read from the render store (smoothed, 60fps) when seeded, otherwise
+// the latest React snapshot value.
+function renderOrigin(fallback: Vector3): Vector3 {
+  return flightRenderStore.hasOwned() ? flightRenderStore.ownedRenderPosition() : fallback;
+}
 
 type ScreenPoint = {
   x: number;
@@ -78,7 +86,7 @@ export function WorldView({
         camera={{ position: [0, 0.12, 0], fov: 68, near: 0.01, far: 2000 }}
         dpr={[1, 1.5]}
       >
-        <ShipFirstPersonCamera orientation={myShip.orientation} />
+        <RenderDriver fallbackShip={myShip} />
         <SceneProjection
           rows={bracketRows}
           myShip={myShip}
@@ -91,9 +99,13 @@ export function WorldView({
         <ConditionalListenerRig ctx={audioContext} volume={audioVolume}>
           <group>
             <GridStars />
-            <InstancedAsteroids asteroids={asteroids} origin={myShip.position} />
+            <InstancedAsteroids asteroids={asteroids} fallbackOrigin={myShip.position} />
             {structures.map((structure) => (
-              <StructureMesh key={structure.id} structure={structure} origin={myShip.position} />
+              <StructureMesh
+                key={structure.id}
+                structure={structure}
+                fallbackOrigin={myShip.position}
+              />
             ))}
             {ships
               .filter((ship) => ship.pilotId !== myShip.pilotId)
@@ -101,7 +113,7 @@ export function WorldView({
                 <OtherShipMesh
                   key={ship.pilotId}
                   ship={ship}
-                  origin={myShip.position}
+                  fallbackOrigin={myShip.position}
                   audioContext={audioContext}
                 />
               ))}
@@ -203,15 +215,16 @@ function SceneProjection({
   const lastSignature = useRef("");
 
   useFrame(({ camera }) => {
+    const origin = renderOrigin(myShip.position);
     const next: Record<string, ScreenPoint> = {};
     for (const row of rows) {
       if (row.position === null) {
         continue;
       }
-      next[row.key] = projectWorldPoint(row.position, myShip.position, camera, projected);
+      next[row.key] = projectWorldPoint(row.position, origin, camera, projected);
     }
     if (waypoint !== null) {
-      next["waypoint"] = projectWorldPoint(waypoint.position, myShip.position, camera, projected);
+      next["waypoint"] = projectWorldPoint(waypoint.position, origin, camera, projected);
     }
     const speed = vectorMagnitude(myShip.velocity);
     if (speed > 0.35) {
@@ -223,21 +236,21 @@ function SceneProjection({
       };
       next["velocity"] = projectWorldPoint(
         {
-          x: myShip.position.x + velocityDirection.x * projectionDistance,
-          y: myShip.position.y + velocityDirection.y * projectionDistance,
-          z: myShip.position.z + velocityDirection.z * projectionDistance,
+          x: origin.x + velocityDirection.x * projectionDistance,
+          y: origin.y + velocityDirection.y * projectionDistance,
+          z: origin.z + velocityDirection.z * projectionDistance,
         },
-        myShip.position,
+        origin,
         camera,
         projected,
       );
       next["reverseVelocity"] = projectWorldPoint(
         {
-          x: myShip.position.x - velocityDirection.x * projectionDistance,
-          y: myShip.position.y - velocityDirection.y * projectionDistance,
-          z: myShip.position.z - velocityDirection.z * projectionDistance,
+          x: origin.x - velocityDirection.x * projectionDistance,
+          y: origin.y - velocityDirection.y * projectionDistance,
+          z: origin.z - velocityDirection.z * projectionDistance,
         },
-        myShip.position,
+        origin,
         camera,
         projected,
       );
@@ -471,17 +484,31 @@ function projectWorldPoint(
   };
 }
 
-function ShipFirstPersonCamera({ orientation }: { orientation: Quaternion }): null {
+// First child in the scene: advances the render store once per frame (must run
+// before any consumer samples it), drives the first-person camera from the
+// smoothed owned orientation, and exposes the rendered origin for measurement.
+function RenderDriver({ fallbackShip }: { fallbackShip: Ship }): null {
   const cockpit = useMemo(() => new ThreeVector3(0, 0.12, 0), []);
   const cockpitWorld = useMemo(() => new ThreeVector3(), []);
   const quaternion = useMemo(() => new ThreeQuaternion(), []);
 
-  useFrame(({ camera }) => {
+  useFrame(({ camera }, delta) => {
+    flightRenderStore.advance(delta);
+    const orientation = flightRenderStore.hasOwned()
+      ? flightRenderStore.ownedRenderQuaternion()
+      : fallbackShip.orientation;
     quaternion.set(orientation.x, orientation.y, orientation.z, orientation.w).normalize();
     cockpitWorld.copy(cockpit).applyQuaternion(quaternion);
     camera.position.copy(cockpitWorld);
     camera.quaternion.copy(quaternion);
     camera.updateProjectionMatrix();
+
+    if (typeof window !== "undefined") {
+      const origin = renderOrigin(fallbackShip.position);
+      (window as unknown as { __probe?: { owned: Vector3 } }).__probe = {
+        owned: { x: origin.x, y: origin.y, z: origin.z },
+      };
+    }
   });
 
   return null;
@@ -489,20 +516,20 @@ function ShipFirstPersonCamera({ orientation }: { orientation: Quaternion }): nu
 
 function InstancedAsteroids({
   asteroids,
-  origin,
+  fallbackOrigin,
 }: {
   asteroids: Asteroid[];
-  origin: { x: number; y: number; z: number };
+  fallbackOrigin: Vector3;
 }): ReactNode {
   const meshRef = useRef<InstancedMesh>(null);
   const transform = useMemo(() => new Object3D(), []);
 
-  useLayoutEffect(() => {
+  useFrame(() => {
     const mesh = meshRef.current;
     if (mesh === null) {
       return;
     }
-
+    const origin = renderOrigin(fallbackOrigin);
     asteroids.forEach((asteroid, index) => {
       const position = toScene(asteroid.position, origin);
       const size = Math.max(0.04, asteroid.radius / 1000);
@@ -513,7 +540,7 @@ function InstancedAsteroids({
       mesh.setMatrixAt(index, transform.matrix);
     });
     mesh.instanceMatrix.needsUpdate = true;
-  }, [asteroids, origin, transform]);
+  });
 
   if (asteroids.length === 0) {
     return null;
@@ -529,16 +556,26 @@ function InstancedAsteroids({
 
 function StructureMesh({
   structure,
-  origin,
+  fallbackOrigin,
 }: {
   structure: Structure;
-  origin: { x: number; y: number; z: number };
+  fallbackOrigin: Vector3;
 }): ReactNode {
-  const position = toScene(structure.position, origin);
+  const groupRef = useRef<Object3D>(null);
   const scale: [number, number, number] =
     structure.kind === "station" ? [0.26, 0.08, 0.26] : [0.11, 0.17, 0.11];
+
+  useFrame(() => {
+    const group = groupRef.current;
+    if (group === null) {
+      return;
+    }
+    const position = toScene(structure.position, renderOrigin(fallbackOrigin));
+    group.position.set(position.x, position.y, position.z);
+  });
+
   return (
-    <group position={[position.x, position.y, position.z]}>
+    <group ref={groupRef}>
       <mesh scale={scale}>
         <boxGeometry />
         <meshStandardMaterial color={structure.hidden ? "#5b725e" : "#b58b55"} roughness={0.74} />
@@ -572,17 +609,14 @@ function ConditionalListenerRig({
 
 function OtherShipMesh({
   ship,
-  origin,
+  fallbackOrigin,
   audioContext,
 }: {
   ship: Ship;
-  origin: { x: number; y: number; z: number };
+  fallbackOrigin: Vector3;
   audioContext: AudioContext | null;
 }): ReactNode {
   const groupRef = useRef<Object3D>(null);
-  const targetPosition = useMemo(() => new ThreeVector3(), []);
-  const targetQuaternion = useMemo(() => new ThreeQuaternion(), []);
-  const initialized = useRef(false);
   const audioState = useMemo(
     () => ({
       throttle: ship.throttle,
@@ -592,28 +626,25 @@ function OtherShipMesh({
     [ship.heat, ship.throttle, ship.velocity.x, ship.velocity.y, ship.velocity.z],
   );
 
-  useFrame((_state, delta) => {
+  useEffect(() => {
+    const pilotId = ship.pilotId;
+    return () => flightRenderStore.removeRemote(pilotId);
+  }, [ship.pilotId]);
+
+  useFrame(() => {
     const group = groupRef.current;
     if (group === null) {
       return;
     }
-
-    const position = toScene(ship.position, origin);
-    targetPosition.set(position.x, position.y, position.z);
-    targetQuaternion
-      .set(ship.orientation.x, ship.orientation.y, ship.orientation.z, ship.orientation.w)
-      .normalize();
-
-    if (!initialized.current) {
-      group.position.copy(targetPosition);
-      group.quaternion.copy(targetQuaternion);
-      initialized.current = true;
-      return;
-    }
-
-    const alpha = Math.min(1, delta * 8);
-    group.position.lerp(targetPosition, alpha);
-    group.quaternion.slerp(targetQuaternion, alpha);
+    // Position/orientation come from the interpolation buffer (smooth between
+    // authoritative snapshots on the server-time clock); fall back to the latest
+    // snapshot value until the buffer has data.
+    const sample = flightRenderStore.sampleRemote(ship.pilotId);
+    const worldPosition = sample !== null ? sample.position : ship.position;
+    const orientation = sample !== null ? sample.orientation : ship.orientation;
+    const position = toScene(worldPosition, renderOrigin(fallbackOrigin));
+    group.position.set(position.x, position.y, position.z);
+    group.quaternion.set(orientation.x, orientation.y, orientation.z, orientation.w).normalize();
   });
 
   return (

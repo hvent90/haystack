@@ -69,6 +69,7 @@ import {
   OwnedShipPrediction,
   replaceOwnedShip,
 } from "./prediction";
+import { flightRenderStore } from "./renderStore";
 import type {
   ChatChannel,
   ContextMenuState,
@@ -131,6 +132,7 @@ export function EveApp(): ReactNode {
   const syncedFlightPilotRef = useRef<string | null>(null);
   const myShipRef = useRef<Ship | null>(null);
   const previousChatIdsRef = useRef<Set<string>>(new Set());
+  const predictCommitRef = useRef(0);
 
   useEffect(() => {
     sessionRef.current = session;
@@ -187,9 +189,13 @@ export function EveApp(): ReactNode {
         switch (message.type) {
           case "hello":
             resetPredictionFromSnapshot(message.snapshot, session.pilot.id);
+            pushRemotesToStore(message.snapshot.ships, session.pilot.id, message.serverTimeMs);
             setSnapshot(message.snapshot);
             return;
           case "delta":
+            if (message.patch.ships !== undefined) {
+              pushRemotesToStore(message.patch.ships, session.pilot.id, message.serverTimeMs);
+            }
             setSnapshot((current) => {
               if (current === null) {
                 return current;
@@ -200,6 +206,7 @@ export function EveApp(): ReactNode {
                   message.patch.ships.find((ship) => ship.pilotId === session.pilot.id) ?? null;
                 if (ownedShip !== null) {
                   predictionRef.current.reset(ownedShip);
+                  flightRenderStore.resetOwned(ownedShip);
                 }
               }
               return mergeWorldPatchForOwnedPrediction(
@@ -210,15 +217,19 @@ export function EveApp(): ReactNode {
               );
             });
             return;
-          case "ack":
-            setSnapshot((current) => {
-              if (current === null) {
-                return current;
-              }
-              const outcome = predictionRef.current.reconcile(message.ackClientTick, message.ship);
-              return replaceOwnedShip(current, session.pilot.id, outcome.ship);
-            });
+          case "ack": {
+            // Reconcile against the authoritative ship and fold any correction
+            // into the render store's decaying error (smooth) rather than
+            // snapping. React state is refreshed by the throttled predicted
+            // commit + deltas, so no per-ack setSnapshot is needed here.
+            const outcome = predictionRef.current.reconcile(message.ackClientTick, message.ship);
+            if (outcome.corrected) {
+              flightRenderStore.correctOwned(outcome.ship);
+            } else {
+              flightRenderStore.setOwnedPredicted(outcome.ship);
+            }
             return;
+          }
           case "error":
             setError(message.message);
             return;
@@ -432,6 +443,7 @@ export function EveApp(): ReactNode {
     }
     syncedFlightPilotRef.current = myShip.pilotId;
     predictionRef.current.reset(myShip);
+    flightRenderStore.resetOwned(myShip);
     setThrottle(myShip.throttle);
     setCruiseLock(myShip.cruiseLock);
   }, [myShip]);
@@ -767,6 +779,7 @@ export function EveApp(): ReactNode {
     const ownedShip = world.ships.find((ship) => ship.pilotId === pilotId) ?? null;
     if (ownedShip !== null) {
       predictionRef.current.reset(ownedShip);
+      flightRenderStore.resetOwned(ownedShip);
     }
   }
 
@@ -777,6 +790,16 @@ export function EveApp(): ReactNode {
     const ownedShip = myShipRef.current;
     if (ownedShip !== null && ownedShip.pilotId === pilotId) {
       predictionRef.current.reset(ownedShip);
+      flightRenderStore.resetOwned(ownedShip);
+    }
+  }
+
+  function pushRemotesToStore(ships: Ship[], ownPilotId: string, serverTimeMs: number): void {
+    for (const ship of ships) {
+      if (ship.pilotId === ownPilotId) {
+        continue;
+      }
+      flightRenderStore.pushRemote(ship.pilotId, serverTimeMs, ship.position, ship.orientation);
     }
   }
 
@@ -900,9 +923,18 @@ export function EveApp(): ReactNode {
     if (predicted === null) {
       return true;
     }
-    setSnapshot((current) =>
-      current === null ? current : replaceOwnedShip(current, pilotId, predicted.ship),
-    );
+    // The render store drives the 60fps owned-ship/camera transform every frame.
+    flightRenderStore.setOwnedPredicted(predicted.ship);
+    // Refresh React state (HUD, overview, data attributes) from the prediction
+    // at ~20Hz instead of every input frame. Rendering no longer depends on
+    // these commits, so this keeps the UI fresh without flooding the main thread
+    // with re-renders that previously starved the animation loop.
+    predictCommitRef.current += 1;
+    if (predictCommitRef.current % 3 === 0) {
+      setSnapshot((current) =>
+        current === null ? current : replaceOwnedShip(current, pilotId, predicted.ship),
+      );
+    }
     return true;
   }
 

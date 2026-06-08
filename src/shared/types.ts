@@ -258,17 +258,20 @@ export type WorldStreamServerMessage =
       protocol: "haystack.world.v1";
       peerId: string;
       tick: number;
+      serverTimeMs: number;
       snapshot: WorldSnapshot;
     }
   | {
       type: "delta";
       tick: number;
+      serverTimeMs: number;
       changed: WorldSnapshotKey[];
       patch: WorldSnapshotPatch;
     }
   | {
       type: "ack";
       tick: number;
+      serverTimeMs: number;
       ackClientTick: number;
       clientTick: number;
       ship: Ship;

@@ -303,12 +303,23 @@ export class ServerWorld {
     return this.applyCommand(pilotId, command);
   }
 
-  applyCommand(pilotId: string, command: ThrustCommand | FlightInputCommand): Ship {
-    this.advanceToNow();
+  applyCommand(
+    pilotId: string,
+    command: ThrustCommand | FlightInputCommand,
+    nowMs = Date.now(),
+  ): Ship {
+    this.advanceToNow(nowMs);
     this.pendingInputs.push({ pilotId, command });
     this.tick();
+    // The forced tick above applies this input immediately (so the ack/REST
+    // response reflects it). Charge that step against the wall-clock accumulator
+    // so the background sim loop does not integrate the same fixed step again —
+    // otherwise per-frame input doubles the effective tick rate (~120Hz vs the
+    // client's predicted 60Hz), driving constant reconciliation snaps. Bounded
+    // so a burst of inputs only briefly defers the background loop afterwards.
+    this.accumulator = Math.max(this.accumulator - this.fixedDt, -this.fixedDt * 3);
     this.persistShips();
-    this.persistLastTick(Date.now());
+    this.persistLastTick(nowMs);
     const ship = this.shipActors.get(pilotId);
     if (ship === undefined) {
       throw new Error("Ship not found.");

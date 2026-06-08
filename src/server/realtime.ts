@@ -47,11 +47,18 @@ export class WorldStream {
 
   constructor(private readonly world: ServerWorld) {}
 
-  start(hz = 8): void {
+  start(hz = 30): void {
     if (this.timer !== null) {
       return;
     }
-    this.timer = setInterval(() => this.publishAll(), Math.max(50, 1000 / hz));
+    this.timer = setInterval(() => this.publishAll(), Math.max(10, 1000 / hz));
+  }
+
+  // Monotonic, deterministic broadcast clock derived from the fixed-step sim
+  // time. Clients interpolate remote entities against this evenly-spaced
+  // timeline rather than wall-clock arrival times.
+  private serverTimeMs(): number {
+    return this.world.simTime * 1000;
   }
 
   stop(): void {
@@ -154,6 +161,7 @@ export class WorldStream {
       protocol: "haystack.world.v1",
       peerId: peer.id,
       tick: this.currentTick,
+      serverTimeMs: this.serverTimeMs(),
       snapshot,
     });
   }
@@ -171,16 +179,18 @@ export class WorldStream {
 
     const ship = this.world.applyCommand(message.pilotId, message.command);
     this.currentTick += 1;
+    // Ack the sender immediately so owned-ship reconciliation stays responsive.
+    // Remote peers learn about this movement on the next regular broadcast tick
+    // (publishAll), keeping snapshot arrival evenly spaced for interpolation
+    // instead of bursting a full snapshot to everyone on every input frame.
     this.sendAck(peer, message.clientTick, ship);
-    for (const nextPeer of this.peers.values()) {
-      this.flushPeer(nextPeer);
-    }
   }
 
   private sendAck(peer: WorldPeer, clientTick: number, ship: Ship): void {
     this.send(peer, {
       type: "ack",
       tick: this.currentTick,
+      serverTimeMs: this.serverTimeMs(),
       ackClientTick: clientTick,
       clientTick,
       ship,
@@ -203,6 +213,7 @@ export class WorldStream {
     this.send(peer, {
       type: "delta",
       tick: this.currentTick,
+      serverTimeMs: this.serverTimeMs(),
       changed,
       patch: createPatch(snapshot, changed),
     });

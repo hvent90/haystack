@@ -396,6 +396,7 @@ describe("haystack server", () => {
     const hauler = await createPilot("Verifier WS Hauler");
     const serverWorld = getServerWorld(requireWorld().db);
     const worldStream = new WorldStream(serverWorld);
+    worldStream.start(30);
     const streamApp = createApp({ db: requireWorld().db, world: serverWorld, worldStream });
     const server = Bun.serve({
       port: 0,
@@ -453,6 +454,67 @@ describe("haystack server", () => {
         haulerStream.socket.close();
       }
     } finally {
+      worldStream.stop();
+      server.stop(true);
+    }
+  });
+
+  test("broadcasts timer deltas stamped with a monotonic server clock", async () => {
+    const pilot = await createPilot("Verifier Clock");
+    const serverWorld = getServerWorld(requireWorld().db);
+    const worldStream = new WorldStream(serverWorld);
+    worldStream.start(30);
+    const streamApp = createApp({ db: requireWorld().db, world: serverWorld, worldStream });
+    const server = Bun.serve({ port: 0, fetch: streamApp.fetch, websocket });
+
+    try {
+      const stream = await connectWorldSocket(
+        `ws://127.0.0.1:${server.port}/api/world/stream?pilotId=${pilot.id}`,
+      );
+      try {
+        const hello = await stream.waitFor((message) => message.type === "hello");
+        if (hello.type !== "hello") {
+          throw new Error("Expected stream hello.");
+        }
+        expect(typeof hello.serverTimeMs).toBe("number");
+
+        stream.socket.send(
+          JSON.stringify({
+            type: "input",
+            pilotId: pilot.id,
+            clientTick: 5,
+            command: {
+              kind: "flight",
+              throttle: 1,
+              active: true,
+              strafe: { x: 0, y: 0, z: 0 },
+              rotation: { x: 0, y: 0, z: 0 },
+            },
+          }),
+        );
+        const ack = await stream.waitFor(
+          (message) => message.type === "ack" && message.clientTick === 5,
+        );
+        if (ack.type !== "ack") {
+          throw new Error("Expected stream acknowledgement.");
+        }
+        expect(typeof ack.serverTimeMs).toBe("number");
+
+        // The delta is produced by the regular broadcast timer (no per-input
+        // flush), and its clock advances past the hello clock so the client can
+        // interpolate remote entities on a monotonic timeline.
+        const delta = await stream.waitFor(
+          (message) =>
+            message.type === "delta" &&
+            typeof message.serverTimeMs === "number" &&
+            message.serverTimeMs > hello.serverTimeMs,
+        );
+        expect(delta.type).toBe("delta");
+      } finally {
+        stream.socket.close();
+      }
+    } finally {
+      worldStream.stop();
       server.stop(true);
     }
   });
@@ -721,6 +783,39 @@ describe("haystack server", () => {
       "cargoMass",
     ]);
     expect(payload.engine.lastCapture[pilot.id]?.vel?.x).toBeGreaterThan(0);
+  });
+
+  test("integrates one fixed tick per frame when inputs and the sim loop overlap", async () => {
+    const pilot = await createPilot("Verifier Tick Rate");
+    const serverWorld = getServerWorld(requireWorld().db);
+    const command = {
+      kind: "flight" as const,
+      throttle: 1,
+      active: true,
+      strafe: { x: 0, y: 0, z: 0 },
+      rotation: { x: 0, y: 0, z: 0 },
+    };
+
+    const frameMs = 1000 / 60;
+    let now = 5_000_000;
+    serverWorld.advanceToNow(now); // prime lastWallMs without integrating
+    const startTick = serverWorld.currentTick;
+
+    // Simulate one wall-clock second of a 60Hz sim timer interleaved with 60Hz
+    // client input. Both the timer and applyCommand advance the same world, so a
+    // naive forced tick per input double-integrates (~120 steps). A correct
+    // fixed-step loop yields ~60 steps for one second of wall-clock.
+    const frames = 60;
+    for (let frame = 0; frame < frames; frame += 1) {
+      now += frameMs / 2;
+      serverWorld.advanceToNow(now); // 60Hz sim timer fire
+      now += frameMs / 2;
+      serverWorld.applyCommand(pilot.id, command, now); // 60Hz client input
+    }
+
+    const ticks = serverWorld.currentTick - startTick;
+    expect(ticks).toBeGreaterThanOrEqual(54);
+    expect(ticks).toBeLessThanOrEqual(72);
   });
 
   test("deploys a hidden player HAB that persists in shared world visibility", async () => {

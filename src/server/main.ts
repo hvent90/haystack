@@ -11,7 +11,7 @@ const db = openDatabase();
 const world = getServerWorld(db);
 world.start();
 const worldStream = new WorldStream(world);
-worldStream.start();
+worldStream.start(30);
 const app = createApp({ db, world, worldStream });
 
 Bun.serve({
