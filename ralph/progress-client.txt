@@ -81,3 +81,26 @@
 - Files changed: src/client/eve/components/WorldView.tsx | verify: typecheck GREEN, format GREEN (touched files), parity GREEN (0/7 divergence), integration 54 pass / 1 PRE-EXISTING fail (million-scale diagnostic, unrelated).
 - **Learnings:** R3F recreates an `<instancedMesh>` when its `args` change, so a stable (memoized) capacity is required to avoid per-frame reallocation; a high-water-mark capacity keyed off the derived count allocates exactly once because the derived set size is stable per renderedLimit. Because capacity only grows when `asteroids.length` grows (and `asteroids` is a fresh reference then), the existing `[asteroids]`-keyed layout effects already re-run on recreation, but adding `capacity` to their deps makes the rebuild-into-new-mesh contract explicit. A single 100k-instance InstancedMesh submits ALL 100k from the field center (one bounding sphere ⇒ no per-instance cull) — confirms C3 must chunk into per-cell sub-meshes.
 ---
+
+## [2026-06-08T20:30:00Z] - C3
+- Measured (C2-after baseline, reproduced this run): one InstancedMesh + one bounding sphere ⇒ all-or-nothing; @100k it submitted the FULL 100010 facing the field AND 100010 facing away (camera sits inside the single sphere), drawCalls(whole)=70, astTris=3.6M, tris=10.8M. No real culling.
+- Change: replaced the single mesh with PER-CHUNK frustum + distance culling.
+  1. Partition the derived field into 7.5 km cubic spatial chunks; each chunk is its own InstancedMesh with its own computed bounding sphere, so three frustum-culls them INDIVIDUALLY. One SHARED material across all chunks (shadow patch compiles once; the onAfterRender submitted-count gate keys on its identity and sums across visible chunks); per-chunk geometry carries the per-instance aSunlit occlusion attribute; chunks use dispose={null} + manual geometry disposal so unmounting one never disposes the shared material.
+  2. Per-chunk DISTANCE cull each frame: hide (mesh.visible=false) any chunk whose NEAREST corner is past MAX_DRAW_SCENE=18 km — so even inside the frustum the far shell of the ~32.5 km derived ball is not submitted. Nearest-corner test guarantees no in-view boundary rock is wrongly culled. Frustum alone from the field CENTER can only cull the back hemisphere (~38% submitted) and explodes draw calls (~840) if shrunk to hit <25%; the distance half is what the PRD's "bounded by FOV/draw-distance" calls for.
+  3. Tightened fog 30/90 → 9/18 so culled rocks (≥18 km) are already fully extinguished — no pop. Near 9 km stays clear; the default-play 2000-rock field (~9 km ball) sits inside the near plane, so normal play is visually unchanged.
+  4. Redefined the faceAway debug control: lift the camera to scene y=1000 (beyond the field) and look up into the void. From the center spawn a 180° yaw still stares into the surrounding ball; lifting puts every chunk past the draw distance ⇒ a correctly culled field submits ~0.
+- Benchmark before → after (client-render, @100k unless noted):
+  | metric | @100k BEFORE (C2) | @100k AFTER (C3) |
+  |---|---|---|
+  | derivedAsteroidCount | 100030 | 100030 |
+  | submittedInstanceCount (facing field) | 100010 (100%) | 17865 (17.9%) |
+  | cameraFacingEmpty submitted | 100010 | 0 |
+  | asteroidDrawCalls (visible chunks) | 1 | 61 |
+  | drawCalls (whole frame) | 70 | 303 |
+  | asteroidTriangles | 3600360 | 643140 |
+  | renderedTriangles (whole frame) | 10801697 | 2487677 |
+  | medianFrameMs (swiftshader, noisy) | 2906.5 | ~700–1500 |
+  - @2000 after: derived=2030, submitted=1814 (frustum now trims the back hemisphere; was ~all), emptySubmitted=0, astDraws=16. No distance/fog effect (9 km ball is inside both) ⇒ normal play visually unchanged.
+- Files changed: src/client/eve/components/WorldView.tsx, src/client/eve/lighting.ts, src/client/eve/render-stats.ts (faceAway doc), scripts/bench/client-render.ts (phase-2 doc) | verify: typecheck GREEN, format GREEN (touched files; repo-wide `oxfmt .` trips only on pre-existing untracked src/cli + ralph/docs files), parity GREEN (0/7), integration 54 pass / 1 PRE-EXISTING fail (million-scale diagnostic), e2e screenshot GREEN (canvas non-blank, field renders with shadows).
+- **Learnings:** From the field CENTER, frustum culling alone bottoms out at ~38% submitted (the whole surrounding ball minus the back hemisphere) and cannot reach <25% without shrinking chunks to ~3.5 km ⇒ ~840 draw calls; the distance cull is REQUIRED to hit the number with a small bounded draw count — frustum and distance are one feature the PRD split across C3/C5. Per-chunk distance culling via mesh.visible ALSO zeroes the lifted faceAway view (no need to debug why frustum-only left a 1018 residual). Sharing ONE material across many InstancedMeshes needs dispose={null} on the meshes (else unmounting a chunk disposes the shared material); custom per-instance attributes (aSunlit) must live on per-chunk geometry, but instanceMatrix is per-mesh so geometry could be shared if aSunlit moved to instanceColor — kept per-chunk geometry for minimality. The chunk nearest-corner distance test must pair with fogFar at the SAME distance so paged-out rocks are pre-faded; fogNear must stay above the gameplay near field. C5 (LOD/triangle bound) is now partly satisfied by the distance cull (tris 10.8M→2.5M) but still needs cheaper far geometry + a stated triangle knob + screenshot fidelity.
+---

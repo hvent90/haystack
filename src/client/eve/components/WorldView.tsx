@@ -2,6 +2,7 @@ import { Canvas, useFrame } from "@react-three/fiber";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode, RefObject } from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
+  DodecahedronGeometry,
   InstancedBufferAttribute,
   MeshStandardMaterial,
   Object3D,
@@ -999,9 +1000,10 @@ function RenderDriver({ fallbackShip }: { fallbackShip: Ship }): null {
   const cockpit = useMemo(() => new ThreeVector3(0, 0.12, 0), []);
   const cockpitWorld = useMemo(() => new ThreeVector3(), []);
   const quaternion = useMemo(() => new ThreeQuaternion(), []);
-  // 180° yaw about world-up, used only by the benchmark's faceAway control to
-  // point the camera at the empty hemisphere behind the ship.
-  const yaw180 = useMemo(() => new ThreeQuaternion(0, 1, 0, 0), []);
+  // Pitch the camera 90° up about its right axis (R_x(+90°)), used only by the
+  // benchmark's faceAway control to look straight along world +Y into the void
+  // above the lifted camera. See the faceAway block below.
+  const lookUp = useMemo(() => new ThreeQuaternion(Math.SQRT1_2, 0, 0, Math.SQRT1_2), []);
   const infoArmed = useRef(false);
 
   useFrame(({ camera, gl }, delta) => {
@@ -1021,12 +1023,19 @@ function RenderDriver({ fallbackShip }: { fallbackShip: Ship }): null {
       ? flightRenderStore.ownedRenderQuaternion()
       : fallbackShip.orientation;
     quaternion.set(orientation.x, orientation.y, orientation.z, orientation.w).normalize();
-    if (getRenderDebugControls().faceAway) {
-      quaternion.multiply(yaw180);
-    }
     cockpitWorld.copy(cockpit).applyQuaternion(quaternion);
     camera.position.copy(cockpitWorld);
     camera.quaternion.copy(quaternion);
+    if (getRenderDebugControls().faceAway) {
+      // Measure real per-chunk frustum culling on an empty view: the ship sits at
+      // the field CENTER (spawn origin), so the derived ball surrounds it and a mere
+      // 180° yaw still stares into rocks. Instead lift the camera far above the whole
+      // field (chunks span at most ±~57 scene units around the rebased origin) and
+      // look straight up into empty space — every chunk falls behind the near plane,
+      // so a correctly culled field submits ~0 instances.
+      camera.position.set(0, EMPTY_VIEW_LIFT, 0);
+      camera.quaternion.copy(lookUp);
+    }
     camera.updateProjectionMatrix();
 
     if (typeof window !== "undefined") {
@@ -1048,20 +1057,63 @@ function RenderDriver({ fallbackShip }: { fallbackShip: Ship }): null {
   return null;
 }
 
-// The InstancedMesh is allocated with a fixed max-instance buffer (its third
-// `args` value), so to hold the full derived field we size that buffer to the
-// derived count instead of the old hard 2000 ceiling. Capacity is bucketed and
-// only ever grows (high-water mark): the derived set size is stable per
-// renderedLimit, so the mesh is allocated once and never thrashes. At
-// HAYSTACK_RENDERED_LIMIT=100000 this holds all ~100k rocks with no truncation.
-const ASTEROID_CAPACITY_BUCKET = 4096;
+// How far (scene units) the benchmark's faceAway control lifts the camera above
+// the field before looking up into the void. Must exceed the field half-extent
+// (cellsPerAxis * cellSize / 2 = 56.5 km) so every chunk falls behind the camera.
+const EMPTY_VIEW_LIFT = 1000;
 
-function instanceCapacityFor(count: number, previous: number): number {
-  const needed = Math.max(
-    ASTEROID_CAPACITY_BUCKET,
-    Math.ceil(count / ASTEROID_CAPACITY_BUCKET) * ASTEROID_CAPACITY_BUCKET,
-  );
-  return Math.max(previous, needed);
+// Spatial chunk edge length (meters). The derived field is partitioned into cubic
+// chunks, each rendered as its own InstancedMesh with its own bounding sphere, so
+// three frustum-culls them INDIVIDUALLY — only chunks intersecting the view are
+// submitted to the GPU (vs. the old single mesh + single bounding sphere, which was
+// all-or-nothing). ~7.5 km balances cull tightness (facing the field submits far
+// fewer than the derived count) against a small, bounded visible-chunk count (draw
+// calls stay a constant independent of the derived total). Tuned via client-render.
+const CHUNK_METERS = 7500;
+
+// Per-chunk draw distance (scene units ~= km). A chunk whose nearest point is beyond
+// this from the camera is hidden (mesh.visible=false), so even within the frustum the
+// far shell of the derived ball is not submitted: this is the "distance" half of the
+// frustum+distance cull. Paired with the fog far plane (lighting.ts) so culled rocks
+// are already fogged out — no pop. Also drives camera-facing-empty to ~0 (the lifted
+// faceAway camera sits far beyond every chunk). The default-play field (renderedLimit
+// 2000) is a ~9 km ball, well inside this, so normal play is unaffected.
+const MAX_DRAW_SCENE = 18;
+
+// Half the space-diagonal of a chunk cube (scene units): a chunk's farthest corner
+// from its center, used to test the chunk's NEAREST point against the draw distance.
+const CHUNK_RADIUS_SCENE = ((CHUNK_METERS / metersPerSceneUnit) * Math.sqrt(3)) / 2;
+
+// Reused scratch for the per-chunk distance test (single-threaded render loop).
+const chunkWorldCenter = new ThreeVector3();
+
+type AsteroidChunkData = {
+  key: string;
+  cx: number;
+  cy: number;
+  cz: number;
+  asteroids: Asteroid[];
+};
+
+// Bucket the derived rocks into cubic spatial chunks, preserving per-chunk order.
+// Each bucket becomes one frustum- and distance-cullable InstancedMesh. O(N) over the
+// derived set. The integer chunk coords give each chunk a cheap, exact cube center for
+// the distance test without scanning its rocks.
+function partitionIntoChunks(asteroids: Asteroid[]): AsteroidChunkData[] {
+  const byKey = new Map<string, AsteroidChunkData>();
+  for (const asteroid of asteroids) {
+    const cx = Math.floor(asteroid.position.x / CHUNK_METERS);
+    const cy = Math.floor(asteroid.position.y / CHUNK_METERS);
+    const cz = Math.floor(asteroid.position.z / CHUNK_METERS);
+    const key = `${cx}|${cy}|${cz}`;
+    let bucket = byKey.get(key);
+    if (bucket === undefined) {
+      bucket = { key, cx, cy, cz, asteroids: [] };
+      byKey.set(key, bucket);
+    }
+    bucket.asteroids.push(asteroid);
+  }
+  return Array.from(byKey.values());
 }
 
 function glslFloat(value: number): string {
@@ -1141,96 +1193,24 @@ function InstancedAsteroids({
   fallbackOrigin: Vector3;
 }): ReactNode {
   const groupRef = useRef<Object3D>(null);
-  const meshRef = useRef<InstancedMesh>(null);
-  const transform = useMemo(() => new Object3D(), []);
+  // ONE shared material across every chunk: the shadow patch compiles once and the
+  // onAfterRender submitted-count gate keys on this exact material identity, so it
+  // sums correctly across all visible chunk meshes. dispose={null} on the chunks
+  // keeps three/r3f from disposing this shared material when a chunk unmounts.
   const material = useMemo(() => createAsteroidMaterial(), []);
-  // Per-rock deterministic rotation seed, derived once per id (the id encodes the
-  // cell, so it never changes for a given rock) rather than re-parsed every frame.
+  useEffect(() => () => material.dispose(), [material]);
+  // Per-rock deterministic rotation seed, derived once per id (shared across chunks).
   const seedCache = useRef(new Map<string, number>());
 
-  // High-water-mark instance-buffer capacity sized to the derived field. Grows to
-  // fit, never shrinks, bucketed so the InstancedMesh is allocated once for a given
-  // renderedLimit (changing `args` recreates the mesh, so we keep it stable).
-  const capacityRef = useRef(ASTEROID_CAPACITY_BUCKET);
-  const capacity = instanceCapacityFor(asteroids.length, capacityRef.current);
-  capacityRef.current = capacity;
-  const meshArgs = useMemo<[undefined, undefined, number]>(
-    () => [undefined, undefined, capacity],
-    [capacity],
-  );
+  // Partition the derived field into cubic spatial chunks (once per visible-set
+  // change). Each chunk renders as its own bounding-sphere'd InstancedMesh so three
+  // frustum-culls them individually — the core of real per-instance culling.
+  const chunks = useMemo(() => partitionIntoChunks(asteroids), [asteroids]);
 
-  // Per-instance sun occlusion (Tier 2), rebuilt only when the asteroid set changes. The
-  // sunlitForId cache means we only march rocks we haven't seen before.
-  const sunlit = useMemo(() => {
-    const values = new Float32Array(capacity);
-    values.fill(1);
-    const count = Math.min(asteroids.length, capacity);
-    for (let index = 0; index < count; index += 1) {
-      const asteroid = asteroids[index];
-      if (asteroid === undefined) {
-        continue;
-      }
-      values[index] = sunlitForId(asteroid.id);
-    }
-    return values;
-  }, [asteroids, capacity]);
-
-  // Layout phase (same as the matrix build below) so the occlusion scalar and the
-  // instance matrices commit together before paint — no transient dark frame on a
-  // visible-set change.
-  useLayoutEffect(() => {
-    const mesh = meshRef.current;
-    if (mesh === null) {
-      return;
-    }
-    const existing = mesh.geometry.getAttribute("aSunlit") as InstancedBufferAttribute | undefined;
-    if (existing === undefined) {
-      mesh.geometry.setAttribute("aSunlit", new InstancedBufferAttribute(sunlit, 1));
-    } else {
-      (existing.array as Float32Array).set(sunlit);
-      existing.needsUpdate = true;
-    }
-  }, [sunlit]);
-
-  // Build the instance matrices once per visible-set change (NOT per frame). Each
-  // matrix uses the rock's absolute field position; the group transform handles the
-  // origin rebase below. needsUpdate / computeBoundingSphere fire once here.
-  useLayoutEffect(() => {
-    const mesh = meshRef.current;
-    if (mesh === null) {
-      return;
-    }
-    const count = Math.min(asteroids.length, capacity);
-    for (let index = 0; index < count; index += 1) {
-      const asteroid = asteroids[index];
-      if (asteroid === undefined) {
-        continue;
-      }
-      const size = Math.max(0.04, asteroid.radius / metersPerSceneUnit);
-      let seed = seedCache.current.get(asteroid.id);
-      if (seed === undefined) {
-        seed = asteroid.id
-          .split("-")
-          .slice(1)
-          .reduce((a, b) => a + Number(b) * 7919, 0);
-        seedCache.current.set(asteroid.id, seed);
-      }
-      transform.position.set(
-        asteroid.position.x / metersPerSceneUnit,
-        asteroid.position.y / metersPerSceneUnit,
-        asteroid.position.z / metersPerSceneUnit,
-      );
-      transform.rotation.set(seed * 0.43, seed * 0.27, seed * 0.17);
-      transform.scale.set(size, size, size);
-      transform.updateMatrix();
-      mesh.setMatrixAt(index, transform.matrix);
-    }
-    mesh.count = count;
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.computeBoundingSphere();
-  }, [asteroids, transform, capacity]);
-
-  // Floating-origin rebase: shift the whole field once per frame (O(1)).
+  // Floating-origin rebase: shift the whole field once per frame (O(1)). Each chunk
+  // bakes ABSOLUTE field positions into its instance matrices; this group translation
+  // carries them all to camera-relative space, and three transforms every chunk's
+  // bounding sphere by it before the per-chunk frustum test.
   useFrame(() => {
     const group = groupRef.current;
     if (group === null) {
@@ -1250,33 +1230,143 @@ function InstancedAsteroids({
 
   return (
     <group ref={groupRef}>
-      <instancedMesh
-        ref={meshRef}
-        args={meshArgs}
-        material={material}
-        castShadow
-        receiveShadow
-        onAfterRender={(_renderer, _scene, _camera, geometry, renderedMaterial) => {
-          // three only invokes onAfterRender for objects that survive frustum
-          // culling, and the asteroid material is used solely in the main color
-          // pass (shadow -> depth material, NormalPass -> normal material), so
-          // this counts each in-view instance exactly once per frame.
-          if (renderedMaterial !== material) {
-            return;
-          }
-          const mesh = meshRef.current;
-          if (mesh === null) {
-            return;
-          }
-          const index = geometry.index;
-          const trianglesPerInstance =
-            index === null ? (geometry.attributes.position?.count ?? 0) / 3 : index.count / 3;
-          renderStats.noteSubmitted(mesh.count, trianglesPerInstance);
-        }}
-      >
-        <dodecahedronGeometry args={[1, 0]} />
-      </instancedMesh>
+      {chunks.map((chunk) => (
+        <AsteroidChunk
+          key={chunk.key}
+          chunk={chunk}
+          material={material}
+          seedCache={seedCache.current}
+        />
+      ))}
     </group>
+  );
+}
+
+// One spatial chunk of the field: a self-contained InstancedMesh with its own
+// geometry (so it can carry a per-instance aSunlit occlusion attribute) and its own
+// bounding sphere (so three frustum-culls it independently of the other chunks).
+// Instance matrices bake the rocks' ABSOLUTE field positions; the parent group does
+// the per-frame origin rebase. The shared material is reused (not owned), so the mesh
+// uses dispose={null} and this component disposes only its own geometry on unmount.
+function AsteroidChunk({
+  chunk,
+  material,
+  seedCache,
+}: {
+  chunk: AsteroidChunkData;
+  material: MeshStandardMaterial;
+  seedCache: Map<string, number>;
+}): ReactNode {
+  const { asteroids } = chunk;
+  const meshRef = useRef<InstancedMesh>(null);
+  const transform = useMemo(() => new Object3D(), []);
+  const geometry = useMemo(() => new DodecahedronGeometry(1, 0), []);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+
+  // This chunk's cube center in baked (absolute / 1000) scene coordinates. The parent
+  // group then translates by -origin/1000 each frame, so adding the group position
+  // gives the chunk's camera-relative world center for the distance test below.
+  const center = useMemo(
+    () => ({
+      x: ((chunk.cx + 0.5) * CHUNK_METERS) / metersPerSceneUnit,
+      y: ((chunk.cy + 0.5) * CHUNK_METERS) / metersPerSceneUnit,
+      z: ((chunk.cz + 0.5) * CHUNK_METERS) / metersPerSceneUnit,
+    }),
+    [chunk.cx, chunk.cy, chunk.cz],
+  );
+
+  // Distance cull (once per frame): hide the chunk when its nearest point is past the
+  // draw distance. three still frustum-culls the visible ones, so what survives is the
+  // intersection of in-frustum AND near — the frustum+distance "what's actually in
+  // view" set. Hidden chunks fire no onAfterRender, so they drop out of the submitted
+  // count. Using the chunk's NEAREST corner (center distance minus the cube radius)
+  // means no near rock is ever wrongly culled at a chunk boundary.
+  useFrame(({ camera }) => {
+    const mesh = meshRef.current;
+    const group = mesh?.parent;
+    if (mesh === null || group === undefined || group === null) {
+      return;
+    }
+    chunkWorldCenter.set(
+      center.x + group.position.x,
+      center.y + group.position.y,
+      center.z + group.position.z,
+    );
+    const nearest = chunkWorldCenter.distanceTo(camera.position) - CHUNK_RADIUS_SCENE;
+    mesh.visible = nearest < MAX_DRAW_SCENE;
+  });
+
+  // Build the instance matrices + per-instance occlusion once per chunk-set change
+  // (NOT per frame), then compute this chunk's tight bounding sphere for culling.
+  useLayoutEffect(() => {
+    const mesh = meshRef.current;
+    if (mesh === null) {
+      return;
+    }
+    const count = asteroids.length;
+    const sunlit = new Float32Array(count);
+    for (let index = 0; index < count; index += 1) {
+      const asteroid = asteroids[index];
+      if (asteroid === undefined) {
+        continue;
+      }
+      const size = Math.max(0.04, asteroid.radius / metersPerSceneUnit);
+      let seed = seedCache.get(asteroid.id);
+      if (seed === undefined) {
+        seed = asteroid.id
+          .split("-")
+          .slice(1)
+          .reduce((a, b) => a + Number(b) * 7919, 0);
+        seedCache.set(asteroid.id, seed);
+      }
+      transform.position.set(
+        asteroid.position.x / metersPerSceneUnit,
+        asteroid.position.y / metersPerSceneUnit,
+        asteroid.position.z / metersPerSceneUnit,
+      );
+      transform.rotation.set(seed * 0.43, seed * 0.27, seed * 0.17);
+      transform.scale.set(size, size, size);
+      transform.updateMatrix();
+      mesh.setMatrixAt(index, transform.matrix);
+      sunlit[index] = sunlitForId(asteroid.id);
+    }
+    mesh.count = count;
+    mesh.instanceMatrix.needsUpdate = true;
+    const existing = mesh.geometry.getAttribute("aSunlit") as InstancedBufferAttribute | undefined;
+    if (existing === undefined || existing.array.length !== count) {
+      mesh.geometry.setAttribute("aSunlit", new InstancedBufferAttribute(sunlit, 1));
+    } else {
+      (existing.array as Float32Array).set(sunlit);
+      existing.needsUpdate = true;
+    }
+    mesh.computeBoundingSphere();
+  }, [asteroids, transform, geometry, seedCache]);
+
+  return (
+    <instancedMesh
+      ref={meshRef}
+      args={[geometry, material, asteroids.length]}
+      castShadow
+      receiveShadow
+      dispose={null}
+      onAfterRender={(_renderer, _scene, _camera, geom, renderedMaterial) => {
+        // three only invokes onAfterRender for objects that survive frustum culling,
+        // and the asteroid material is used solely in the main color pass (shadow ->
+        // depth material, NormalPass -> normal material), so this counts each in-view
+        // instance exactly once per frame, summed across all visible chunks.
+        if (renderedMaterial !== material) {
+          return;
+        }
+        const mesh = meshRef.current;
+        if (mesh === null) {
+          return;
+        }
+        const index = geom.index;
+        const trianglesPerInstance =
+          index === null ? (geom.attributes.position?.count ?? 0) / 3 : index.count / 3;
+        renderStats.noteSubmitted(mesh.count, trianglesPerInstance);
+      }}
+    />
   );
 }
 

@@ -171,10 +171,12 @@ class RenderStats {
 
 export const renderStats = new RenderStats();
 
-// Benchmark/debug camera control. When `faceAway` is true the render driver points
-// the camera 180° opposite the ship's forward — used to measure that an empty view
-// submits ~no instances once real frustum culling lands. No effect in normal play
-// (nothing sets it). Kept on its own global so the stats object stays pure data.
+// Benchmark/debug camera control. When `faceAway` is true the render driver lifts the
+// camera far above the whole field and looks up into empty space (a 180° yaw from the
+// field-center spawn would still stare into the surrounding derived ball) — used to
+// measure that an empty view submits ~0 instances now that per-chunk frustum culling
+// is real. No effect in normal play (nothing sets it). Kept on its own global so the
+// stats object stays pure data.
 export type RenderDebugControls = {
   faceAway: boolean;
 };

@@ -54,10 +54,14 @@ export const shadowBubbleFadeNear = 5;
 export const shadowBubbleFadeFar = 8;
 
 // Distance fog: a gentle far extinction toward the background colour (NOT a hard cutoff).
-// Loose by default so it never clips the field; tighten as asteroid density grows.
+// Tightened from the old 30/90 to fully extinguish rocks by the render distance, so the
+// per-chunk distance cull (WorldView MAX_DRAW_SCENE) drops only rocks that have already
+// faded to the background — no visible pop as chunks page out. Near 9 km stays clear, so
+// the gameplay-relevant near field is untouched, and the default-play 2000-rock field
+// (~9 km ball) sits inside the near plane so its look is essentially unchanged.
 export const fogColor = "#03040a";
-export const fogNear = 30;
-export const fogFar = 90;
+export const fogNear = 9;
+export const fogFar = 18;
 
 // Rotate the canonical camera-forward axis (0, 0, -1) by an orientation quaternion.
 // Used to aim the flashlight (and anything else that needs the ship's facing).

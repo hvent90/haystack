@@ -195,7 +195,9 @@ async function measureLimit(limit: number, index: number): Promise<LimitMetrics>
     await Bun.sleep(2500);
     const steady = await readStats(page);
 
-    // Phase 2: camera rotated 180° toward the empty hemisphere behind the ship.
+    // Phase 2: camera lifted far above the field and aimed up into empty space, so a
+    // correctly chunk-culled field submits ~0 instances (the ship spawns at the field
+    // center, so a mere 180° yaw would still face the surrounding derived ball).
     await setFaceAway(page, true);
     await resetStatsWindow(page);
     await Bun.sleep(1500);
