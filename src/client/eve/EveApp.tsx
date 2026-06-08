@@ -946,7 +946,6 @@ export function EveApp(): ReactNode {
     oneShotRef.current = { boost: false };
     const keys = heldKeysRef.current;
     const inputScale = active ? flightInputScaleRef.current : 1;
-    const keyboardYaw = Number(keys.has("KeyA")) - Number(keys.has("KeyD"));
     const keyboardThrottleInput = Number(keys.has("KeyW")) - Number(keys.has("KeyS"));
     const rawThrottle =
       active && keyboardThrottleInput !== 0
@@ -960,7 +959,7 @@ export function EveApp(): ReactNode {
       active,
       strafe: active
         ? {
-            x: (Number(keys.has("KeyC")) - Number(keys.has("KeyZ"))) * inputScale,
+            x: (Number(keys.has("KeyD")) - Number(keys.has("KeyA"))) * inputScale,
             y:
               (Number(keys.has("Space")) -
                 Number(keys.has("ControlLeft") || keys.has("ControlRight"))) *
@@ -971,7 +970,7 @@ export function EveApp(): ReactNode {
       rotation: active
         ? {
             x: mouseDeflectionRef.current.x * inputScale,
-            y: clamp(mouseDeflectionRef.current.y + keyboardYaw * 0.35, -1, 1) * inputScale,
+            y: mouseDeflectionRef.current.y * inputScale,
             z: (Number(keys.has("KeyQ")) - Number(keys.has("KeyE"))) * inputScale,
           }
         : { x: 0, y: 0, z: 0 },
