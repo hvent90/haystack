@@ -374,7 +374,8 @@ export function EveApp(): ReactNode {
       if (!active && !lastFlightActiveRef.current && !hasOneShot) {
         return;
       }
-      sendFlightInput(buildFlightInput(active));
+      const flightInput = buildFlightInput(active);
+      sendFlightInput(flightInput);
       lastFlightActiveRef.current = active;
       const nextMouseDeflection = {
         x: mouseDeflectionRef.current.x * relativeMouseDecay,
@@ -385,8 +386,12 @@ export function EveApp(): ReactNode {
       setMouseDeflection(nextMouseDeflection);
       const ship = sessionRef.current === null ? null : myShipRef.current;
       if (ship !== null) {
+        const { strafe, rotation } = flightInput;
         audio.engine.setEngineState({
           throttle: ship.throttle,
+          // Maneuvering-thruster activity drives the RCS air-nozzle layer.
+          rcs: Math.min(1, Math.hypot(strafe.x, strafe.y, strafe.z)),
+          rotation: Math.min(1, Math.hypot(rotation.x, rotation.y, rotation.z)),
           boost: false,
           heat: ship.heat,
           cruiseLock: ship.cruiseLock,
