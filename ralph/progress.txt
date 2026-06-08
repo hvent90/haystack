@@ -1,0 +1,22 @@
+## Codebase Patterns
+- Benchmark: `bun scripts/bench/world-stream.ts` drives publishAll() in-process; 5 km/s default; HAYSTACK_RENDERED_LIMIT sets field size; BENCH_SINGLE=1 + BENCH_PLAYERS + HAYSTACK_RENDERED_LIMIT for one config.
+- Broadcast path: src/server/realtime.ts publishAll() -> per-peer flushPeer() -> getSnapshot() PER PEER PER TICK + collectChangedKeys/storeShadow which JSON.stringify EVERY snapshot key per peer per tick (incl. the full asteroid array).
+- The asteroid field is deterministic (src/server/field.ts), already cell-quantized + LRU-cached (streamedFieldAsteroids), and mirrored client-side (src/client/eve/sun-occlusion.ts) -> the client could generate it from the seed; the server need not stream 100k static rocks.
+- getSnapshot (src/server/sim.ts:175) runs advanceWorld(db) + several SELECT * full-table reads (ships, asteroids, deposits, structures) + the field query, all PER PEER PER TICK. Only `me`, `cargo`, and the distance-based `discovered` flags are actually per-pilot; the bulk (virtual field, structures, other ships) is identical across peers.
+- Data backend is fair game (RALPH.md): in-memory authoritative state / indexes / client-side field derivation all allowed; just preserve restart-durability of ship/cargo/credits/structures/discoveries.
+- Pre-existing failing tests (NOT caused by perf work): field-diagnostic materializedAsteroids threshold (stale since density commit 10266fc), prediction + jitter e2e (timing). Confirm against HEAD before blaming a change.
+
+## [P0 + P1] baseline + profiled bottleneck
+- Built scripts/bench/world-stream.ts (in-process publishAll driver, 5 km/s flight, stub peers count bytes). Made field renderedLimit env-configurable (HAYSTACK_RENDERED_LIMIT, default 2000).
+- BASELINE @ HEAD, 5 km/s  (publishAll p50 / p95 ms | MB/s per peer):
+    1  x 2000  :   1.44 /  322  |   5.3
+    16 x 2000  : 317.44 / 1104  |   2.1
+    1  x 100k  :  90.59 /  419  | 260.9
+    4  x 100k  : 359.16 /  987  |  98.2
+    16 x 100k  : 2166.93 / 3651 |  94.3   <-- TARGET workload; budget = 33.3 ms/tick (aim <16 ms)
+- Ranked bottlenecks (evidence: the p50 grows ~O(players x field); p95 spikes track cell crossings):
+    1. Per-peer per-tick getSnapshot rebuild + JSON.stringify change-detection over the full snapshot incl. 100k asteroids. The per-tick floor (~90 ms/peer at 100k). Each peer redoes the shared world independently -> O(players x field).
+    2. Cubic cell scan (queryVirtualAsteroids builds ~1M candidates, sorts) on each cell crossing -> p95 spikes (322 ms even at 2000).
+    3. Full 100k field re-serialized into deltas on crossings -> 261 MB/s/peer at 1x100k.
+- Learnings: a stationary player already gets 0-byte deltas (field byte-stable within a cell from the prior client-choke fix). The dominant cost is CPU (change-detection + scan), not only bandwidth. Computing the shared world once per tick (P2) and replacing stringify-hashing with dirty/version tracking (P3) are the two structural wins; incremental field paging + client-side derivation (P4) kills the bandwidth + cubic scan.
+---

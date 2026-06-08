@@ -22,7 +22,11 @@ type QueryResult = {
 const fieldSeed = 424242;
 const cellSize = 1130; // ~6000 / ∛150 for 150x asteroid density
 const cellsPerAxis = 100;
-const renderedLimit = 2000;
+// Cap on how many virtual rocks are streamed/rendered to a player. Env-configurable
+// so the perf benchmark can drive the field to 100k+; defaults to 2000 in normal use.
+function renderedLimit(): number {
+  return Number(process.env["HAYSTACK_RENDERED_LIMIT"] ?? "2000");
+}
 const originOffset = -(cellsPerAxis * cellSize) / 2;
 const minerals: Mineral[] = ["nickel", "waterIce", "cobalt", "silicates", "platinum", "xenotime"];
 
@@ -32,14 +36,14 @@ export function fieldSummary(): FieldSummary {
     seed: fieldSeed,
     cellSize,
     indexKind: "cubicCellHierarchy",
-    renderedLimit,
+    renderedLimit: renderedLimit(),
   };
 }
 
 export function queryVirtualAsteroids(
   origin: Vector3,
   radius: number,
-  limit = renderedLimit,
+  limit = renderedLimit(),
 ): QueryResult {
   const boundedRadius = Math.max(cellSize, Math.min(radius, cellSize * 120));
   const min = worldToCell({
@@ -96,7 +100,8 @@ const streamedFieldCacheLimit = 64;
 // drifts within a cell) and changes only when the ship crosses a cell boundary.
 export function streamedFieldAsteroids(position: Vector3): Asteroid[] {
   const cell = worldToCell(position);
-  const key = `${cell.x}-${cell.y}-${cell.z}`;
+  const limit = renderedLimit();
+  const key = `${cell.x}-${cell.y}-${cell.z}-${limit}`;
   const cached = streamedFieldCache.get(key);
   if (cached !== undefined) {
     // LRU touch: re-insert so a frequently-revisited cell isn't evicted while a
@@ -105,7 +110,7 @@ export function streamedFieldAsteroids(position: Vector3): Asteroid[] {
     streamedFieldCache.set(key, cached);
     return cached;
   }
-  const asteroids = queryVirtualAsteroids(cellCenter(cell), 520000, renderedLimit).asteroids;
+  const asteroids = queryVirtualAsteroids(cellCenter(cell), 520000, limit).asteroids;
   if (streamedFieldCache.size >= streamedFieldCacheLimit) {
     const oldest = streamedFieldCache.keys().next().value;
     if (oldest !== undefined) {
