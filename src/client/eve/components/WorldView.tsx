@@ -2,8 +2,11 @@ import { Canvas, useFrame } from "@react-three/fiber";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode, RefObject } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  InstancedBufferAttribute,
+  MeshStandardMaterial,
   Object3D,
   Quaternion as ThreeQuaternion,
+  ShaderChunk,
   Vector3 as ThreeVector3,
   type Camera,
   type InstancedMesh,
@@ -18,6 +21,14 @@ import { flightInputScaleMax, flightInputScaleMin } from "../constants";
 import { clamp, formatDistance, toScene, vectorMagnitude } from "../vector";
 import { sameSelection } from "../overview";
 import { flightRenderStore } from "../renderStore";
+import {
+  fogColor,
+  fogFar,
+  fogNear,
+  shadowBubbleFadeFar,
+  shadowBubbleFadeNear,
+} from "../lighting";
+import { sunlitForId } from "../sun-occlusion";
 import { AudioListenerRig, RemoteShipAudio } from "./SpatialAudio";
 import { ShipFlashlight, SunDisc, SunLight } from "./SceneLighting";
 import { ScenePostProcessing } from "./ScenePostProcessing";
@@ -113,6 +124,7 @@ export function WorldView({
     >
       <Canvas
         data-testid="world-canvas"
+        shadows
         camera={{ position: [0, 0.12, 0], fov: 68, near: 0.01, far: 20000 }}
         dpr={[1, 1.5]}
       >
@@ -128,6 +140,7 @@ export function WorldView({
           onBox={setSelectionBox}
         />
         <color attach="background" args={["#03040a"]} />
+        <fog attach="fog" args={[fogColor, fogNear, fogFar]} />
         <SunLight />
         <ConditionalListenerRig ctx={audioContext} volume={audioVolume}>
           <group>
@@ -1011,6 +1024,65 @@ function RenderDriver({ fallbackShip }: { fallbackShip: Ship }): null {
   return null;
 }
 
+const ASTEROID_CAPACITY = 2000;
+
+function glslFloat(value: number): string {
+  return Number.isInteger(value) ? `${value}.0` : `${value}`;
+}
+
+// Patch the asteroid material so the sun's contribution is the two-tier shadow blend:
+//   directLight.color *= mix(aSunlit, shadowMapFactor, bubbleWeight)
+// Near the camera (bubbleWeight -> 1) the real per-pixel shadow map wins; far away
+// (bubbleWeight -> 0) the per-instance occlusion scalar wins. Each replace is anchored to
+// the exact three r177 chunk text and throws if it is ever missing, so a future three bump
+// fails loudly instead of silently dropping the shadows.
+function patchAsteroidShader(shader: { vertexShader: string; fragmentShader: string }): void {
+  const fadeNear = glslFloat(shadowBubbleFadeNear);
+  const fadeFar = glslFloat(shadowBubbleFadeFar);
+  const apply = (source: string, anchor: string, replacement: string): string => {
+    if (!source.includes(anchor)) {
+      throw new Error(`asteroid shadow patch: missing shader anchor "${anchor.slice(0, 48)}"`);
+    }
+    return source.replace(anchor, replacement);
+  };
+
+  shader.vertexShader = apply(
+    shader.vertexShader,
+    "#include <common>",
+    "#include <common>\nattribute float aSunlit;\nvarying float vSunlit;\nvarying float vBubbleWeight;",
+  );
+  shader.vertexShader = apply(
+    shader.vertexShader,
+    "vViewPosition = - mvPosition.xyz;",
+    `vViewPosition = - mvPosition.xyz;\n\tvSunlit = aSunlit;\n\tvBubbleWeight = 1.0 - smoothstep( ${fadeNear}, ${fadeFar}, - mvPosition.z );`,
+  );
+  shader.fragmentShader = apply(
+    shader.fragmentShader,
+    "#include <common>",
+    "#include <common>\nvarying float vSunlit;\nvarying float vBubbleWeight;",
+  );
+
+  // The directional shadow term lives INSIDE the lights_fragment_begin chunk, which is still
+  // an unresolved `#include` at onBeforeCompile time. Expand that chunk ourselves, blend the
+  // sun's shadow factor with the per-instance occlusion, and substitute it for the directive.
+  const blendedLights = apply(
+    ShaderChunk.lights_fragment_begin,
+    "directLight.color *= ( directLight.visible && receiveShadow ) ? getShadow( directionalShadowMap[ i ], directionalLightShadow.shadowMapSize, directionalLightShadow.shadowIntensity, directionalLightShadow.shadowBias, directionalLightShadow.shadowRadius, vDirectionalShadowCoord[ i ] ) : 1.0;",
+    "float dirShadowFactor = ( directLight.visible && receiveShadow ) ? getShadow( directionalShadowMap[ i ], directionalLightShadow.shadowMapSize, directionalLightShadow.shadowIntensity, directionalLightShadow.shadowBias, directionalLightShadow.shadowRadius, vDirectionalShadowCoord[ i ] ) : 1.0;\n\t\tdirectLight.color *= mix( vSunlit, dirShadowFactor, vBubbleWeight );",
+  );
+  shader.fragmentShader = apply(
+    shader.fragmentShader,
+    "#include <lights_fragment_begin>",
+    blendedLights,
+  );
+}
+
+function createAsteroidMaterial(): MeshStandardMaterial {
+  const material = new MeshStandardMaterial({ color: "#6f6a60", roughness: 0.96 });
+  material.onBeforeCompile = (shader) => patchAsteroidShader(shader);
+  return material;
+}
+
 function InstancedAsteroids({
   asteroids,
   fallbackOrigin,
@@ -1020,6 +1092,37 @@ function InstancedAsteroids({
 }): ReactNode {
   const meshRef = useRef<InstancedMesh>(null);
   const transform = useMemo(() => new Object3D(), []);
+  const material = useMemo(() => createAsteroidMaterial(), []);
+
+  // Per-instance sun occlusion (Tier 2), rebuilt only when the asteroid set changes. The
+  // sunlitForId cache means we only march rocks we haven't seen before.
+  const sunlit = useMemo(() => {
+    const values = new Float32Array(ASTEROID_CAPACITY);
+    values.fill(1);
+    const count = Math.min(asteroids.length, ASTEROID_CAPACITY);
+    for (let index = 0; index < count; index += 1) {
+      const asteroid = asteroids[index];
+      if (asteroid === undefined) {
+        continue;
+      }
+      values[index] = sunlitForId(asteroid.id);
+    }
+    return values;
+  }, [asteroids]);
+
+  useEffect(() => {
+    const mesh = meshRef.current;
+    if (mesh === null) {
+      return;
+    }
+    const existing = mesh.geometry.getAttribute("aSunlit") as InstancedBufferAttribute | undefined;
+    if (existing === undefined) {
+      mesh.geometry.setAttribute("aSunlit", new InstancedBufferAttribute(sunlit, 1));
+    } else {
+      (existing.array as Float32Array).set(sunlit);
+      existing.needsUpdate = true;
+    }
+  }, [sunlit]);
 
   useFrame(() => {
     const mesh = meshRef.current;
@@ -1027,7 +1130,12 @@ function InstancedAsteroids({
       return;
     }
     const origin = renderOrigin(fallbackOrigin);
-    asteroids.forEach((asteroid, index) => {
+    const count = Math.min(asteroids.length, ASTEROID_CAPACITY);
+    for (let index = 0; index < count; index += 1) {
+      const asteroid = asteroids[index];
+      if (asteroid === undefined) {
+        continue;
+      }
       const position = toScene(asteroid.position, origin);
       const size = Math.max(0.04, asteroid.radius / 1000);
       const seed = asteroid.id.split("-").slice(1).reduce((a, b) => a + Number(b) * 7919, 0);
@@ -1036,7 +1144,8 @@ function InstancedAsteroids({
       transform.scale.set(size, size, size);
       transform.updateMatrix();
       mesh.setMatrixAt(index, transform.matrix);
-    });
+    }
+    mesh.count = count;
     mesh.instanceMatrix.needsUpdate = true;
   });
 
@@ -1045,9 +1154,14 @@ function InstancedAsteroids({
   }
 
   return (
-    <instancedMesh ref={meshRef} args={[undefined, undefined, 2000]}>
+    <instancedMesh
+      ref={meshRef}
+      args={[undefined, undefined, ASTEROID_CAPACITY]}
+      material={material}
+      castShadow
+      receiveShadow
+    >
       <dodecahedronGeometry args={[1, 0]} />
-      <meshStandardMaterial color="#6f6a60" roughness={0.96} />
     </instancedMesh>
   );
 }
@@ -1074,7 +1188,7 @@ function StructureMesh({
 
   return (
     <group ref={groupRef}>
-      <mesh scale={scale}>
+      <mesh scale={scale} receiveShadow>
         <boxGeometry />
         <meshStandardMaterial color={structure.hidden ? "#5b725e" : "#b58b55"} roughness={0.74} />
       </mesh>
@@ -1147,7 +1261,7 @@ function OtherShipMesh({
 
   return (
     <group ref={groupRef}>
-      <mesh scale={[0.08, 0.08, 0.08]}>
+      <mesh scale={[0.08, 0.08, 0.08]} receiveShadow>
         <coneGeometry args={[0.6, 1.4, 4]} />
         <meshStandardMaterial color="#b54f57" roughness={0.7} />
       </mesh>
@@ -1178,7 +1292,7 @@ function GridStars(): ReactNode {
           scale={0.025 + (index % 4) * 0.012}
         >
           <boxGeometry />
-          <meshBasicMaterial color={index % 5 === 0 ? "#d6b36f" : "#c8d2c5"} />
+          <meshBasicMaterial color={index % 5 === 0 ? "#d6b36f" : "#c8d2c5"} fog={false} />
         </mesh>
       ))}
     </group>

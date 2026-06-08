@@ -35,6 +35,30 @@ export const bloomIntensity = 0.12;
 export const bloomLuminanceThreshold = 0.92;
 export const bloomLuminanceSmoothing = 0.18;
 
+// Sun shadow bubble (Tier 1): a single orthographic shadow map that follows the camera
+// each frame. The shadow-casting light is placed just up-sun of the camera (a directional
+// light's direction is distance-independent), so the ortho depth range stays tight; the
+// visible SunDisc stays far away at sunDistance, untouched.
+export const shadowMapSize = 2048;
+export const shadowBubbleHalf = 8; // ortho half-width in scene units (km)
+export const shadowLightDistance = 12; // units up-sun to place the shadow-casting light
+export const shadowCameraNear = 1;
+export const shadowCameraFar = 24;
+export const shadowBias = 0.0001;
+export const shadowNormalBias = 0.05;
+export const shadowSoftRadius = 2;
+
+// Crossfade from the near per-pixel shadow map to the far per-instance occlusion scalar,
+// keyed on view-space depth (km). Fully shadow-map at <= near, fully per-instance at >= far.
+export const shadowBubbleFadeNear = 5;
+export const shadowBubbleFadeFar = 8;
+
+// Distance fog: a gentle far extinction toward the background colour (NOT a hard cutoff).
+// Loose by default so it never clips the field; tighten as asteroid density grows.
+export const fogColor = "#03040a";
+export const fogNear = 30;
+export const fogFar = 90;
+
 // Rotate the canonical camera-forward axis (0, 0, -1) by an orientation quaternion.
 // Used to aim the flashlight (and anything else that needs the ship's facing).
 export function forwardVector(orientation: Quaternion): Vector3 {

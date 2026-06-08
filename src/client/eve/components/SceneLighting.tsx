@@ -1,6 +1,7 @@
 import { useFrame } from "@react-three/fiber";
 import { useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 import {
+  DirectionalLight,
   Mesh,
   Object3D,
   Quaternion as ThreeQuaternion,
@@ -17,6 +18,14 @@ import {
   flashlightIntensity,
   flashlightPenumbra,
   forwardVector,
+  shadowBias,
+  shadowBubbleHalf,
+  shadowCameraFar,
+  shadowCameraNear,
+  shadowLightDistance,
+  shadowMapSize,
+  shadowNormalBias,
+  shadowSoftRadius,
   sunDiscColor,
   sunDiscSize,
   sunDirection,
@@ -29,16 +38,55 @@ import {
 // never rotated, so this fixed scene-space direction is a stable world direction. Target stays
 // at the origin, so the light travels along -sunDirection.
 export function SunLight(): ReactNode {
+  const lightRef = useRef<DirectionalLight>(null);
+  const targetRef = useRef<Object3D>(null);
+
+  useLayoutEffect(() => {
+    const light = lightRef.current;
+    const target = targetRef.current;
+    if (light === null || target === null) {
+      return;
+    }
+    light.target = target;
+    light.castShadow = true;
+    light.shadow.mapSize.set(shadowMapSize, shadowMapSize);
+    light.shadow.bias = shadowBias;
+    light.shadow.normalBias = shadowNormalBias;
+    light.shadow.radius = shadowSoftRadius;
+    const shadowCamera = light.shadow.camera;
+    shadowCamera.left = -shadowBubbleHalf;
+    shadowCamera.right = shadowBubbleHalf;
+    shadowCamera.top = shadowBubbleHalf;
+    shadowCamera.bottom = -shadowBubbleHalf;
+    shadowCamera.near = shadowCameraNear;
+    shadowCamera.far = shadowCameraFar;
+    shadowCamera.updateProjectionMatrix();
+  }, []);
+
+  // Each frame, follow the camera: place the shadow-casting light just up-sun of the camera
+  // (direction is what matters for a directional light) with the ortho target on the camera,
+  // so the tight shadow bubble tracks the player through the floating-origin field.
+  useFrame((state) => {
+    const light = lightRef.current;
+    const target = targetRef.current;
+    if (light === null || target === null) {
+      return;
+    }
+    const cameraPosition = state.camera.position;
+    light.position.set(
+      cameraPosition.x + sunDirection.x * shadowLightDistance,
+      cameraPosition.y + sunDirection.y * shadowLightDistance,
+      cameraPosition.z + sunDirection.z * shadowLightDistance,
+    );
+    target.position.copy(cameraPosition);
+    target.updateMatrixWorld(true);
+  });
+
   return (
-    <directionalLight
-      position={[
-        sunDirection.x * sunDistance,
-        sunDirection.y * sunDistance,
-        sunDirection.z * sunDistance,
-      ]}
-      intensity={sunLightIntensity}
-      color={sunLightColor}
-    />
+    <>
+      <directionalLight ref={lightRef} intensity={sunLightIntensity} color={sunLightColor} />
+      <object3D ref={targetRef} />
+    </>
   );
 }
 
@@ -63,7 +111,7 @@ export function SunDisc(): ReactNode {
   return (
     <mesh ref={meshRef}>
       <sphereGeometry args={[sunDiscSize, 24, 24]} />
-      <meshBasicMaterial color={sunDiscColor} toneMapped={false} />
+      <meshBasicMaterial color={sunDiscColor} toneMapped={false} fog={false} />
     </mesh>
   );
 }
