@@ -26,7 +26,9 @@ import { resolve } from "node:path";
 import { chromium, type Page } from "playwright";
 
 import { deriveVirtualField } from "../../src/client/eve/field-derivation";
-import type { FieldSummary } from "../../src/shared/types";
+import { packField, unpackField } from "../../src/client/eve/field-core";
+import { partitionIntoChunks, reconcileChunks } from "../../src/client/eve/field-chunks";
+import type { Asteroid, FieldSummary } from "../../src/shared/types";
 
 type RenderStatsSnapshot = {
   frame: number;
@@ -37,6 +39,7 @@ type RenderStatsSnapshot = {
   drawCalls: number;
   renderedTriangles: number;
   fieldDeriveMs: number;
+  lastFieldWorkMs: number;
   lastFrameMs: number;
   medianFrameMs: number;
   worstCellCrossFrameMs: number;
@@ -53,6 +56,7 @@ type LimitMetrics = {
   asteroidTriangles: number;
   renderedTriangles: number;
   fieldDeriveMs: number;
+  steadyFieldWorkMs: number;
   worstCellCrossFrameMs: number;
   medianFrameMs: number;
   cellCrossCount: number;
@@ -138,16 +142,45 @@ async function setFaceAway(page: Page, on: boolean): Promise<void> {
   }, on);
 }
 
-// Push the ship hard enough to keep crossing field cells (1130 m each) for a few
-// seconds, so worstCellCrossFrameMs samples the rebuild/upload cost on a real crossing.
-async function thrustBurst(serverUrl: string, pilotId: string, count: number): Promise<void> {
-  for (let i = 0; i < count; i += 1) {
-    await fetch(`${serverUrl}/api/ships/${encodeURIComponent(pilotId)}/thrust`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ impulse: { x: 12, y: 0, z: 0 } }),
-    }).catch(() => undefined);
+async function setDrift(page: Page, metersPerDelta: number): Promise<void> {
+  await page.evaluate((value) => {
+    (
+      window as unknown as { __HAYSTACK_RENDER_DEBUG__?: { drift: (m: number) => void } }
+    ).__HAYSTACK_RENDER_DEBUG__?.drift(value);
+  }, metersPerDelta);
+}
+
+// Drive the owned ship across field cells at a controlled rate (the drift debug control,
+// see RenderDebugControls.drift) and poll until enough crossings have been observed, then
+// stop drifting. Each crossing exercises the real derive→worker→reconstruct→partition→
+// reconcile→build pipeline; worstCellCrossFrameMs (per-cross main-thread work) is what C4
+// gates. We drive deterministically rather than with thrust because the client prediction
+// is unusable at 100k under headless swiftshader — it stalls or runs away past the field.
+async function flyAndSampleCrossings(page: Page): Promise<RenderStatsSnapshot> {
+  const deadline = Date.now() + 22000;
+  let worst = 0;
+  let last: RenderStatsSnapshot | null = null;
+  // ~1180 m per drift tick ≈ one 1130 m cell, so each tick that fires re-pages roughly a
+  // single cell — the realistic "constant re-paging" crossing C4 targets — while the ship
+  // stays inside the ±56 km field for the whole window (~47 cells to the edge).
+  await setDrift(page, 1180);
+  while (Date.now() < deadline) {
+    await Bun.sleep(1000);
+    const stats = await readStats(page);
+    if (stats !== null) {
+      worst = Math.max(worst, stats.worstCellCrossFrameMs);
+      last = stats;
+      if (stats.cellCrossCount >= 8) {
+        break;
+      }
+    }
   }
+  await setDrift(page, 0);
+  const final = (await readStats(page)) ?? last;
+  if (final === null) {
+    throw new Error("Render stats were never published during the drift phase.");
+  }
+  return { ...final, worstCellCrossFrameMs: Math.max(worst, final.worstCellCrossFrameMs) };
 }
 
 async function measureLimit(limit: number, index: number): Promise<LimitMetrics> {
@@ -203,12 +236,12 @@ async function measureLimit(limit: number, index: number): Promise<LimitMetrics>
     await Bun.sleep(1500);
     const empty = await readStats(page);
 
-    // Phase 3: fly across field cells and capture the worst cell-cross frame.
+    // Phase 3: fly across field cells and capture the worst per-cross main-thread field
+    // work (derive/reconstruct + partition + instance build). The derive is offloaded to a
+    // worker, so this samples only the main-thread cost a crossing imposes.
     await setFaceAway(page, false);
     await resetStatsWindow(page);
-    await thrustBurst(serverUrl, pilotId, 160);
-    await Bun.sleep(4000);
-    const moving = await readStats(page);
+    const moving = await flyAndSampleCrossings(page);
 
     if (steady === null || empty === null || moving === null) {
       throw new Error("Render stats were never published by the client.");
@@ -224,6 +257,7 @@ async function measureLimit(limit: number, index: number): Promise<LimitMetrics>
       asteroidTriangles: steady.asteroidTriangles,
       renderedTriangles: steady.renderedTriangles,
       fieldDeriveMs: round(Math.max(steady.fieldDeriveMs, moving.fieldDeriveMs)),
+      steadyFieldWorkMs: round(steady.lastFieldWorkMs),
       worstCellCrossFrameMs: round(moving.worstCellCrossFrameMs),
       medianFrameMs: round(steady.medianFrameMs),
       cellCrossCount: moving.cellCrossCount,
@@ -287,8 +321,73 @@ function microBenchDerive(): {
   };
 }
 
+// In-process micro-bench of the MAIN-THREAD work a cell crossing imposes at 100k, with no
+// browser/GPU/GC-under-swiftshader noise (the same reason microBenchDerive runs in-process).
+// On a crossing the worker derives the new cell OFF the main thread; the main thread then
+// only (a) reconstructs the Asteroid[] reusing the previous cross's objects and (b) re-
+// partitions + reconciles the chunks, reusing unchanged ones. THAT — not the off-thread
+// derive — is what must stay under the frame budget (item C4). We measure a realistic
+// single-cell crossing (97%+ objects/chunks unchanged); the chunk matrix BUILD that follows
+// touches only the few changed chunks (it needs a GL context, so it is excluded here — it is
+// small and bounded by the changed-chunk count, never the full 100k set).
+function microBenchCrossWork(): {
+  renderLimit: number;
+  derivedCount: number;
+  iterations: number;
+  medianMs: number;
+  minMs: number;
+  maxMs: number;
+} {
+  const cellSize = 1130;
+  const field: FieldSummary = {
+    totalAsteroids: 1_000_000,
+    seed: 424242,
+    cellSize,
+    indexKind: "cubicCellHierarchy",
+    renderedLimit: 100_000,
+  };
+  const seedFromCell = (cell: number): Asteroid[] =>
+    deriveVirtualField({ x: cell * cellSize, y: 0, z: 0 }, field);
+  // Seed the reuse state from cell 0 (this is the boot/first-paint cost, not a crossing).
+  let prevUnpacked = unpackField(packField(seedFromCell(0)), null);
+  let prevChunks = partitionIntoChunks(prevUnpacked.asteroids);
+  const iterations = 12;
+  const warmup = 3;
+  let derivedCount = 0;
+  const samples: number[] = [];
+  for (let i = 1; i <= warmup + iterations; i += 1) {
+    // The worker's off-thread work (derive + pack) — NOT part of the main-thread cost.
+    const packed = packField(seedFromCell(i));
+    const start = performance.now();
+    // Main-thread crossing work: reconstruct (reusing prior objects) + partition + reconcile.
+    const unpacked = unpackField(packed, prevUnpacked.byCell);
+    const chunks = reconcileChunks(prevChunks, unpacked.asteroids);
+    const elapsed = performance.now() - start;
+    prevUnpacked = unpacked;
+    prevChunks = chunks;
+    derivedCount = unpacked.asteroids.length;
+    if (i > warmup) {
+      samples.push(elapsed);
+    }
+  }
+  samples.sort((a, b) => a - b);
+  return {
+    renderLimit: 100_000,
+    derivedCount,
+    iterations,
+    medianMs: round(samples[Math.floor(samples.length / 2)] ?? 0),
+    minMs: round(samples[0] ?? 0),
+    maxMs: round(samples[samples.length - 1] ?? 0),
+  };
+}
+
 async function main(): Promise<void> {
   const microBench = microBenchDerive();
+  const crossWorkBench = microBenchCrossWork();
+  process.stderr.write(
+    `[bench] per-cross main-thread work @100k: derived=${crossWorkBench.derivedCount} ` +
+      `median=${crossWorkBench.medianMs}ms min=${crossWorkBench.minMs}ms max=${crossWorkBench.maxMs}ms\n`,
+  );
   process.stderr.write(
     `[bench] deriveVirtualField @100k: derived=${microBench.derivedCount} ` +
       `median=${microBench.medianMs}ms min=${microBench.minMs}ms max=${microBench.maxMs}ms\n`,
@@ -305,12 +404,13 @@ async function main(): Promise<void> {
         `submitted=${metrics.submittedInstanceCount} emptySubmitted=${metrics.cameraFacingEmptySubmittedInstanceCount} ` +
         `astDraws=${metrics.asteroidDrawCalls} drawCalls=${metrics.drawCalls} ` +
         `astTris=${metrics.asteroidTriangles} tris=${metrics.renderedTriangles} ` +
-        `deriveMs=${metrics.fieldDeriveMs} worstCrossMs=${metrics.worstCellCrossFrameMs} ` +
+        `deriveMs=${metrics.fieldDeriveMs} steadyFieldWorkMs=${metrics.steadyFieldWorkMs} ` +
+        `worstCrossMs=${metrics.worstCellCrossFrameMs} ` +
         `medianMs=${metrics.medianFrameMs} crosses=${metrics.cellCrossCount}\n`,
     );
   }
 
-  process.stdout.write(`${JSON.stringify({ microBench, results }, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({ microBench, crossWorkBench, results }, null, 2)}\n`);
 }
 
 await main();

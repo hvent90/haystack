@@ -1,6 +1,6 @@
 import { Canvas, useFrame } from "@react-three/fiber";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode, RefObject } from "react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   DodecahedronGeometry,
   InstancedBufferAttribute,
@@ -24,6 +24,7 @@ import { sameSelection } from "../overview";
 import { flightRenderStore } from "../renderStore";
 import { fogColor, fogFar, fogNear, shadowBubbleFadeFar, shadowBubbleFadeNear } from "../lighting";
 import { sunlitForId } from "../sun-occlusion";
+import { CHUNK_METERS, reconcileChunks, type AsteroidChunkData } from "../field-chunks";
 import { getRenderDebugControls, renderStats } from "../render-stats";
 import { AudioListenerRig, RemoteShipAudio } from "./SpatialAudio";
 import { ShipFlashlight, SunDisc, SunLight } from "./SceneLighting";
@@ -279,15 +280,20 @@ function SceneProjection({
   const lastBoxSig = useRef("none");
   const selectedRowRef = useRef(selectedRow);
   selectedRowRef.current = selectedRow;
-  // id -> asteroid lookup so the per-frame selection-box projection is O(1) instead
-  // of a linear scan over the whole visible field each frame.
+  // id -> asteroid lookup so the per-frame selection-box projection is O(1) instead of a
+  // linear scan over the whole visible field each frame. Only built when an asteroid is
+  // actually selected — otherwise this 100k-entry map would be rebuilt on every cell cross
+  // (a derived-set change) for nothing, adding ~6 ms of needless field work per crossing.
+  const selectionNeedsAsteroidMap = selectedRow?.kind === "asteroid";
   const asteroidById = useMemo(() => {
     const map = new Map<string, Asteroid>();
-    for (const asteroid of asteroids) {
-      map.set(asteroid.id, asteroid);
+    if (selectionNeedsAsteroidMap) {
+      for (const asteroid of asteroids) {
+        map.set(asteroid.id, asteroid);
+      }
     }
     return map;
-  }, [asteroids]);
+  }, [asteroids, selectionNeedsAsteroidMap]);
   const asteroidByIdRef = useRef(asteroidById);
   asteroidByIdRef.current = asteroidById;
 
@@ -1062,15 +1068,6 @@ function RenderDriver({ fallbackShip }: { fallbackShip: Ship }): null {
 // (cellsPerAxis * cellSize / 2 = 56.5 km) so every chunk falls behind the camera.
 const EMPTY_VIEW_LIFT = 1000;
 
-// Spatial chunk edge length (meters). The derived field is partitioned into cubic
-// chunks, each rendered as its own InstancedMesh with its own bounding sphere, so
-// three frustum-culls them INDIVIDUALLY — only chunks intersecting the view are
-// submitted to the GPU (vs. the old single mesh + single bounding sphere, which was
-// all-or-nothing). ~7.5 km balances cull tightness (facing the field submits far
-// fewer than the derived count) against a small, bounded visible-chunk count (draw
-// calls stay a constant independent of the derived total). Tuned via client-render.
-const CHUNK_METERS = 7500;
-
 // Per-chunk draw distance (scene units ~= km). A chunk whose nearest point is beyond
 // this from the camera is hidden (mesh.visible=false), so even within the frustum the
 // far shell of the derived ball is not submitted: this is the "distance" half of the
@@ -1086,35 +1083,6 @@ const CHUNK_RADIUS_SCENE = ((CHUNK_METERS / metersPerSceneUnit) * Math.sqrt(3)) 
 
 // Reused scratch for the per-chunk distance test (single-threaded render loop).
 const chunkWorldCenter = new ThreeVector3();
-
-type AsteroidChunkData = {
-  key: string;
-  cx: number;
-  cy: number;
-  cz: number;
-  asteroids: Asteroid[];
-};
-
-// Bucket the derived rocks into cubic spatial chunks, preserving per-chunk order.
-// Each bucket becomes one frustum- and distance-cullable InstancedMesh. O(N) over the
-// derived set. The integer chunk coords give each chunk a cheap, exact cube center for
-// the distance test without scanning its rocks.
-function partitionIntoChunks(asteroids: Asteroid[]): AsteroidChunkData[] {
-  const byKey = new Map<string, AsteroidChunkData>();
-  for (const asteroid of asteroids) {
-    const cx = Math.floor(asteroid.position.x / CHUNK_METERS);
-    const cy = Math.floor(asteroid.position.y / CHUNK_METERS);
-    const cz = Math.floor(asteroid.position.z / CHUNK_METERS);
-    const key = `${cx}|${cy}|${cz}`;
-    let bucket = byKey.get(key);
-    if (bucket === undefined) {
-      bucket = { key, cx, cy, cz, asteroids: [] };
-      byKey.set(key, bucket);
-    }
-    bucket.asteroids.push(asteroid);
-  }
-  return Array.from(byKey.values());
-}
 
 function glslFloat(value: number): string {
   return Number.isInteger(value) ? `${value}.0` : `${value}`;
@@ -1202,10 +1170,19 @@ function InstancedAsteroids({
   // Per-rock deterministic rotation seed, derived once per id (shared across chunks).
   const seedCache = useRef(new Map<string, number>());
 
-  // Partition the derived field into cubic spatial chunks (once per visible-set
-  // change). Each chunk renders as its own bounding-sphere'd InstancedMesh so three
-  // frustum-culls them individually — the core of real per-instance culling.
-  const chunks = useMemo(() => partitionIntoChunks(asteroids), [asteroids]);
+  // Partition the derived field into cubic spatial chunks (once per visible-set change),
+  // reusing unchanged chunks from the previous set by reference so only boundary chunks
+  // that changed on the cell cross rebuild their matrices (C4 — no full 100k rebuild per
+  // cross). Each chunk renders as its own bounding-sphere'd InstancedMesh so three
+  // frustum-culls them individually. Timed as cell-cross field work.
+  const prevChunksRef = useRef<Map<number, AsteroidChunkData>>(new Map());
+  const chunks = useMemo(() => {
+    const start = performance.now();
+    const reconciled = reconcileChunks(prevChunksRef.current, asteroids);
+    prevChunksRef.current = reconciled;
+    renderStats.noteFieldWork(performance.now() - start);
+    return Array.from(reconciled.values());
+  }, [asteroids]);
 
   // Floating-origin rebase: shift the whole field once per frame (O(1)). Each chunk
   // bakes ABSOLUTE field positions into its instance matrices; this group translation
@@ -1248,7 +1225,7 @@ function InstancedAsteroids({
 // Instance matrices bake the rocks' ABSOLUTE field positions; the parent group does
 // the per-frame origin rebase. The shared material is reused (not owned), so the mesh
 // uses dispose={null} and this component disposes only its own geometry on unmount.
-function AsteroidChunk({
+const AsteroidChunk = memo(function AsteroidChunk({
   chunk,
   material,
   seedCache,
@@ -1303,6 +1280,7 @@ function AsteroidChunk({
     if (mesh === null) {
       return;
     }
+    const buildStart = performance.now();
     const count = asteroids.length;
     const sunlit = new Float32Array(count);
     for (let index = 0; index < count; index += 1) {
@@ -1340,6 +1318,7 @@ function AsteroidChunk({
       existing.needsUpdate = true;
     }
     mesh.computeBoundingSphere();
+    renderStats.noteFieldWork(performance.now() - buildStart);
   }, [asteroids, transform, geometry, seedCache]);
 
   return (
@@ -1368,7 +1347,7 @@ function AsteroidChunk({
       }}
     />
   );
-}
+});
 
 function StructureMesh({
   structure,

@@ -71,6 +71,7 @@ import {
   replaceOwnedShip,
 } from "./prediction";
 import { FieldDeriver, withDerivedField } from "./field-derivation";
+import { getRenderDebugControls } from "./render-stats";
 import { flightRenderStore } from "./renderStore";
 import type {
   ChatChannel,
@@ -91,6 +92,34 @@ import { clamp } from "./vector";
 import { AudioControls } from "../audio/AudioControls";
 import { spatialMasterVolume } from "../audio/spatial";
 import { useAudio } from "../audio/useAudio";
+
+// Benchmark-only deterministic flight (see RenderDebugControls.drift). Overrides the owned
+// ship's snapshot x with the synthetic drift position so the field deriver re-pages cells
+// through the real pipeline. `advance` is the meters to move first: the interval ticker
+// passes the per-tick drift distance, while the WS delta handler passes 0 (it merely re-
+// applies the current drift x, so a server/prediction update doesn't snap the ship back to
+// spawn and make the deriver oscillate). No effect in normal play (drift = 0).
+function driftOwnedShip(
+  snapshot: WorldSnapshot,
+  pilotId: string,
+  driftXRef: { current: number | null },
+  advance: number,
+): WorldSnapshot {
+  if (getRenderDebugControls().drift <= 0) {
+    driftXRef.current = null;
+    return snapshot;
+  }
+  const owned = snapshot.ships.find((ship) => ship.pilotId === pilotId);
+  if (owned === undefined) {
+    return snapshot;
+  }
+  const nextX = (driftXRef.current ?? owned.position.x) + advance;
+  driftXRef.current = nextX;
+  const ships = snapshot.ships.map((ship) =>
+    ship.pilotId === pilotId ? { ...ship, position: { ...ship.position, x: nextX } } : ship,
+  );
+  return { ...snapshot, ships };
+}
 
 export function EveApp(): ReactNode {
   const [session, setSession] = useState<Session | null>(null);
@@ -126,6 +155,8 @@ export function EveApp(): ReactNode {
   const sessionRef = useRef<Session | null>(null);
   const predictionRef = useRef(new OwnedShipPrediction());
   const fieldDeriverRef = useRef(new FieldDeriver());
+  // Synthetic owned-ship x for the benchmark drift control (null = not drifting).
+  const driftXRef = useRef<number | null>(null);
   const heldKeysRef = useRef<Set<string>>(new Set());
   const stageRef = useRef<HTMLDivElement | null>(null);
   const flightModeRef = useRef<FlightMode>("cursor");
@@ -185,6 +216,55 @@ export function EveApp(): ReactNode {
     }
   }, []);
 
+  // The field deriver offloads the heavy per-cross virtual-field derive to a Web Worker
+  // and re-derives asynchronously; when it delivers a fresh field, re-run withDerivedField
+  // against the current snapshot so the new rocks render. Terminate the worker on unmount.
+  useEffect(() => {
+    if (session === null) {
+      return undefined;
+    }
+    const deriver = fieldDeriverRef.current;
+    const pilotId = session.pilot.id;
+    deriver.setUpdateListener(() => {
+      setSnapshot((current) =>
+        current === null ? current : withDerivedField(current, deriver, pilotId),
+      );
+    });
+    return () => deriver.setUpdateListener(null);
+  }, [session]);
+
+  useEffect(() => {
+    const deriver = fieldDeriverRef.current;
+    return () => deriver.dispose();
+  }, []);
+
+  // Benchmark-only deterministic drift ticker: when drift is on, advance the owned ship a
+  // fixed distance per tick (independent of the WS stream, which is starved at 100k under
+  // headless swiftshader) and re-derive — exercising the real cell-cross pipeline. The WS
+  // delta handler re-applies the same drift x (advance 0) so the two paths agree.
+  useEffect(() => {
+    if (session === null) {
+      return undefined;
+    }
+    const deriver = fieldDeriverRef.current;
+    const pilotId = session.pilot.id;
+    const timer = setInterval(() => {
+      const drift = getRenderDebugControls().drift;
+      // Advance only when no derive is outstanding, so the ship moves exactly one step per
+      // completed crossing — clean ~1-cell re-pages instead of getting several cells ahead
+      // of the (slow, at 100k) worker and forcing low-reuse multi-cell jumps.
+      if (drift <= 0 || deriver.isBusy()) {
+        return;
+      }
+      setSnapshot((current) =>
+        current === null
+          ? current
+          : withDerivedField(driftOwnedShip(current, pilotId, driftXRef, drift), deriver, pilotId),
+      );
+    }, 200);
+    return () => clearInterval(timer);
+  }, [session]);
+
   useEffect(() => {
     if (session === null) {
       return undefined;
@@ -219,11 +299,16 @@ export function EveApp(): ReactNode {
                   flightRenderStore.resetOwned(ownedShip);
                 }
               }
-              const merged = mergeWorldPatchForOwnedPrediction(
-                current,
-                message.patch,
+              const merged = driftOwnedShip(
+                mergeWorldPatchForOwnedPrediction(
+                  current,
+                  message.patch,
+                  session.pilot.id,
+                  predictedShip,
+                ),
                 session.pilot.id,
-                predictedShip,
+                driftXRef,
+                0,
               );
               if (message.patch.asteroids !== undefined) {
                 fieldDeriverRef.current.setSeeded(message.patch.asteroids);

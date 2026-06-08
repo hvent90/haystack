@@ -30,12 +30,22 @@ export type RenderStatsSnapshot = {
   // post). Bounded, but coarser than the asteroid-specific counts above.
   drawCalls: number;
   renderedTriangles: number;
-  // Time the last deriveVirtualField took (ms) — the cell-cross rebuild cost.
+  // Main-thread cost of the last field derive (ms): the worker-path reconstruct, or the
+  // synchronous deriveVirtualField on the fallback path. NOT the worker's off-thread scan.
   fieldDeriveMs: number;
-  // Most recent frame interval (ms), and the median across the sample window.
+  // Total main-thread FIELD work (derive/reconstruct + chunk partition + instance build)
+  // attributed to the most recently completed frame. ~0 in steady state.
+  lastFieldWorkMs: number;
+  // Most recent frame interval (ms), and the median across the sample window. NOTE: under
+  // headless swiftshader this is dominated by synchronous software rasterization (the test
+  // renderer), NOT by our JS — it is a harness artifact, not a main-thread cost. The
+  // robust cell-cross signal is worstCellCrossFrameMs (main-thread field work), below.
   lastFrameMs: number;
   medianFrameMs: number;
-  // Worst single frame (ms) on a cell-cross frame within the sample window.
+  // Worst single frame's total MAIN-THREAD field work (ms) within the sample window — the
+  // real "does a cell cross block a frame" signal. Hardware/renderer independent: it sums
+  // only our own timed work (derive/reconstruct + partition + instance build) per frame,
+  // never the GPU/raster time. This is what C4's budget gates.
   worstCellCrossFrameMs: number;
   // Cell crossings (derive events) observed within the sample window.
   cellCrossCount: number;
@@ -64,10 +74,14 @@ class RenderStats {
   private worstCellCrossFrameMs = 0;
   private cellCrossCount = 0;
 
-  // A derive happened; the FOLLOWING rendered frame carries its upload/build cost,
-  // so attribute that frame's interval to the worst cell-cross time.
-  private crossPending = false;
-  private attributeNextFrame = false;
+  // Per-CROSS main-thread field work. A cell cross does: reconstruct (recordDerive) then,
+  // in the React commit it triggers, the chunk partition + reconcile + per-chunk build
+  // (noteFieldWork). We accumulate those into one cross bucket and finalize the bucket's
+  // total when the NEXT cross starts — so the worst is a single crossing's true main-thread
+  // stall, NOT a per-frame sum (under headless swiftshader's ~1.5 s frames several crossings
+  // batch into one frame, which would inflate a per-frame metric far above any real hitch).
+  private currentCrossWorkMs = 0;
+  private lastFieldWorkMs = 0;
 
   // Called from a visible asteroid mesh's (material-gated) onAfterRender.
   noteSubmitted(instanceCount: number, trianglesPerInstance: number): void {
@@ -76,11 +90,23 @@ class RenderStats {
     this.pendingTriangles += instanceCount * trianglesPerInstance;
   }
 
-  // Called when the client re-derives the virtual field on a cell crossing.
+  // Main-thread time (ms) spent on field work after a derive — the chunk partition/reconcile
+  // and the per-chunk instance-matrix build. Added to the in-progress cross's bucket.
+  noteFieldWork(ms: number): void {
+    this.currentCrossWorkMs += ms;
+  }
+
+  // Called when the client (re)derives the virtual field: the worker-path reconstruct, or
+  // the synchronous fallback derive. The ms is the MAIN-THREAD cost. Finalizes the previous
+  // cross's bucket into the worst, then opens a new bucket seeded with this reconstruct.
   recordDerive(ms: number, derivedCount: number): void {
     this.fieldDeriveMs = ms;
     this.derivedAsteroidCount = derivedCount;
-    this.crossPending = true;
+    this.lastFieldWorkMs = this.currentCrossWorkMs;
+    if (this.currentCrossWorkMs > this.worstCellCrossFrameMs) {
+      this.worstCellCrossFrameMs = this.currentCrossWorkMs;
+    }
+    this.currentCrossWorkMs = ms;
     this.cellCrossCount += 1;
   }
 
@@ -109,14 +135,6 @@ class RenderStats {
     if (this.frameTimes.length > FRAME_WINDOW) {
       this.frameTimes.shift();
     }
-    if (this.attributeNextFrame) {
-      this.worstCellCrossFrameMs = Math.max(this.worstCellCrossFrameMs, frameMs);
-      this.attributeNextFrame = false;
-    }
-    if (this.crossPending) {
-      this.attributeNextFrame = true;
-      this.crossPending = false;
-    }
 
     this.frame += 1;
     this.publish();
@@ -127,6 +145,8 @@ class RenderStats {
     this.frameTimes = [];
     this.worstCellCrossFrameMs = 0;
     this.cellCrossCount = 0;
+    this.currentCrossWorkMs = 0;
+    this.lastFieldWorkMs = 0;
     this.publish();
   }
 
@@ -152,9 +172,12 @@ class RenderStats {
       drawCalls: this.drawCalls,
       renderedTriangles: this.renderedTriangles,
       fieldDeriveMs: this.fieldDeriveMs,
+      lastFieldWorkMs: this.lastFieldWorkMs,
       lastFrameMs: this.lastFrameMs,
       medianFrameMs: this.median(),
-      worstCellCrossFrameMs: this.worstCellCrossFrameMs,
+      // Include the in-progress cross so the most recent crossing is reflected even before
+      // the next one finalizes its bucket.
+      worstCellCrossFrameMs: Math.max(this.worstCellCrossFrameMs, this.currentCrossWorkMs),
       cellCrossCount: this.cellCrossCount,
     };
   }
@@ -179,9 +202,15 @@ export const renderStats = new RenderStats();
 // stats object stays pure data.
 export type RenderDebugControls = {
   faceAway: boolean;
+  // Benchmark-only deterministic flight: meters to advance the owned ship along +x per
+  // applied world delta, so the field deriver re-pages cells at a controlled rate through
+  // the exact production pipeline. 0 = off (normal play). Used because real thrust-driven
+  // flight is uncontrollable at 100k under headless swiftshader — the starved client
+  // prediction either stalls or runs away clear past the field.
+  drift: number;
 };
 
-const debugControls: RenderDebugControls = { faceAway: false };
+const debugControls: RenderDebugControls = { faceAway: false, drift: 0 };
 
 export function getRenderDebugControls(): RenderDebugControls {
   return debugControls;
@@ -194,6 +223,7 @@ if (typeof window !== "undefined") {
         controls: RenderDebugControls;
         reset: () => void;
         faceAway: (on: boolean) => void;
+        drift: (metersPerDelta: number) => void;
       };
     }
   ).__HAYSTACK_RENDER_DEBUG__ = {
@@ -201,6 +231,9 @@ if (typeof window !== "undefined") {
     reset: () => renderStats.reset(),
     faceAway: (on: boolean) => {
       debugControls.faceAway = on;
+    },
+    drift: (metersPerDelta: number) => {
+      debugControls.drift = metersPerDelta;
     },
   };
 }

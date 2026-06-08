@@ -1,157 +1,20 @@
-import type { Asteroid, FieldSummary, Mineral, Vector3, WorldSnapshot } from "../../shared/types";
+import type { Asteroid, FieldSummary, Vector3, WorldSnapshot } from "../../shared/types";
 import { renderStats } from "./render-stats";
+import { cellCoords, deriveVirtualField, indexByCell, unpackField } from "./field-core";
+import type { FieldDeriveRequest, FieldDeriveResponse } from "./field-worker";
 
-// Client-side reconstruction of the deterministic virtual asteroid field.
+// Client-side reconstruction of the deterministic virtual asteroid field. The field math
+// itself lives in field-core.ts (shared with the derivation Web Worker); this module owns
+// the stateful, reference-stable merge of the streamed seeded set with the derived virtual
+// field, and offloads the heavy per-cross derive to the worker so it never blocks a frame.
 //
-// The server no longer streams the (up to 100k) static virtual rocks every cell
-// crossing — it sends only the small mutable seeded set. The field is a pure function of
-// the seed + the ship's cell, so the client regenerates it locally here, exactly
-// mirroring src/server/field.ts's generator. This removes the per-crossing O(field)
-// server scan and the multi-MB field re-send from the broadcast path entirely.
-//
-// Constants the server bakes in (and which the `field` snapshot descriptor does not
-// carry) are hardcoded to match field.ts. Math.sin is not bit-portable across JS
-// engines, but nothing compares these client-derived rocks against the server — the
-// client is now the sole source of virtual rocks, and scan hits carry their own
-// server-computed bearing/distance — so any engine ULP difference is purely cosmetic
-// (sub-nanometre) and never a correctness issue.
+// Re-exported so scripts/bench/parity-check.ts (and any other client-side caller) keep
+// importing deriveVirtualField from here.
+export { deriveVirtualField } from "./field-core";
 
-const MINERALS: Mineral[] = ["nickel", "waterIce", "cobalt", "silicates", "platinum", "xenotime"];
-
-function hashCell(seed: number, x: number, y: number, z: number): number {
-  return seed + x * 73856093 + y * 19349663 + z * 83492791;
-}
-
-function noise(seed: number): number {
-  const value = Math.sin(seed * 12.9898) * 43758.5453;
-  return value - Math.floor(value);
-}
-
-function pocketForCell(cellX: number): string {
-  if (cellX < 33) {
-    return "inner-drift";
-  }
-  if (cellX < 66) {
-    return "black-thread";
-  }
-  return "long-echo";
-}
-
-type FieldGeometry = {
-  seed: number;
-  cellSize: number;
-  cellsPerAxis: number;
-  originOffset: number;
-  limit: number;
-};
-
-function geometryOf(field: FieldSummary): FieldGeometry {
-  const cellsPerAxis = Math.max(1, Math.round(Math.cbrt(field.totalAsteroids)));
-  return {
-    seed: field.seed,
-    cellSize: field.cellSize,
-    cellsPerAxis,
-    originOffset: -(cellsPerAxis * field.cellSize) / 2,
-    limit: Math.max(1, field.renderedLimit),
-  };
-}
-
-function clampCell(value: number, cellsPerAxis: number): number {
-  return Math.max(0, Math.min(cellsPerAxis - 1, value));
-}
-
-function virtualAsteroidAt(geo: FieldGeometry, cx: number, cy: number, cz: number): Asteroid {
-  const seed = hashCell(geo.seed, cx, cy, cz);
-  return {
-    id: `v-${cx}-${cy}-${cz}`,
-    pocket: pocketForCell(cx),
-    position: {
-      x: geo.originOffset + cx * geo.cellSize + noise(seed + 1) * geo.cellSize,
-      y: geo.originOffset + cy * geo.cellSize + noise(seed + 2) * geo.cellSize,
-      z: geo.originOffset + cz * geo.cellSize + noise(seed + 3) * geo.cellSize,
-    },
-    radius: 45 + noise(seed + 5) * 310,
-    signature: 0.08 + noise(seed + 6) * 0.7,
-    mineralRichness: 0.18 + noise(seed + 7) * 0.82,
-    rareMineral:
-      MINERALS[Math.floor(noise(seed + 4) * MINERALS.length) % MINERALS.length] ?? "nickel",
-    discovered: true,
-  };
-}
-
-// The nearest `renderedLimit` virtual rocks to the ship's CELL CENTER, sorted nearest
-// first (matching the server's old streamedFieldAsteroids). Snapping the query to the
-// cell center makes the result a pure function of the cell, so it only changes when the
-// ship crosses a cell boundary — not as it drifts within a cell.
-//
-// A cube of cells grown around the ship is scanned until it provably contains the global
-// nearest `renderedLimit` (the limit-th rock is closer than any unscanned cell) or spans
-// the whole field. This is O(rendered) rather than the server's old O(field) full scan.
-export function deriveVirtualField(position: Vector3, field: FieldSummary): Asteroid[] {
-  const geo = geometryOf(field);
-  const last = geo.cellsPerAxis - 1;
-  const cx = clampCell(
-    Math.floor((position.x - geo.originOffset) / geo.cellSize),
-    geo.cellsPerAxis,
-  );
-  const cy = clampCell(
-    Math.floor((position.y - geo.originOffset) / geo.cellSize),
-    geo.cellsPerAxis,
-  );
-  const cz = clampCell(
-    Math.floor((position.z - geo.originOffset) / geo.cellSize),
-    geo.cellsPerAxis,
-  );
-  const ox = geo.originOffset + cx * geo.cellSize + geo.cellSize / 2;
-  const oy = geo.originOffset + cy * geo.cellSize + geo.cellSize / 2;
-  const oz = geo.originOffset + cz * geo.cellSize + geo.cellSize / 2;
-
-  let half = Math.max(1, Math.ceil(Math.cbrt(geo.limit) / 2));
-  let candidates: Array<{ asteroid: Asteroid; d2: number }> = [];
-  for (;;) {
-    const minX = Math.max(0, cx - half);
-    const maxX = Math.min(last, cx + half);
-    const minY = Math.max(0, cy - half);
-    const maxY = Math.min(last, cy + half);
-    const minZ = Math.max(0, cz - half);
-    const maxZ = Math.min(last, cz + half);
-    candidates = [];
-    for (let x = minX; x <= maxX; x += 1) {
-      for (let y = minY; y <= maxY; y += 1) {
-        for (let z = minZ; z <= maxZ; z += 1) {
-          const asteroid = virtualAsteroidAt(geo, x, y, z);
-          const dx = asteroid.position.x - ox;
-          const dy = asteroid.position.y - oy;
-          const dz = asteroid.position.z - oz;
-          candidates.push({ asteroid, d2: dx * dx + dy * dy + dz * dz });
-        }
-      }
-    }
-    const spansField =
-      minX === 0 && maxX === last && minY === 0 && maxY === last && minZ === 0 && maxZ === last;
-    if (candidates.length >= geo.limit) {
-      candidates.sort((a, b) => a.d2 - b.d2);
-      // The nearest unscanned cell sits one layer beyond the cube; its closest possible
-      // rock is (half + 0.5) cells away. If the limit-th rock is nearer than that, the
-      // cube already holds the true global nearest set.
-      const safe = (half + 0.5) * geo.cellSize;
-      const limitRock = candidates[geo.limit - 1];
-      if (spansField || (limitRock !== undefined && Math.sqrt(limitRock.d2) <= safe)) {
-        break;
-      }
-    } else if (spansField) {
-      candidates.sort((a, b) => a.d2 - b.d2);
-      break;
-    }
-    half += Math.max(2, Math.ceil(half * 0.5));
-  }
-
-  const count = Math.min(candidates.length, geo.limit);
-  const result: Asteroid[] = new Array(count);
-  for (let i = 0; i < count; i += 1) {
-    result[i] = candidates[i]!.asteroid;
-  }
-  return result;
+function cellKeyFor(position: Vector3, field: FieldSummary): string {
+  const { cx, cy, cz } = cellCoords(position, field);
+  return `${cx}-${cy}-${cz}-${field.renderedLimit}-${field.seed}-${field.cellSize}`;
 }
 
 function sameSeededSet(
@@ -179,12 +42,56 @@ function sameSeededSet(
 // seeded set is unchanged. Downstream identity memos (notably the instanced-field matrix
 // rebuild) therefore only fire on a real visible-set change (a cell crossing or a seeded
 // discovery flip), exactly as they did when the field was streamed.
+//
+// The heavy nearest-`renderedLimit` derive (~100-300ms at 100k) is run in a Web Worker
+// (field-worker.ts). On a cell crossing asteroidsFor returns the PREVIOUS (stale-by-≤1-
+// cell) merged field immediately and posts the new cell to the worker; when the worker
+// returns, the field is rebuilt from transferable typed arrays (~3ms) and the registered
+// update listener re-renders. So the field updates a few frames late instead of blocking
+// the main thread — and never blinks, because the old field stays on screen meanwhile.
+// The very first derive (no prior field) and any environment without Worker fall back to a
+// synchronous derive, preserving the original behaviour exactly.
 export class FieldDeriver {
   private seeded: Asteroid[] = [];
   private cellKey: string | null = null;
   private virtual: Asteroid[] = [];
   private merged: Asteroid[] = [];
   private mergedSeededRef: Asteroid[] | null = null;
+
+  private worker: Worker | null = null;
+  private workerTried = false;
+  private reqId = 0;
+  private acceptedReqId = -1;
+  // At most ONE derive in flight. A 5 km/s player can cross cells faster than the worker
+  // derives; rather than queue a request (and a wasted ~5ms reconstruct) per crossed cell,
+  // we keep showing the stale field and, when the in-flight derive returns, immediately
+  // request the ship's CURRENT cell. So work is bounded to ~one reconstruct per round-trip
+  // regardless of crossing rate, and the field always chases the latest position.
+  private inFlight = false;
+  // Previous cross's cellKey -> Asteroid, so a new derive reuses the unchanged objects
+  // (95%+ on a 1-cell cross) instead of re-allocating the whole 100k set each crossing.
+  private virtualByCell: Map<number, Asteroid> | null = null;
+  private updateListener: (() => void) | null = null;
+
+  // Registered by the app so a worker-delivered field triggers a re-render. Cleared on
+  // teardown.
+  setUpdateListener(listener: (() => void) | null): void {
+    this.updateListener = listener;
+  }
+
+  dispose(): void {
+    if (this.worker !== null) {
+      this.worker.terminate();
+      this.worker = null;
+    }
+    this.updateListener = null;
+  }
+
+  // True while a worker derive is outstanding. Used by the benchmark drift control to pace
+  // synthetic flight to the derive rate (one cell per completed crossing).
+  isBusy(): boolean {
+    return this.inFlight;
+  }
 
   // Record the latest streamed seeded set. Reuses the prior reference when the
   // render-relevant content (id + discovered) is identical so a 4s HTTP re-poll that
@@ -196,9 +103,52 @@ export class FieldDeriver {
     this.seeded = seeded;
   }
 
+  private ensureWorker(): Worker | null {
+    if (this.worker !== null) {
+      return this.worker;
+    }
+    if (this.workerTried) {
+      return null;
+    }
+    this.workerTried = true;
+    if (typeof Worker === "undefined") {
+      return null;
+    }
+    try {
+      const worker = new Worker(new URL("./field-worker.ts", import.meta.url), { type: "module" });
+      worker.onmessage = (event: MessageEvent<FieldDeriveResponse>) => {
+        this.handleWorkerResult(event.data);
+      };
+      this.worker = worker;
+      return worker;
+    } catch {
+      return null;
+    }
+  }
+
   private rebuildMerged(): void {
     this.merged = this.seeded.length === 0 ? this.virtual : [...this.seeded, ...this.virtual];
     this.mergedSeededRef = this.seeded;
+  }
+
+  private handleWorkerResult(response: FieldDeriveResponse): void {
+    // Out-of-order / superseded result (the worker is FIFO, so this is just a guard).
+    if (response.reqId <= this.acceptedReqId) {
+      return;
+    }
+    this.acceptedReqId = response.reqId;
+    this.inFlight = false;
+    const start = performance.now();
+    const unpacked = unpackField(response.packed, this.virtualByCell);
+    this.virtual = unpacked.asteroids;
+    this.virtualByCell = unpacked.byCell;
+    this.cellKey = response.key;
+    this.rebuildMerged();
+    // The reconstruct is the ONLY main-thread cost of the derive now (the scan/sort ran in
+    // the worker); record it as the cell-cross field work so the benchmark sees the real
+    // per-frame main-thread stall.
+    renderStats.recordDerive(performance.now() - start, this.merged.length);
+    this.updateListener?.();
   }
 
   asteroidsFor(position: Vector3 | null, field: FieldSummary): Asteroid[] {
@@ -210,30 +160,35 @@ export class FieldDeriver {
       }
       return this.merged;
     }
-    const geo = geometryOf(field);
-    const cx = clampCell(
-      Math.floor((position.x - geo.originOffset) / geo.cellSize),
-      geo.cellsPerAxis,
-    );
-    const cy = clampCell(
-      Math.floor((position.y - geo.originOffset) / geo.cellSize),
-      geo.cellsPerAxis,
-    );
-    const cz = clampCell(
-      Math.floor((position.z - geo.originOffset) / geo.cellSize),
-      geo.cellsPerAxis,
-    );
-    const key = `${cx}-${cy}-${cz}-${field.renderedLimit}-${field.seed}-${field.cellSize}`;
-    const cellChanged = key !== this.cellKey;
-    if (cellChanged) {
-      const start = performance.now();
-      this.virtual = deriveVirtualField(position, field);
-      this.cellKey = key;
-      if (cellChanged || this.mergedSeededRef !== this.seeded) {
+    const key = cellKeyFor(position, field);
+    if (key === this.cellKey) {
+      if (this.mergedSeededRef !== this.seeded) {
         this.rebuildMerged();
       }
+      renderStats.setDerivedCount(this.merged.length);
+      return this.merged;
+    }
+
+    // Cell changed. With no prior field (first paint) or no Worker support, derive
+    // synchronously — there is nothing to show otherwise. Otherwise offload to the worker
+    // and keep showing the previous (stale-by-≤1-cell) field until it returns.
+    const worker = this.virtual.length === 0 ? null : this.ensureWorker();
+    if (worker === null) {
+      const start = performance.now();
+      this.virtual = deriveVirtualField(position, field);
+      // Seed the reuse index so the first subsequent worker cross reuses these objects.
+      this.virtualByCell = indexByCell(this.virtual);
+      this.cellKey = key;
+      this.rebuildMerged();
       renderStats.recordDerive(performance.now() - start, this.merged.length);
       return this.merged;
+    }
+
+    if (!this.inFlight) {
+      this.reqId += 1;
+      this.inFlight = true;
+      const request: FieldDeriveRequest = { reqId: this.reqId, key, position, field };
+      worker.postMessage(request);
     }
     if (this.mergedSeededRef !== this.seeded) {
       this.rebuildMerged();
