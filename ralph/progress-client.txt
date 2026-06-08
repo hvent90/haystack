@@ -179,3 +179,33 @@
 - Files changed: tests/e2e/gameplay-100k.ts (new), package.json (verify:gameplay-100k script), ralph/prd-client.json (C6 passes=true), ralph/progress-client.txt (this entry). No render-path source changed (pure verification item).
 - **Learnings:** At 100k under headless swiftshader the heavy full e2e suites (ui.ts, multiplayer.ts) pass their render-independent assertions (overview/selection/show-info; remote-ship sync via API+snapshot+pilot-card) but TIME OUT on their later physics-driven keyboard-flight portions (velocity-vector pip / W-key accel) because the ~1s/frame render loop starves the WS so the local prediction never advances — the same starvation C4 documented. The fix for a clean checked validation is a dedicated script that asserts ONLY snapshot/count-driven state (the PRD's own robust-signal methodology), not physics flight. The seeded-rock gameplay (mine/scan/discover/sell) is fully render-limit independent, so running the in-process integration suite with HAYSTACK_RENDERED_LIMIT=100000 is itself a valid 100k gameplay validation. Selection robustness against culling is architectural: keep the highlight overlay sourced from the id→asteroid map, not from whichever chunk mesh happens to be submitted.
 ---
+
+## [2026-06-09T00:30:00Z] - C7
+- Before/after summary item (no code change). Consolidates the C2→C5 client-render transformation from the verified per-item measurements already in this log. The "BEFORE" column is the TRUE uncapped baseline @100k (C2-after, cap removed so the catastrophe is visible) — the C0/C1 numbers showed 2000 only because the ASTEROID_CAPACITY cap was masking the real all-or-nothing submission; lifting it (C2) exposes the 100010-submitted / 10.8M-triangle / 2.9s-frame catastrophe that C3–C5 then fix. The "AFTER" column is the C5-final render path.
+- CLIENT RENDER — BEFORE → AFTER (renderLimit=100000, the deterministic app-exposed counts are the robust signal):
+  | metric | BEFORE (no cull, full geom) | AFTER (frustum+distance+LOD) | improvement |
+  |---|---|---|---|
+  | client render cap | ASTEROID_CAPACITY = 2000 (hard truncation) | dynamic high-water-mark capacity (holds full 100k+) | cap removed |
+  | derivedAsteroidCount | 100030 | 100030 | full field both (no truncation) |
+  | culling | 1 InstancedMesh + 1 bounding sphere ⇒ all-or-nothing | per-cell chunk meshes, individually frustum-culled + nearest-corner distance cull (18 km) + 4-tier LOD | real per-instance culling |
+  | submittedInstanceCount (facing field) | 100010 (100% submitted) | 17865 (17.9% — only what's in view) | 5.6x fewer submitted |
+  | cameraFacingEmpty submitted | 100010 (camera inside the one sphere) | 0 (every chunk past draw distance is hidden) | ~0, as required |
+  | asteroidDrawCalls | 1 (one giant mesh) | 61 (visible chunks only) | small bounded constant |
+  | drawCalls (whole frame, all passes) | 70 | 303 | bounded constant (not ~derived) |
+  | asteroidTriangles (color pass) | 3,600,360 | 231,596 | 15.5x fewer (≈6.4k full-rock-equiv) |
+  | renderedTriangles (whole frame) | 10,801,697 | 829,029 | 13x fewer; < 1.2M knob; INDEPENDENT of derived count |
+  | worstCellCrossFrameMs | ~280 ms derive + ~660 ms full-rebuild, blocking the main thread | 11.8 ms in-process (noise-free); 89 ms in-browser (GC/swiftshader-inflated) | derive off-thread, no full rebuild; ≪ 50 ms budget |
+  | steady-state per-frame field work | n/a | 0 ms | no per-frame field cost |
+  | medianFrameMs | 2906.5 ms (~0.3 FPS headless; <1 FPS real hardware) | swiftshader-noisy ~700–1500 ms (non-signal per PRD; counts are the pass basis) | ~2–4x lower wall-clock, but treated as a non-signal |
+- SERVER — UNCHANGED (world-stream bench, 16 players, 200 ticks; publishAll p95 is the headline; full independence re-confirmed under C6):
+  | metric | @2000 | @100000 | delta |
+  |---|---|---|---|
+  | publishAll p95 | 1.71 ms | 1.62 ms | -5.3% (≪15%) |
+  | publishAll p50 | 1.40 ms | 1.39 ms | -0.7% |
+  | MB/peer/s | 0.19 | 0.19 | ~0% |
+  - Server cost stays independent of renderLimit across the 50x change — the field is client-derived; the server streams ~30 seeded rocks + FieldSummary only. Never regressed across C2–C6.
+- ACHIEVED vs GOAL (honest): the mission — render 100k+ asteroids client-side with real frustum+distance culling, bounded triangles, amortized cell-cross, zero server impact — is met on every deterministic signal. The 2000 cap is gone (100030 held); culling is real (17.9% in view, ~0 facing empty, 61 draw calls); triangles are bounded at 829k whole-frame and INDEPENDENT of derived count (would read the same at 1M); the cross is off the hot path (11.8 ms noise-free, derive in a worker, no full rebuild, 0 steady-state); server p95 flat within ~5%.
+  - BINDING LIMITS stated honestly: (1) submitted 17.9% and asteroidTriangles ≈6.4k-rock-equiv are bounded by the 7.5 km chunk granularity + nearest-corner conservatism (so no near rock is ever culled/coarsened) — finer chunks or per-rock LOD would cut further but blow up draw calls; chunking is the right tradeoff. (2) Headless swiftshader frame-ms is GC-/software-raster-noisy and run-to-run unstable (700→1500 ms with FEWER triangles) — the PRD designates it a non-signal; the in-process micro-benches (deriveVirtualField, per-cross work) are the noise-free wall-clock instruments, and the deterministic counts are the robust pass basis. On real GPU hardware the bounded ~18k-instance / ~830k-triangle / 61-draw-call scene replaces the prior <1-FPS 100k full-geometry submission.
+- Files changed: ralph/prd-client.json (C7 passes=true), ralph/progress-client.txt (this entry). No source touched.
+- **Learnings:** the honest "before" for a culling story is the UNCAPPED scene, not the capped one — the 2000-cap baseline understates the catastrophe (it hides the all-or-nothing submission behind truncation), so the summary uses the C2-after numbers where the full 100010/10.8M/2.9s cost is exposed and C3–C5's 17865/829k/61 is the real win. Every headline target is met on the deterministic signals; the only unmet "target" (a clean headless FPS number) is one the PRD explicitly designed AROUND as un-measurable under swiftshader.
+---
