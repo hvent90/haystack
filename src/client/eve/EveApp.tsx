@@ -70,6 +70,7 @@ import {
   OwnedShipPrediction,
   replaceOwnedShip,
 } from "./prediction";
+import { FieldDeriver, withDerivedField } from "./field-derivation";
 import { flightRenderStore } from "./renderStore";
 import type {
   ChatChannel,
@@ -124,6 +125,7 @@ export function EveApp(): ReactNode {
   const streamRef = useRef<WebSocket | null>(null);
   const sessionRef = useRef<Session | null>(null);
   const predictionRef = useRef(new OwnedShipPrediction());
+  const fieldDeriverRef = useRef(new FieldDeriver());
   const heldKeysRef = useRef<Set<string>>(new Set());
   const stageRef = useRef<HTMLDivElement | null>(null);
   const flightModeRef = useRef<FlightMode>("cursor");
@@ -163,7 +165,8 @@ export function EveApp(): ReactNode {
             window.localStorage.setItem(localPilotKey, pilot.id);
             resetPredictionFromSnapshot(world, pilot.id);
             setSession({ pilot, snapshot: world });
-            setSnapshot(world);
+            fieldDeriverRef.current.setSeeded(world.asteroids);
+            setSnapshot(withDerivedField(world, fieldDeriverRef.current, pilot.id));
           }
           return;
         }
@@ -176,7 +179,8 @@ export function EveApp(): ReactNode {
         window.localStorage.setItem(localPilotKey, nextSession.pilot.id);
         resetPredictionFromSnapshot(world, nextSession.pilot.id);
         setSession({ pilot: nextSession.pilot, snapshot: world });
-        setSnapshot(world);
+        fieldDeriverRef.current.setSeeded(world.asteroids);
+        setSnapshot(withDerivedField(world, fieldDeriverRef.current, nextSession.pilot.id));
       }
     }
   }, []);
@@ -193,7 +197,10 @@ export function EveApp(): ReactNode {
           case "hello":
             resetPredictionFromSnapshot(message.snapshot, session.pilot.id);
             pushRemotesToStore(message.snapshot.ships, session.pilot.id, message.serverTimeMs);
-            setSnapshot(message.snapshot);
+            fieldDeriverRef.current.setSeeded(message.snapshot.asteroids);
+            setSnapshot(
+              withDerivedField(message.snapshot, fieldDeriverRef.current, session.pilot.id),
+            );
             return;
           case "delta":
             if (message.patch.ships !== undefined) {
@@ -212,12 +219,16 @@ export function EveApp(): ReactNode {
                   flightRenderStore.resetOwned(ownedShip);
                 }
               }
-              return mergeWorldPatchForOwnedPrediction(
+              const merged = mergeWorldPatchForOwnedPrediction(
                 current,
                 message.patch,
                 session.pilot.id,
                 predictedShip,
               );
+              if (message.patch.asteroids !== undefined) {
+                fieldDeriverRef.current.setSeeded(message.patch.asteroids);
+              }
+              return withDerivedField(merged, fieldDeriverRef.current, session.pilot.id);
             });
             return;
           case "ack": {
@@ -805,7 +816,9 @@ export function EveApp(): ReactNode {
         if (predictedShip === null) {
           resetPredictionFromSnapshot(world, pilotId);
         }
-        return mergeWorldSnapshotForOwnedPrediction(current, world, pilotId, predictedShip);
+        const merged = mergeWorldSnapshotForOwnedPrediction(current, world, pilotId, predictedShip);
+        fieldDeriverRef.current.setSeeded(world.asteroids);
+        return withDerivedField(merged, fieldDeriverRef.current, pilotId);
       });
     } catch (nextError: unknown) {
       setError(messageFrom(nextError));

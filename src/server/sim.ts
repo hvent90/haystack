@@ -30,13 +30,7 @@ import type {
   WorldSnapshot,
 } from "../shared/types";
 import type { HaystackDb } from "./db";
-import {
-  fieldDiagnostic,
-  fieldSummary,
-  streamedFieldAsteroids,
-  streamedFieldToken,
-  virtualScanHits,
-} from "./field";
+import { fieldDiagnostic, fieldSummary, virtualScanHits } from "./field";
 import { getServerWorld } from "./world";
 
 // Symbol-keyed (so JSON.stringify ignores it -> wire format unchanged) cheap
@@ -862,11 +856,12 @@ function listShips(db: HaystackDb): Ship[] {
   return rows.map(mapShip);
 }
 
-// Returns the player's visible asteroids plus a cheap change-detection `fingerprint`.
-// The streamed virtual field is a pure function of the ship's cell (+ renderedLimit), so
-// its token stands in for the whole (up to 100k) array without serializing it; the small
-// seeded set is hashed in full. Two ticks with an equal fingerprint have a byte-identical
-// `asteroids` array, letting the world stream skip the per-tick JSON.stringify of the field.
+// Returns the player's seeded (DB) asteroids plus a change-detection `fingerprint`. The
+// deterministic virtual field (up to 100k static rocks) is NOT included: the client
+// regenerates it locally from `field` (seed/cellSize/renderedLimit) + the ship position
+// (see src/client/eve/field-derivation.ts). Streaming only the small mutable seeded set
+// means a 5 km/s cell crossing costs no server-side field scan and no multi-MB field
+// re-send. The fingerprint covers just the seeded set (the field is no longer here).
 function listAsteroids(
   db: HaystackDb,
   pilotId: string | null,
@@ -884,9 +879,7 @@ function listAsteroids(
       discovered: distance(ship.position, asteroid.position) < 55000 || asteroid.signature > 0.64,
     };
   });
-  const virtualAsteroids = streamedFieldAsteroids(ship.position);
-  const fingerprint = `${streamedFieldToken(ship.position)}|${JSON.stringify(seededAsteroids)}`;
-  return { asteroids: [...seededAsteroids, ...virtualAsteroids], fingerprint };
+  return { asteroids: seededAsteroids, fingerprint: JSON.stringify(seededAsteroids) };
 }
 
 function listDeposits(db: HaystackDb, pilotId: string | null): Deposit[] {

@@ -16,6 +16,7 @@
 import type { WSContext } from "hono/ws";
 
 import { openDatabase } from "../../src/server/db";
+import { streamedFieldAsteroids } from "../../src/server/field";
 import { WorldStream } from "../../src/server/realtime";
 import { createPilot, getSnapshot } from "../../src/server/sim";
 import { getServerWorld } from "../../src/server/world";
@@ -129,11 +130,20 @@ function runCell(
     0,
   );
   const bytesPerTickPerPeer = totalBytes / Math.max(1, players) / Math.max(1, ticks);
-  const effective = getSnapshot(
+  // Effective client-visible count = the streamed seeded set + the deterministic virtual
+  // field the client now derives locally (src/client/eve/field-derivation.ts). The server
+  // no longer carries the field in the snapshot, so it is counted via the same generator
+  // (streamedFieldAsteroids) it always was — this is exactly the count the player renders
+  // for their location, unchanged from before the field moved off the wire.
+  const probe = getSnapshot(
     db,
     peers[0]?.pilotId ?? null,
     peers.map((peer) => peer.pilotId),
-  ).asteroids.length;
+  );
+  const probeShip = probe.ships.find((ship) => ship.pilotId === peers[0]?.pilotId);
+  const derivedFieldCount =
+    probeShip === undefined ? 0 : streamedFieldAsteroids(probeShip.position).length;
+  const effective = probe.asteroids.length + derivedFieldCount;
   const peakRssMb = process.memoryUsage().rss / 1024 / 1024;
 
   world.stop();
