@@ -3,11 +3,14 @@ import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode, RefObject
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   DodecahedronGeometry,
+  IcosahedronGeometry,
   InstancedBufferAttribute,
   MeshStandardMaterial,
   Object3D,
+  OctahedronGeometry,
   Quaternion as ThreeQuaternion,
   ShaderChunk,
+  TetrahedronGeometry,
   Vector3 as ThreeVector3,
   type Camera,
   type InstancedMesh,
@@ -1077,6 +1080,24 @@ const EMPTY_VIEW_LIFT = 1000;
 // 2000) is a ~9 km ball, well inside this, so normal play is unaffected.
 const MAX_DRAW_SCENE = 18;
 
+// Per-chunk level-of-detail bands (scene units ~= km), tested against the chunk's NEAREST
+// point — the "LOD" half of C5's triangle bound. A 100k field draws ~18k in-view instances;
+// at full 36-tri dodecahedron detail that is ~640k asteroid triangles, but the far majority
+// are sub-10px specks already fading into the fog (fogNear/Far 9/18 km), so they cost full
+// geometry for no visible gain. Each chunk swaps to progressively cheaper geometry as it
+// recedes, bounding the submitted triangle count to a few thousand near rocks' worth
+// regardless of how many are in view. The whole-chunk swap is invisible because each step
+// down is small and only happens once a chunk has receded enough that its rocks are tiny
+// and fog-extinguished: dodeca->icosa keeps a near-identical silhouette; icosa->octa is past
+// 9 km where rocks are sub-pixel-dozen and fog has started; octa->tetra is past 13 km where
+// rocks are <5 px and fog is >40% extinguished. The near band keeps the player's immediate
+// surroundings at full fidelity, and the default-play 2000-rock field (~9 km ball) stays
+// full/near-full detail, so normal play is unchanged. Triangle counts per instance:
+// DodecahedronGeometry(1,0)=36, IcosahedronGeometry(1,0)=20, OctahedronGeometry(1,0)=8,
+// TetrahedronGeometry(1,0)=4. LOD_BAND_SCENE[i] is the upper nearest-corner distance for
+// band i; a chunk at/beyond the last threshold uses the final (cheapest) geometry.
+const LOD_BAND_SCENE = [4, 9, 13] as const;
+
 // Half the space-diagonal of a chunk cube (scene units): a chunk's farthest corner
 // from its center, used to test the chunk's NEAREST point against the draw distance.
 const CHUNK_RADIUS_SCENE = ((CHUNK_METERS / metersPerSceneUnit) * Math.sqrt(3)) / 2;
@@ -1237,8 +1258,30 @@ const AsteroidChunk = memo(function AsteroidChunk({
   const { asteroids } = chunk;
   const meshRef = useRef<InstancedMesh>(null);
   const transform = useMemo(() => new Object3D(), []);
-  const geometry = useMemo(() => new DodecahedronGeometry(1, 0), []);
-  useEffect(() => () => geometry.dispose(), [geometry]);
+  // Three level-of-detail geometries for this chunk. All carry the per-instance aSunlit
+  // attribute (set together in the build effect) and share the chunk's instanceMatrix
+  // (which lives on the mesh, not the geometry), so the per-frame distance loop can swap
+  // mesh.geometry between them with zero rebuild. The instance bounding sphere computed in
+  // the build effect stays valid across swaps because all three are unit-radius.
+  const lodGeometries = useMemo(
+    () => [
+      new DodecahedronGeometry(1, 0), // band 0: full, 36 tris
+      new IcosahedronGeometry(1, 0), // band 1: 20 tris, near-identical silhouette
+      new OctahedronGeometry(1, 0), // band 2: 8 tris, fogged sub-dozen-px rocks
+      new TetrahedronGeometry(1, 0), // band 3: 4 tris, far heavily-fogged <5px specks
+    ],
+    [],
+  );
+  useEffect(
+    () => () => {
+      for (const geometry of lodGeometries) {
+        geometry.dispose();
+      }
+    },
+    [lodGeometries],
+  );
+  // The LOD band currently bound to mesh.geometry; swap only when the band changes.
+  const lodBandRef = useRef(-1);
 
   // This chunk's cube center in baked (absolute / 1000) scene coordinates. The parent
   // group then translates by -origin/1000 each frame, so adding the group position
@@ -1252,12 +1295,14 @@ const AsteroidChunk = memo(function AsteroidChunk({
     [chunk.cx, chunk.cy, chunk.cz],
   );
 
-  // Distance cull (once per frame): hide the chunk when its nearest point is past the
-  // draw distance. three still frustum-culls the visible ones, so what survives is the
-  // intersection of in-frustum AND near — the frustum+distance "what's actually in
-  // view" set. Hidden chunks fire no onAfterRender, so they drop out of the submitted
-  // count. Using the chunk's NEAREST corner (center distance minus the cube radius)
-  // means no near rock is ever wrongly culled at a chunk boundary.
+  // Distance cull + LOD select (once per frame). Hide the chunk when its nearest point is
+  // past the draw distance; three still frustum-culls the visible ones, so what survives is
+  // the intersection of in-frustum AND near — the frustum+distance "what's actually in
+  // view" set. Hidden chunks fire no onAfterRender, so they drop out of the submitted count.
+  // For visible chunks, pick the LOD geometry from the SAME nearest-corner distance so the
+  // far majority render as cheap geometry (the triangle bound, C5). Using the chunk's NEAREST
+  // corner (center distance minus the cube radius) means no near rock is ever wrongly culled
+  // or coarsened at a chunk boundary.
   useFrame(({ camera }) => {
     const mesh = meshRef.current;
     const group = mesh?.parent;
@@ -1271,6 +1316,23 @@ const AsteroidChunk = memo(function AsteroidChunk({
     );
     const nearest = chunkWorldCenter.distanceTo(camera.position) - CHUNK_RADIUS_SCENE;
     mesh.visible = nearest < MAX_DRAW_SCENE;
+    if (!mesh.visible) {
+      return;
+    }
+    let band: number = LOD_BAND_SCENE.length;
+    for (let i = 0; i < LOD_BAND_SCENE.length; i += 1) {
+      if (nearest < LOD_BAND_SCENE[i]!) {
+        band = i;
+        break;
+      }
+    }
+    if (band !== lodBandRef.current) {
+      lodBandRef.current = band;
+      const next = lodGeometries[band];
+      if (next !== undefined && mesh.geometry !== next) {
+        mesh.geometry = next;
+      }
+    }
   });
 
   // Build the instance matrices + per-instance occlusion once per chunk-set change
@@ -1310,21 +1372,24 @@ const AsteroidChunk = memo(function AsteroidChunk({
     }
     mesh.count = count;
     mesh.instanceMatrix.needsUpdate = true;
-    const existing = mesh.geometry.getAttribute("aSunlit") as InstancedBufferAttribute | undefined;
-    if (existing === undefined || existing.array.length !== count) {
-      mesh.geometry.setAttribute("aSunlit", new InstancedBufferAttribute(sunlit, 1));
-    } else {
-      (existing.array as Float32Array).set(sunlit);
-      existing.needsUpdate = true;
+    // Bind the per-instance occlusion to ALL three LOD geometries (one shared attribute
+    // object => one GPU buffer), so whichever the distance loop has swapped in renders with
+    // the correct sunlit scalars. The attribute is per-instance, so its length is the rock
+    // count regardless of each geometry's vertex count.
+    const sunlitAttribute = new InstancedBufferAttribute(sunlit, 1);
+    for (const geometry of lodGeometries) {
+      geometry.setAttribute("aSunlit", sunlitAttribute);
     }
+    // All three LOD geometries are unit-radius, so the instance bounding sphere is identical
+    // for any of them — compute it once from the mounted geometry; it survives LOD swaps.
     mesh.computeBoundingSphere();
     renderStats.noteFieldWork(performance.now() - buildStart);
-  }, [asteroids, transform, geometry, seedCache]);
+  }, [asteroids, transform, lodGeometries, seedCache]);
 
   return (
     <instancedMesh
       ref={meshRef}
-      args={[geometry, material, asteroids.length]}
+      args={[lodGeometries[0], material, asteroids.length]}
       castShadow
       receiveShadow
       dispose={null}
