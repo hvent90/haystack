@@ -160,15 +160,65 @@ export function mergeWorldSnapshotForOwnedPrediction(
   pilotId: string,
   predictedShip: Ship | null,
 ): WorldSnapshot {
+  const stabilized = preserveStaticWorldArrays(current, incoming);
   if (predictedShip === null) {
-    return incoming;
+    return stabilized;
   }
   const shipFromCurrent = current?.ships.find((ship) => ship.pilotId === pilotId) ?? null;
   const ownedShip = mergeNonMotionShipFields(
     predictedShip,
-    incoming.ships.find((ship) => ship.pilotId === pilotId) ?? shipFromCurrent,
+    stabilized.ships.find((ship) => ship.pilotId === pilotId) ?? shipFromCurrent,
   );
-  return replaceOwnedShip(incoming, pilotId, ownedShip);
+  return replaceOwnedShip(stabilized, pilotId, ownedShip);
+}
+
+// The 4s HTTP poll re-fetches the whole world, producing fresh array references for
+// the static fields (asteroids, structures) even when their content is unchanged.
+// Reuse the prior reference when the render-relevant content (id + discovered) is
+// identical so identity-based memos downstream — notably the instanced asteroid
+// field's matrix rebuild — don't fire on every poll. The 30Hz delta path already
+// preserves these refs via {...current, ...patch} (hash-gated server-side); this
+// gives the poll path the same stability.
+function preserveStaticWorldArrays(
+  current: WorldSnapshot | null,
+  incoming: WorldSnapshot,
+): WorldSnapshot {
+  if (current === null) {
+    return incoming;
+  }
+  const asteroids = sameDiscoverableSet(current.asteroids, incoming.asteroids)
+    ? current.asteroids
+    : incoming.asteroids;
+  const structures = sameDiscoverableSet(current.structures, incoming.structures)
+    ? current.structures
+    : incoming.structures;
+  if (asteroids === incoming.asteroids && structures === incoming.structures) {
+    return incoming;
+  }
+  return { ...incoming, asteroids, structures };
+}
+
+// Cheap equality on the only fields that change the rendered/overview set: identity
+// and discovery. Positions/radii are static per id (deterministic field / DB rows),
+// so id + discovered fully captures any change that affects the rendered field.
+function sameDiscoverableSet(
+  a: ReadonlyArray<{ id: string; discovered: boolean }>,
+  b: ReadonlyArray<{ id: string; discovered: boolean }>,
+): boolean {
+  if (a === b) {
+    return true;
+  }
+  if (a.length !== b.length) {
+    return false;
+  }
+  for (let i = 0; i < a.length; i += 1) {
+    const x = a[i];
+    const y = b[i];
+    if (x === undefined || y === undefined || x.id !== y.id || x.discovered !== y.discovered) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function mergeWorldPatchForOwnedPrediction(

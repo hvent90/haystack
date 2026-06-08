@@ -1,6 +1,6 @@
 import { Canvas, useFrame } from "@react-three/fiber";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode, RefObject } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   InstancedBufferAttribute,
   MeshStandardMaterial,
@@ -18,16 +18,10 @@ import {
 } from "../../../shared/ship-motion";
 import type { FlightMode, OverviewRow, Selection, Waypoint } from "../types";
 import { flightInputScaleMax, flightInputScaleMin } from "../constants";
-import { clamp, formatDistance, toScene, vectorMagnitude } from "../vector";
+import { clamp, formatDistance, metersPerSceneUnit, toScene, vectorMagnitude } from "../vector";
 import { sameSelection } from "../overview";
 import { flightRenderStore } from "../renderStore";
-import {
-  fogColor,
-  fogFar,
-  fogNear,
-  shadowBubbleFadeFar,
-  shadowBubbleFadeNear,
-} from "../lighting";
+import { fogColor, fogFar, fogNear, shadowBubbleFadeFar, shadowBubbleFadeNear } from "../lighting";
 import { sunlitForId } from "../sun-occlusion";
 import { AudioListenerRig, RemoteShipAudio } from "./SpatialAudio";
 import { ShipFlashlight, SunDisc, SunLight } from "./SceneLighting";
@@ -283,8 +277,17 @@ function SceneProjection({
   const lastBoxSig = useRef("none");
   const selectedRowRef = useRef(selectedRow);
   selectedRowRef.current = selectedRow;
-  const asteroidsRef = useRef(asteroids);
-  asteroidsRef.current = asteroids;
+  // id -> asteroid lookup so the per-frame selection-box projection is O(1) instead
+  // of a linear scan over the whole visible field each frame.
+  const asteroidById = useMemo(() => {
+    const map = new Map<string, Asteroid>();
+    for (const asteroid of asteroids) {
+      map.set(asteroid.id, asteroid);
+    }
+    return map;
+  }, [asteroids]);
+  const asteroidByIdRef = useRef(asteroidById);
+  asteroidByIdRef.current = asteroidById;
 
   useFrame(({ camera }) => {
     const origin = renderOrigin(myShip.position);
@@ -352,7 +355,7 @@ function SceneProjection({
     if (currentSelectedRow !== null && currentSelectedRow.position !== null) {
       nextBox = projectSelectionBox(
         currentSelectedRow,
-        asteroidsRef.current,
+        asteroidByIdRef.current,
         origin,
         camera,
         projected,
@@ -822,8 +825,7 @@ function projectWorldPointClamped(
     nx = -nx;
     ny = -ny;
   }
-  const onScreen =
-    scratch.z >= -1 && scratch.z <= 1 && nx >= -1 && nx <= 1 && ny >= -1 && ny <= 1;
+  const onScreen = scratch.z >= -1 && scratch.z <= 1 && nx >= -1 && nx <= 1 && ny >= -1 && ny <= 1;
   // Clamp to safe HUD margins
   const x = Math.max(6, Math.min(94, Math.round((nx * 50 + 50) * 10) / 10));
   const y = Math.max(10, Math.min(88, Math.round((-ny * 50 + 50) * 10) / 10));
@@ -909,7 +911,7 @@ const KIND_RADIUS: Record<string, number> = {
 // axis. This gives accurate perspective-correct size at any distance.
 function projectSelectionBox(
   row: OverviewRow,
-  asteroids: Asteroid[],
+  asteroidById: Map<string, Asteroid>,
   origin: { x: number; y: number; z: number },
   camera: Camera,
   scratch: ThreeVector3,
@@ -920,7 +922,7 @@ function projectSelectionBox(
   // Entity world radius in meters
   let radius = KIND_RADIUS[row.kind] ?? 12;
   if (row.kind === "asteroid") {
-    const asteroid = asteroids.find((a) => a.id === row.id);
+    const asteroid = asteroidById.get(row.id);
     if (asteroid !== undefined) radius = asteroid.radius;
   }
 
@@ -936,7 +938,11 @@ function projectSelectionBox(
   const ry = camera.matrixWorld.elements[1];
   const rz = camera.matrixWorld.elements[2];
   const scene = toScene(row.position, origin);
-  radiusScratch.set(scene.x + rx * sceneRadius, scene.y + ry * sceneRadius, scene.z + rz * sceneRadius);
+  radiusScratch.set(
+    scene.x + rx * sceneRadius,
+    scene.y + ry * sceneRadius,
+    scene.z + rz * sceneRadius,
+  );
   radiusScratch.project(camera);
 
   const edgeX = Math.round((radiusScratch.x * 50 + 50) * 10) / 10;
@@ -967,7 +973,6 @@ function SelectionBoxLayer({ box }: { box: SelectionBox | null }): ReactNode {
 
 // target. Pointer-events are disabled so it never intercepts clicks.
 function SelectionArrowLayer({ arrow }: { arrow: SelectionArrow | null }): ReactNode {
-  console.log("[arrow]", arrow);
   if (arrow === null) {
     return null;
   }
@@ -1083,6 +1088,18 @@ function createAsteroidMaterial(): MeshStandardMaterial {
   return material;
 }
 
+// The asteroid field is a static, deterministic set of rocks that never move in
+// world space — only the floating origin (the owned ship) moves. So we bake each
+// rock's ABSOLUTE field position into its instance matrix ONCE, when the visible
+// set changes, and apply the per-frame origin rebase to the wrapping group instead
+// of recomputing every matrix. group world position = -origin/1000 = toScene(0,
+// origin), so a baked instance at position/1000 lands exactly where
+// toScene(position, origin) would have put it. This turns O(N) matrix rebuilds +
+// a full instance-buffer GPU re-upload every frame into a single group.position
+// write per frame, which is what frees the main thread to drain the 30Hz world
+// stream (a saturated render loop was starving the un-gated WebSocket onmessage).
+// Baked positions stay within ±~57 scene units (the field half-extent), so the
+// float32 instance matrices keep sub-pixel (~mm at the far edge) precision.
 function InstancedAsteroids({
   asteroids,
   fallbackOrigin,
@@ -1090,9 +1107,13 @@ function InstancedAsteroids({
   asteroids: Asteroid[];
   fallbackOrigin: Vector3;
 }): ReactNode {
+  const groupRef = useRef<Object3D>(null);
   const meshRef = useRef<InstancedMesh>(null);
   const transform = useMemo(() => new Object3D(), []);
   const material = useMemo(() => createAsteroidMaterial(), []);
+  // Per-rock deterministic rotation seed, derived once per id (the id encodes the
+  // cell, so it never changes for a given rock) rather than re-parsed every frame.
+  const seedCache = useRef(new Map<string, number>());
 
   // Per-instance sun occlusion (Tier 2), rebuilt only when the asteroid set changes. The
   // sunlitForId cache means we only march rocks we haven't seen before.
@@ -1110,7 +1131,10 @@ function InstancedAsteroids({
     return values;
   }, [asteroids]);
 
-  useEffect(() => {
+  // Layout phase (same as the matrix build below) so the occlusion scalar and the
+  // instance matrices commit together before paint — no transient dark frame on a
+  // visible-set change.
+  useLayoutEffect(() => {
     const mesh = meshRef.current;
     if (mesh === null) {
       return;
@@ -1124,22 +1148,34 @@ function InstancedAsteroids({
     }
   }, [sunlit]);
 
-  useFrame(() => {
+  // Build the instance matrices once per visible-set change (NOT per frame). Each
+  // matrix uses the rock's absolute field position; the group transform handles the
+  // origin rebase below. needsUpdate / computeBoundingSphere fire once here.
+  useLayoutEffect(() => {
     const mesh = meshRef.current;
     if (mesh === null) {
       return;
     }
-    const origin = renderOrigin(fallbackOrigin);
     const count = Math.min(asteroids.length, ASTEROID_CAPACITY);
     for (let index = 0; index < count; index += 1) {
       const asteroid = asteroids[index];
       if (asteroid === undefined) {
         continue;
       }
-      const position = toScene(asteroid.position, origin);
-      const size = Math.max(0.04, asteroid.radius / 1000);
-      const seed = asteroid.id.split("-").slice(1).reduce((a, b) => a + Number(b) * 7919, 0);
-      transform.position.set(position.x, position.y, position.z);
+      const size = Math.max(0.04, asteroid.radius / metersPerSceneUnit);
+      let seed = seedCache.current.get(asteroid.id);
+      if (seed === undefined) {
+        seed = asteroid.id
+          .split("-")
+          .slice(1)
+          .reduce((a, b) => a + Number(b) * 7919, 0);
+        seedCache.current.set(asteroid.id, seed);
+      }
+      transform.position.set(
+        asteroid.position.x / metersPerSceneUnit,
+        asteroid.position.y / metersPerSceneUnit,
+        asteroid.position.z / metersPerSceneUnit,
+      );
       transform.rotation.set(seed * 0.43, seed * 0.27, seed * 0.17);
       transform.scale.set(size, size, size);
       transform.updateMatrix();
@@ -1147,6 +1183,21 @@ function InstancedAsteroids({
     }
     mesh.count = count;
     mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingSphere();
+  }, [asteroids, transform]);
+
+  // Floating-origin rebase: shift the whole field once per frame (O(1)).
+  useFrame(() => {
+    const group = groupRef.current;
+    if (group === null) {
+      return;
+    }
+    const origin = renderOrigin(fallbackOrigin);
+    group.position.set(
+      -origin.x / metersPerSceneUnit,
+      -origin.y / metersPerSceneUnit,
+      -origin.z / metersPerSceneUnit,
+    );
   });
 
   if (asteroids.length === 0) {
@@ -1154,15 +1205,17 @@ function InstancedAsteroids({
   }
 
   return (
-    <instancedMesh
-      ref={meshRef}
-      args={[undefined, undefined, ASTEROID_CAPACITY]}
-      material={material}
-      castShadow
-      receiveShadow
-    >
-      <dodecahedronGeometry args={[1, 0]} />
-    </instancedMesh>
+    <group ref={groupRef}>
+      <instancedMesh
+        ref={meshRef}
+        args={[undefined, undefined, ASTEROID_CAPACITY]}
+        material={material}
+        castShadow
+        receiveShadow
+      >
+        <dodecahedronGeometry args={[1, 0]} />
+      </instancedMesh>
+    </group>
   );
 }
 

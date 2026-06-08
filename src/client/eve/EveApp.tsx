@@ -537,6 +537,21 @@ export function EveApp(): ReactNode {
     });
   }, [chatChannel, chatTargetPilotId, session, snapshot]);
 
+  // Stable identity for the world objects handed to the 3D scene. The asteroid field
+  // is static, so its array reference only changes when the visible set actually
+  // changes (a cell crossing) — not on every 30Hz delta that merely moved a ship.
+  // Keying off snapshot.asteroids (preserved by reference across deltas that don't
+  // touch it) keeps the instanced field from rebuilding its matrices every tick.
+  const visibleAsteroids = useMemo(
+    () => (snapshot === null ? [] : snapshot.asteroids.filter((asteroid) => asteroid.discovered)),
+    [snapshot?.asteroids],
+  );
+  const visibleStructures = useMemo(
+    () =>
+      snapshot === null ? [] : snapshot.structures.filter((structure) => structure.discovered),
+    [snapshot?.structures],
+  );
+
   useEffect(() => {
     if (snapshot === null) {
       return;
@@ -591,8 +606,8 @@ export function EveApp(): ReactNode {
       <WorldView
         rows={overviewRows}
         myShip={myShip}
-        asteroids={snapshot.asteroids.filter((asteroid) => asteroid.discovered)}
-        structures={snapshot.structures.filter((structure) => structure.discovered)}
+        asteroids={visibleAsteroids}
+        structures={visibleStructures}
         ships={snapshot.ships}
         selected={selection}
         waypoint={waypoint}

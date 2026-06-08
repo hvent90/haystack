@@ -78,6 +78,52 @@ export function queryVirtualAsteroids(
   };
 }
 
+// Per-cell cache of the streamed field. The virtual field is global and fully
+// deterministic, so the nearest-`renderedLimit` rocks are a pure function of the
+// query cell — compute the (otherwise expensive) cubic cell scan once per cell and
+// reuse it. Bounded (LRU) so a roaming fleet can't grow it without limit.
+//
+// INVARIANT: cached arrays and their Asteroid objects are SHARED across peers and
+// ticks and MUST be treated as immutable. The virtual field is read-only (nothing
+// mines or mutates a virtual rock); never mutate a returned asteroid in place.
+const streamedFieldCache = new Map<string, Asteroid[]>();
+const streamedFieldCacheLimit = 64;
+
+// The asteroids streamed to a client for rendering: the nearest `renderedLimit`
+// virtual rocks, with the query origin snapped to the ship's CELL CENTER so the set
+// is a pure function of the cell. This keeps the set byte-identical across ticks (the
+// 30Hz world-stream delta no longer re-sends the static field every frame as the ship
+// drifts within a cell) and changes only when the ship crosses a cell boundary.
+export function streamedFieldAsteroids(position: Vector3): Asteroid[] {
+  const cell = worldToCell(position);
+  const key = `${cell.x}-${cell.y}-${cell.z}`;
+  const cached = streamedFieldCache.get(key);
+  if (cached !== undefined) {
+    // LRU touch: re-insert so a frequently-revisited cell isn't evicted while a
+    // player oscillates across its boundary.
+    streamedFieldCache.delete(key);
+    streamedFieldCache.set(key, cached);
+    return cached;
+  }
+  const asteroids = queryVirtualAsteroids(cellCenter(cell), 520000, renderedLimit).asteroids;
+  if (streamedFieldCache.size >= streamedFieldCacheLimit) {
+    const oldest = streamedFieldCache.keys().next().value;
+    if (oldest !== undefined) {
+      streamedFieldCache.delete(oldest);
+    }
+  }
+  streamedFieldCache.set(key, asteroids);
+  return asteroids;
+}
+
+function cellCenter(cell: Cell): Vector3 {
+  return {
+    x: originOffset + cell.x * cellSize + cellSize / 2,
+    y: originOffset + cell.y * cellSize + cellSize / 2,
+    z: originOffset + cell.z * cellSize + cellSize / 2,
+  };
+}
+
 export function virtualScanHits(
   origin: Vector3,
   scanPower: number,

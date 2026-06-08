@@ -30,7 +30,7 @@ import type {
   WorldSnapshot,
 } from "../shared/types";
 import type { HaystackDb } from "./db";
-import { fieldDiagnostic, fieldSummary, queryVirtualAsteroids, virtualScanHits } from "./field";
+import { fieldDiagnostic, fieldSummary, streamedFieldAsteroids, virtualScanHits } from "./field";
 import { getServerWorld } from "./world";
 
 type ShipRow = {
@@ -859,11 +859,7 @@ function listAsteroids(db: HaystackDb, pilotId: string | null): Asteroid[] {
       discovered: distance(ship.position, asteroid.position) < 55000 || asteroid.signature > 0.64,
     };
   });
-  const virtualAsteroids = queryVirtualAsteroids(
-    ship.position,
-    520000,
-    fieldSummary().renderedLimit,
-  ).asteroids;
+  const virtualAsteroids = streamedFieldAsteroids(ship.position);
   return [...seededAsteroids, ...virtualAsteroids];
 }
 
