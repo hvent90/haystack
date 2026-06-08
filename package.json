@@ -18,6 +18,7 @@
     "verify:multiplayer": "bun tests/e2e/multiplayer.ts",
     "verify:ui": "bun tests/e2e/ui.ts",
     "verify:prediction": "bun tests/e2e/prediction.ts",
+    "verify:gameplay-100k": "bun tests/e2e/gameplay-100k.ts",
     "verify:e2e": "bun run verify:screenshot && bun run verify:multiplayer && bun run verify:ui && bun run verify:prediction && bun run verify:audio",
     "render:sfx": "bun src/cli/render-sfx.ts",
     "verify:audio": "bun tests/e2e/audio.ts",

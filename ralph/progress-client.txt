@@ -149,3 +149,33 @@
 - Files changed: src/client/eve/components/WorldView.tsx | verify: typecheck GREEN, format GREEN (touched file; repo-wide oxfmt trips only on pre-existing untracked src/cli files), parity GREEN (0/7 — no field-generation touch), e2e screenshot GREEN (canvas non-blank, near-field rocks render at full faceted detail), integration 54 pass / 1 PRE-EXISTING fail (million-scale diagnostic, unrelated).
 - **Learnings:** With the C3 per-chunk InstancedMesh architecture, LOD is nearly free: the distance loop already runs per chunk, so adding a band index + a `mesh.geometry` pointer swap is the whole feature — no per-frame rebuild because instanceMatrix is mesh-owned and all LOD geometries are unit-radius (bounding sphere computed once survives swaps). One shared InstancedBufferAttribute can back the aSunlit on all LOD geometries (three keys its GPU buffer on the attribute object, not the geometry). The 7.5 km chunk granularity is the binding limit on how hard LOD can cut: the nearest-corner rule (required so no near rock is coarsened) makes a chunk spanning 4–17 km render entirely at the 4 km band's detail, so a 4th tetra tier only moved astTris 278k→231k — finer chunks or per-rock LOD would cut more but blow up draw calls (C3's tradeoff). The honest bound is ~6.4k-rock-equivalents, dominated by that conservatism, not by the geometry choice.
 ---
+
+## [2026-06-08T23:59:00Z] - C6
+- Regression gate (mostly verification; one new artifact). Ran the full suite plus a new checked gameplay validation AT renderLimit=100000, and re-ran world-stream to re-confirm server independence after all of C2–C5.
+- VERIFY: `bun run typecheck` GREEN; `bun run format` on TOUCHED files GREEN (repo-wide oxfmt --check trips only on pre-existing untracked files — docs/, ralph/*.md, scripts/bench/parity-*.ts, src/cli/* — none of which our render work touched); `bun test tests/integration` 54 pass / 1 PRE-EXISTING fail (million-scale diagnostic, fails identically without our changes).
+- PARITY: `bun scripts/bench/parity-check.ts` GREEN (0/7 divergence — deriveVirtualField untouched).
+- E2E (default limit): screenshot GREEN (canvas non-blank), multiplayer exit 0, ui exit 0.
+- GAMEPLAY @100k — split into the two render-independent halves so each is a clean checked pass (headless swiftshader at 100k starves physics-driven keyboard flight — the full ui.ts/multiplayer.ts flight portions time out there, a documented harness artifact, NOT a render regression; both pass fully at limit=2000):
+  1. SERVER-SIDE gameplay (mining, belt/pocket/surface scan, asteroid/deposit discovery, sell) — `HAYSTACK_RENDERED_LIMIT=100000 bun test tests/integration` = 54 pass / 1 pre-existing fail. These tests moveShipNear a seeded deposit and assert minedMass>0 + cargo, per-mode scan hits (incl. surface deposit hit), and discovery flags — at the 100k field. Confirms the seeded-rock gameplay is render-limit independent (it operates on the asteroids/deposits SQL tables, never the virtual field).
+  2. CLIENT-SIDE gameplay + multiplayer sync — NEW `tests/e2e/gameplay-100k.ts` (added `verify:gameplay-100k` script), exit 0:
+     | check @100k | result |
+     |---|---|
+     | server FieldSummary.renderedLimit | 100000 |
+     | derivedAsteroidCount | 100030 (full field) |
+     | submittedInstanceCount | 17865 (real culling: 17.9% in view, < derived) |
+     | asteroidDrawCalls | 61 (small bounded constant < 400) |
+     | overview populates + asteroid row selectable | ok (1 row data-selected, selected-item-name populated) |
+     | selected-rock highlight overlay (box/arrow) tracked | ok (selection survives chunk culling) |
+     | show-info on a rock | ok (context-item-show-info present) |
+     | multiplayer remote-ship sync | ok (remote ship velocity x=4 in probe's snapshot + pilot-card) |
+  - Why the selected rock is never wrongly culled: the selection arrow/box overlay projects from the `asteroidById` map + overview `rows` (WorldView SelectionArrowLayer/SelectionBoxLayer), DECOUPLED from the per-chunk InstancedMesh distance/frustum cull — so a selected rock's highlight tracks it even if its chunk mesh is hidden. Verified structurally + by the live overlay check above.
+- SERVER INDEPENDENCE re-confirmed after C2–C5 (world-stream, 16 players, 200 ticks / 30 warmup):
+  | metric | server @2000 | server @100000 | delta |
+  |---|---|---|---|
+  | publishAll p50 | 1.40 ms | 1.39 ms | -0.7% |
+  | publishAll p95 | 1.71 ms | 1.62 ms | -5.3% |
+  | MB/peer/s | 0.19 | 0.19 | ~0% |
+  - All ≪15%; server cost remains independent of renderLimit across the 50x change.
+- Files changed: tests/e2e/gameplay-100k.ts (new), package.json (verify:gameplay-100k script), ralph/prd-client.json (C6 passes=true), ralph/progress-client.txt (this entry). No render-path source changed (pure verification item).
+- **Learnings:** At 100k under headless swiftshader the heavy full e2e suites (ui.ts, multiplayer.ts) pass their render-independent assertions (overview/selection/show-info; remote-ship sync via API+snapshot+pilot-card) but TIME OUT on their later physics-driven keyboard-flight portions (velocity-vector pip / W-key accel) because the ~1s/frame render loop starves the WS so the local prediction never advances — the same starvation C4 documented. The fix for a clean checked validation is a dedicated script that asserts ONLY snapshot/count-driven state (the PRD's own robust-signal methodology), not physics flight. The seeded-rock gameplay (mine/scan/discover/sell) is fully render-limit independent, so running the in-process integration suite with HAYSTACK_RENDERED_LIMIT=100000 is itself a valid 100k gameplay validation. Selection robustness against culling is architectural: keep the highlight overlay sourced from the id→asteroid map, not from whichever chunk mesh happens to be submitted.
+---
