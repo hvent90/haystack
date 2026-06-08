@@ -454,6 +454,11 @@ tr:focus-visible {
 .scene-bracket[data-selected="true"] {
   border-color: var(--accent-amber);
   background: rgb(64 46 24 / 58%);
+  box-shadow:
+    0 0 0 2px var(--accent-amber),
+    0 0 12px 2px rgb(226 177 93 / 50%);
+  outline: 2px solid var(--accent-amber);
+  outline-offset: 4px;
 }
 
 .scene-bracket small {
@@ -468,6 +473,49 @@ tr:focus-visible {
 
 /* Selected-target direction arrow: pinned to screen center, rotated toward the
    selected object so you always know which way to turn to face it. */
+.selection-box-layer {
+  position: absolute;
+  z-index: 5;
+  inset: 0;
+  pointer-events: none;
+}
+
+.selection-box {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  border: 1px solid var(--accent-amber);
+  box-shadow:
+    0 0 0 1px rgb(226 177 93 / 30%),
+    inset 0 0 0 1px rgb(226 177 93 / 10%);
+  animation: selection-box-pulse 1.6s ease-in-out infinite;
+}
+
+.selection-box-distance {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  color: var(--accent-amber);
+  white-space: nowrap;
+  text-shadow: 0 0 6px rgb(226 177 93 / 60%);
+}
+
+@keyframes selection-box-pulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 1px rgb(226 177 93 / 30%),
+      inset 0 0 0 1px rgb(226 177 93 / 10%);
+  }
+
+  50% {
+    box-shadow:
+      0 0 8px 2px rgb(226 177 93 / 60%),
+      inset 0 0 0 1px rgb(226 177 93 / 20%);
+  }
+}
+
 .selection-arrow-layer {
   position: absolute;
   z-index: 6;
@@ -479,46 +527,24 @@ tr:focus-visible {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 128px;
-  height: 0;
-  transform-origin: 0 0;
-  transition: opacity 120ms linear;
-  will-change: transform, opacity;
-}
-
-.selection-arrow-shaft {
-  position: absolute;
-  left: 46px;
-  top: -1.5px;
-  width: 70px;
-  height: 3px;
-  border-radius: 2px;
-  background: linear-gradient(to right, rgb(226 177 93 / 0%), var(--accent-amber));
-  box-shadow: 0 0 6px rgb(226 177 93 / 55%);
-}
-
-.selection-arrow-head {
-  position: absolute;
-  left: 114px;
-  top: -6px;
   width: 0;
   height: 0;
-  border-top: 6px solid transparent;
-  border-bottom: 6px solid transparent;
-  border-left: 12px solid var(--accent-amber);
-  transform-origin: 4px center;
-  filter: drop-shadow(0 0 4px rgb(226 177 93 / 70%));
+  border-top: 7px solid transparent;
+  border-bottom: 7px solid transparent;
+  border-left: 18px solid var(--accent-amber);
+  filter: drop-shadow(0 0 6px rgb(226 177 93 / 80%));
+  transition: opacity 120ms linear;
   animation: selection-arrow-pulse 1.3s ease-in-out infinite;
 }
 
 @keyframes selection-arrow-pulse {
   0%,
   100% {
-    transform: scale(1);
+    filter: drop-shadow(0 0 6px rgb(226 177 93 / 80%));
   }
 
   50% {
-    transform: scale(1.28);
+    filter: drop-shadow(0 0 12px rgb(226 177 93 / 100%));
   }
 }
 

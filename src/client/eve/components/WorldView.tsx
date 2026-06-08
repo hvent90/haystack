@@ -40,6 +40,13 @@ type SelectionArrow = {
   strength: number;
 };
 
+type SelectionBox = {
+  x: number;
+  y: number;
+  sizePct: number;
+  distance: number;
+};
+
 export function WorldView({
   rows,
   asteroids,
@@ -85,6 +92,7 @@ export function WorldView({
   );
   const [screenPoints, setScreenPoints] = useState<Record<string, ScreenPoint>>({});
   const [selectionArrow, setSelectionArrow] = useState<SelectionArrow | null>(null);
+  const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
   const selectedRow = useMemo(
     () => (selected === null ? null : (rows.find((row) => sameSelection(row, selected)) ?? null)),
     [rows, selected],
@@ -114,8 +122,10 @@ export function WorldView({
           myShip={myShip}
           waypoint={waypoint}
           selectedRow={selectedRow}
+          asteroids={asteroids}
           onProject={setScreenPoints}
           onArrow={setSelectionArrow}
+          onBox={setSelectionBox}
         />
         <color attach="background" args={["#03040a"]} />
         <SunLight />
@@ -169,6 +179,7 @@ export function WorldView({
         onSelect={onSelect}
         onContextMenu={onContextMenu}
       />
+      <SelectionBoxLayer box={selectionBox} />
       <SelectionArrowLayer arrow={selectionArrow} />
     </div>
   );
@@ -237,20 +248,30 @@ function SceneProjection({
   myShip,
   waypoint,
   selectedRow,
+  asteroids,
   onProject,
   onArrow,
+  onBox,
 }: {
   rows: OverviewRow[];
   myShip: Ship;
   waypoint: Waypoint | null;
   selectedRow: OverviewRow | null;
+  asteroids: Asteroid[];
   onProject: (points: Record<string, ScreenPoint>) => void;
   onArrow: (arrow: SelectionArrow | null) => void;
+  onBox: (box: SelectionBox | null) => void;
 }): null {
   const projected = useMemo(() => new ThreeVector3(), []);
+  const radiusScratch = useMemo(() => new ThreeVector3(), []);
   const viewScratch = useMemo(() => new ThreeVector3(), []);
   const lastSignature = useRef("");
   const lastArrowSig = useRef("none");
+  const lastBoxSig = useRef("none");
+  const selectedRowRef = useRef(selectedRow);
+  selectedRowRef.current = selectedRow;
+  const asteroidsRef = useRef(asteroids);
+  asteroidsRef.current = asteroids;
 
   useFrame(({ camera }) => {
     const origin = renderOrigin(myShip.position);
@@ -295,11 +316,12 @@ function SceneProjection({
     }
 
     let nextArrow: SelectionArrow | null = null;
-    if (selectedRow !== null) {
+    const currentSelectedRow = selectedRowRef.current;
+    if (currentSelectedRow !== null) {
       const target =
-        selectedRow.position !== null
-          ? selectedRow.position
-          : bearingPoint(origin, selectedRow.bearing);
+        currentSelectedRow.position !== null
+          ? currentSelectedRow.position
+          : bearingPoint(origin, currentSelectedRow.bearing);
       if (target !== null) {
         nextArrow = projectSelectionArrow(target, origin, camera, projected, viewScratch);
       }
@@ -311,6 +333,26 @@ function SceneProjection({
     if (arrowSig !== lastArrowSig.current) {
       lastArrowSig.current = arrowSig;
       onArrow(nextArrow);
+    }
+
+    let nextBox: SelectionBox | null = null;
+    if (currentSelectedRow !== null && currentSelectedRow.position !== null) {
+      nextBox = projectSelectionBox(
+        currentSelectedRow,
+        asteroidsRef.current,
+        origin,
+        camera,
+        projected,
+        radiusScratch,
+      );
+    }
+    const boxSig =
+      nextBox === null
+        ? "none"
+        : `${nextBox.x.toFixed(1)}:${nextBox.y.toFixed(1)}:${nextBox.sizePct.toFixed(2)}`;
+    if (boxSig !== lastBoxSig.current) {
+      lastBoxSig.current = boxSig;
+      onBox(nextBox);
     }
 
     const signature = Object.entries(next)
@@ -798,18 +840,89 @@ function projectSelectionArrow(
   // CSS y-axis points down, so negate dy when converting the NDC direction
   // (y-up) into a screen-space rotation for a right-pointing arrow.
   const angleDeg = (Math.atan2(-dy / len, dx / len) * 180) / Math.PI;
-  const strength = behind
-    ? 1
-    : clamp((Math.hypot(scratch.x, scratch.y) - 0.12) / (0.5 - 0.12), 0, 1);
-  if (!behind && strength <= 0.02) {
+  // Fade out only when the target is nearly centered (within ~5% of screen
+  // center in NDC), otherwise always show at full strength.
+  const ndcDist = Math.hypot(scratch.x, scratch.y);
+  const strength = behind ? 1 : clamp((ndcDist - 0.05) / (0.25 - 0.05), 0, 1);
+  if (!behind && strength <= 0.01) {
     return null;
   }
   return { angleDeg, strength };
 }
 
 // Single HUD arrow pinned to the screen center, rotated toward the selected
+// World-radius in meters for entity kinds that don't have an explicit radius.
+const KIND_RADIUS: Record<string, number> = {
+  ship: 12,
+  structure: 35,
+  deposit: 8,
+  pocket: 20,
+};
+
+// Project a screen-space bounding box for the selected entity by projecting the
+// center and a point offset by the entity's radius along the camera's right
+// axis. This gives accurate perspective-correct size at any distance.
+function projectSelectionBox(
+  row: OverviewRow,
+  asteroids: Asteroid[],
+  origin: { x: number; y: number; z: number },
+  camera: Camera,
+  scratch: ThreeVector3,
+  radiusScratch: ThreeVector3,
+): SelectionBox | null {
+  if (row.position === null) return null;
+
+  // Entity world radius in meters
+  let radius = KIND_RADIUS[row.kind] ?? 12;
+  if (row.kind === "asteroid") {
+    const asteroid = asteroids.find((a) => a.id === row.id);
+    if (asteroid !== undefined) radius = asteroid.radius;
+  }
+
+  // Project center
+  const center = projectWorldPoint(row.position, origin, camera, scratch);
+  if (!center.visible) return null;
+
+  // Project center + radius along camera right axis (in scene units)
+  const sceneRadius = radius / 1000; // metersPerSceneUnit = 1000
+  camera.updateMatrixWorld();
+  // Camera right = first column of camera matrixWorld
+  const rx = camera.matrixWorld.elements[0];
+  const ry = camera.matrixWorld.elements[1];
+  const rz = camera.matrixWorld.elements[2];
+  const scene = toScene(row.position, origin);
+  radiusScratch.set(scene.x + rx * sceneRadius, scene.y + ry * sceneRadius, scene.z + rz * sceneRadius);
+  radiusScratch.project(camera);
+
+  const edgeX = Math.round((radiusScratch.x * 50 + 50) * 10) / 10;
+  const sizePct = Math.max(2, Math.abs(edgeX - center.x) * 2);
+
+  return { x: center.x, y: center.y, sizePct, distance: row.distance };
+}
+
+function SelectionBoxLayer({ box }: { box: SelectionBox | null }): ReactNode {
+  if (box === null) return null;
+  return (
+    <div className="selection-box-layer" aria-hidden={true}>
+      <div
+        className="selection-box"
+        data-testid="selection-box"
+        style={{
+          left: `${box.x}%`,
+          top: `${box.y}%`,
+          width: `${box.sizePct}%`,
+          aspectRatio: "1",
+        }}
+      >
+        <span className="selection-box-distance">{formatDistance(box.distance)}</span>
+      </div>
+    </div>
+  );
+}
+
 // target. Pointer-events are disabled so it never intercepts clicks.
 function SelectionArrowLayer({ arrow }: { arrow: SelectionArrow | null }): ReactNode {
+  console.log("[arrow]", arrow);
   if (arrow === null) {
     return null;
   }
@@ -820,13 +933,10 @@ function SelectionArrowLayer({ arrow }: { arrow: SelectionArrow | null }): React
         data-testid="selection-arrow"
         data-angle-degrees={Math.round(arrow.angleDeg)}
         style={{
-          transform: `rotate(${arrow.angleDeg}deg)`,
+          transform: `translate(-50%, -50%) rotate(${arrow.angleDeg}deg) translateX(40px)`,
           opacity: 0.2 + 0.8 * arrow.strength,
         }}
-      >
-        <span className="selection-arrow-shaft" />
-        <span className="selection-arrow-head" />
-      </div>
+      />
     </div>
   );
 }
