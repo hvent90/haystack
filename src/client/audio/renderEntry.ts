@@ -36,6 +36,30 @@ async function renderDroneCapture(): Promise<RenderedSample> {
   };
 }
 
+/** Scripted offline heat capture: cold idle -> hot burn (whine + tone) -> release (whine rings
+ * out ~2s then fades) -> coast hot (pleasant tone sustains) -> cool below 50 (tone fades). */
+async function renderHeatCapture(): Promise<RenderedSample> {
+  const seconds = 10;
+  const ctx = new OfflineAudioContext(1, Math.ceil(seconds * SAMPLE_RATE), SAMPLE_RATE);
+  const drone = new EngineDrone(ctx, ctx.destination);
+  const base = { rcs: 0, rotation: 0, boost: false, cruiseLock: false };
+  drone.start(0);
+  drone.setState({ ...base, throttle: 0, heat: 20, speed: 0 }, 0); // cold idle
+  drone.setState({ ...base, throttle: 1, heat: 60, speed: 90 }, 1.2); // burn, heat into the 60s
+  drone.setState({ ...base, throttle: 1, heat: 85, speed: 120 }, 2.6); // hotter under load
+  drone.setState({ ...base, throttle: 0, heat: 85, speed: 110 }, 3.8); // release — whine rings out
+  drone.setState({ ...base, throttle: 0, heat: 80, speed: 90 }, 5.2); // coasting hot — tone sustains
+  drone.setState({ ...base, throttle: 0, heat: 65, speed: 70 }, 6.6); // cooling, still audible
+  drone.setState({ ...base, throttle: 0, heat: 45, speed: 55 }, 8.0); // drops below 50 — tone fades
+  drone.setState({ ...base, throttle: 0, heat: 25, speed: 40 }, 9.0); // cool
+  const buffer = await ctx.startRendering();
+  return {
+    name: "engineHeat",
+    sampleRate: SAMPLE_RATE,
+    pcm: Array.from(buffer.getChannelData(0)),
+  };
+}
+
 /** Scripted offline nozzle capture: idle -> small rotation tap -> harder rotation -> sustained roll. */
 async function renderNozzleCapture(): Promise<RenderedSample> {
   const seconds = 5;
@@ -66,6 +90,7 @@ export async function renderSamples(): Promise<RenderedSample[]> {
     out.push({ name, sampleRate: SAMPLE_RATE, pcm: Array.from(buffer.getChannelData(0)) });
   }
   out.push(await renderDroneCapture());
+  out.push(await renderHeatCapture());
   out.push(await renderNozzleCapture());
   return out;
 }

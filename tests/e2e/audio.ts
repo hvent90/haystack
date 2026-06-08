@@ -14,6 +14,7 @@ const EXPECTED_DURATION_SECONDS: Record<string, number> = {
   brake: 0.35,
   scanHonk: 0.6,
   engineDrone: 6,
+  engineHeat: 10,
   rcsNozzle: 5,
 };
 
@@ -22,6 +23,7 @@ const EXPECTED_DURATION_SECONDS: Record<string, number> = {
 // for it specifically while keeping the non-silence assertion strict.
 const DURATION_TOLERANCE_SECONDS: Record<string, number> = {
   engineDrone: 0.2,
+  engineHeat: 0.2,
   rcsNozzle: 0.2,
 };
 
