@@ -25,6 +25,7 @@ import {
   listChat,
   mineDeposit,
   postChat,
+  resetShip,
   runScan,
   sellCargo,
   upgradeShip,
@@ -118,6 +119,16 @@ export function createApp(dependencies: AppDependencies = {}): Hono {
     try {
       const request = await context.req.json<ThrustCommand>();
       const ship = applyThrust(db, context.req.param("pilotId"), request);
+      worldStream.publishAll();
+      return context.json({ ship });
+    } catch (error) {
+      return problem(context, error);
+    }
+  });
+
+  app.post("/api/ships/:pilotId/reset", (context) => {
+    try {
+      const ship = resetShip(db, context.req.param("pilotId"));
       worldStream.publishAll();
       return context.json({ ship });
     } catch (error) {

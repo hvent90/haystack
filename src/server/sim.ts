@@ -210,6 +210,10 @@ export function applyThrust(db: HaystackDb, pilotId: string, command: ThrustComm
   return getServerWorld(db).applyThrust(pilotId, command);
 }
 
+export function resetShip(db: HaystackDb, pilotId: string): Ship {
+  return getServerWorld(db).resetShip(pilotId);
+}
+
 export function runScan(db: HaystackDb, pilotId: string, request: ScanRequest): ScanReport {
   advanceWorld(db);
   const ship = requireShip(db, pilotId);

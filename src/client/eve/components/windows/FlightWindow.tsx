@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Crosshair, Gauge, Rocket } from "lucide-react";
+import { Crosshair, Gauge, LocateFixed, Rocket } from "lucide-react";
 import type { Ship, Vector3 } from "../../../../shared/types";
 import type { FlightMode } from "../../types";
 import { meters, vectorMagnitude } from "../../vector";
@@ -18,6 +18,7 @@ export function FlightWindow({
   onThrottleUp,
   onBoost,
   onCruiseToggle,
+  onResetToOrigin,
 }: {
   myShip: Ship;
   flightMode: FlightMode;
@@ -31,6 +32,7 @@ export function FlightWindow({
   onThrottleUp: () => void;
   onBoost: () => void;
   onCruiseToggle: () => void;
+  onResetToOrigin: () => void;
 }): ReactNode {
   return (
     <>
@@ -73,6 +75,16 @@ export function FlightWindow({
         >
           <Crosshair size={14} />
           Stabilize
+        </button>
+        <button
+          type="button"
+          data-testid="flight-reset-origin"
+          disabled={!canUse}
+          onClick={onResetToOrigin}
+          title="Reset position to origin and clear all movement"
+        >
+          <LocateFixed size={14} />
+          Recenter
         </button>
       </div>
       <StatGrid

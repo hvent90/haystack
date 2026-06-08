@@ -197,6 +197,22 @@ export class ShipActor extends Actor {
     this.inputFreshFor = receipt.inputFreshFor;
   }
 
+  // Recenter at the origin and clear all movement (velocity, spin, throttle, cruise lock) while
+  // keeping orientation and ship loadout. Also drops any held flight input so the next tick does
+  // not immediately re-accelerate.
+  reset(): void {
+    this.assignShip({
+      ...this.toUnroundedShip(),
+      position: { x: 0, y: 0, z: 0 },
+      velocity: { x: 0, y: 0, z: 0 },
+      angularVelocity: { x: 0, y: 0, z: 0 },
+      throttle: 0,
+      cruiseLock: false,
+    });
+    this.heldInput = null;
+    this.inputFreshFor = 0;
+  }
+
   override update(dt: number): void {
     let heldInput: HeldFlightInput | null = null;
     if (this.heldInput === null || this.inputFreshFor <= 0) {
@@ -301,6 +317,18 @@ export class ServerWorld {
 
   applyThrust(pilotId: string, command: ThrustCommand): Ship {
     return this.applyCommand(pilotId, command);
+  }
+
+  resetShip(pilotId: string, nowMs = Date.now()): Ship {
+    this.advanceToNow(nowMs);
+    const ship = this.shipActors.get(pilotId);
+    if (ship === undefined) {
+      throw new Error("Ship not found.");
+    }
+    ship.reset();
+    this.persistShips();
+    this.persistLastTick(nowMs);
+    return ship.toShip();
   }
 
   applyCommand(

@@ -63,6 +63,14 @@ export async function sendThrust(pilotId: string, command: ThrustCommand): Promi
   return payload.ship;
 }
 
+export async function resetShip(pilotId: string): Promise<Ship> {
+  const payload = await requestJson<{ ship: Ship }>(
+    `/api/ships/${encodeURIComponent(pilotId)}/reset`,
+    { method: "POST" },
+  );
+  return payload.ship;
+}
+
 export async function pulseScan(pilotId: string, request: ScanRequest): Promise<ScanReport> {
   const payload = await requestJson<{ report: ScanReport }>(
     `/api/ships/${encodeURIComponent(pilotId)}/scan`,

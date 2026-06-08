@@ -23,6 +23,7 @@ import {
   openWorldStream,
   postChat,
   pulseScan,
+  resetShip,
   sellCargo,
   sendThrust,
   sendWorldStreamMessage,
@@ -653,6 +654,7 @@ export function EveApp(): ReactNode {
                   onThrottleUp={() => adjustFlightThrottle(throttleStep, true)}
                   onBoost={sendBoostInput}
                   onCruiseToggle={() => toggleFlightCruiseLock(true)}
+                  onResetToOrigin={resetToOrigin}
                 />
               ) : definition.key === "scanner" ? (
                 <ScannerWindow
@@ -915,6 +917,28 @@ export function EveApp(): ReactNode {
     }
     void withAction("thrust-rest", async () => {
       await sendThrust(session.pilot.id, command);
+    });
+  }
+
+  function resetToOrigin(): void {
+    const currentSession = sessionRef.current ?? session;
+    if (currentSession === null) {
+      return;
+    }
+    const pilotId = currentSession.pilot.id;
+    void withAction("reset-origin", async () => {
+      const ship = await resetShip(pilotId);
+      // Snap the local prediction + render store to the authoritative origin so the camera does
+      // not fight the teleport, and stop any in-flight input from re-accelerating the ship.
+      predictionRef.current.reset(ship);
+      flightRenderStore.resetOwned(ship);
+      clearFlightInput();
+      flightStateRef.current = { throttle: 0, cruiseLock: false };
+      setThrottle(0);
+      setCruiseLock(false);
+      setSnapshot((current) =>
+        current === null ? current : replaceOwnedShip(current, pilotId, ship),
+      );
     });
   }
 

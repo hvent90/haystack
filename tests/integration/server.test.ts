@@ -199,6 +199,44 @@ describe("haystack server", () => {
     expect(lockedPayload.ship.heat).toBeGreaterThanOrEqual(96);
   });
 
+  test("recenters the ship at the origin and clears all movement", async () => {
+    const pilot = await createPilot("Verifier Reset");
+    requireWorld()
+      .db.query(
+        "UPDATE ships SET x = 500, y = -200, z = 300, vx = 12, vy = 3, vz = -7, " +
+          "wx = 0.4, wy = 0.1, wz = -0.2, throttle = 0.8, cruise_lock = 1 WHERE pilot_id = ?",
+      )
+      .run(pilot.id);
+
+    const resetResponse = typed<{
+      ship: {
+        position: { x: number; y: number; z: number };
+        velocity: { x: number; y: number; z: number };
+        angularVelocity: { x: number; y: number; z: number };
+        throttle: number;
+        cruiseLock: boolean;
+      };
+    }>(
+      await requireWorld().app.request(`/api/ships/${pilot.id}/reset`, {
+        method: "POST",
+      }),
+    );
+    const { ship } = await resetResponse.json();
+
+    expect(ship.position).toEqual({ x: 0, y: 0, z: 0 });
+    expect(vectorMagnitude(ship.velocity)).toBe(0);
+    expect(vectorMagnitude(ship.angularVelocity)).toBe(0);
+    expect(ship.throttle).toBe(0);
+    expect(ship.cruiseLock).toBe(false);
+
+    const snapshotResponse = await requireWorld().app.request(`/api/world?pilotId=${pilot.id}`);
+    const snapshot = (await snapshotResponse.json()) as {
+      ships: Array<{ pilotId: string; position: { x: number; y: number; z: number } }>;
+    };
+    const persisted = snapshot.ships.find((candidate) => candidate.pilotId === pilot.id);
+    expect(persisted?.position).toEqual({ x: 0, y: 0, z: 0 });
+  });
+
   test("spends wallet credits on ship system upgrades", async () => {
     const pilot = await createPilot("Verifier Upgrade");
 
