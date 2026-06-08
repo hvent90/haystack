@@ -1,0 +1,9 @@
+## Codebase Patterns
+- The asteroid field is client-derived (src/client/eve/field-derivation.ts) and a pure function of FieldSummary {seed, cellSize, totalAsteroids, renderedLimit}; the server (src/server/field.ts) only streams ~30 seeded rocks + FieldSummary. Server publishAll cost is independent of renderLimit (measured ~0.18ms p95 at 2k and 100k). DO NOT reintroduce per-tick server field work.
+- Client render cap lives in src/client/eve/components/WorldView.tsx: ASTEROID_CAPACITY = 2000, and the InstancedAsteroids component uses Math.min(asteroids.length, ASTEROID_CAPACITY). One InstancedMesh + one bounding sphere => Three.js culls all-or-nothing (no per-instance frustum culling).
+- renderedLimit flows server->client via FieldSummary.renderedLimit, set from HAYSTACK_RENDERED_LIMIT env on the server (src/server/field.ts:renderedLimit()).
+- e2e harness uses Playwright/chromium; tests/e2e/screenshot.ts shows the boot pattern: Bun.spawn(["bun","src/server/main.ts"]) + Bun.spawn(["bunx","vite",...]) then chromium.launch(); waits for [data-testid='haystack-app'] then a canvas. Reuse this for the client-render benchmark.
+- Field generators MUST stay in exact parity: scripts/bench/parity-check.ts compares server streamedFieldAsteroids vs client deriveVirtualField. Touch ids/positions/order => fix both sides in one commit.
+- Real-hardware baseline (user report): 100k asteroids rendered at < 1 FPS on a 2025 MacBook Pro. The render path (full 100k instance submission, no culling, full rebuild per cell-cross) is the bottleneck — not the server.
+
+## (iteration entries appended below)
