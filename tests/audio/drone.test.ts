@@ -98,7 +98,23 @@ describe("rcsNozzleGain", () => {
         cruiseLock: false,
         speed: 0,
       }),
-    ).toBeGreaterThan(0.2);
+    ).toBeGreaterThan(0.1);
+  });
+
+  test("keeps tiny aiming nudges quiet (gentle perceptual curve)", () => {
+    // A small mouse correction should barely whisper, not snap to a fixed floor —
+    // this is what makes constant aiming pleasant rather than fatiguing.
+    expect(
+      rcsNozzleGain({
+        throttle: 0,
+        rcs: 0,
+        rotation: 0.1,
+        boost: false,
+        heat: 0,
+        cruiseLock: false,
+        speed: 0,
+      }),
+    ).toBeLessThan(0.07);
   });
 
   test("ignores strafe (rcs) — translation is the engine roar, not the nozzle", () => {
