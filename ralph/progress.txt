@@ -91,3 +91,33 @@
 - Files: scripts/bench/validate-100k.ts (NEW) | ralph/prd.json (P7 passes:true) | ralph/progress.txt.
 - **Learnings:** P7 needed no production code change — scan/mine/discovery/chat read DB rows + field.ts helpers (not snapshot.asteroids), so moving the field off the wire preserved them by construction; the harness proves it at 100k. Discovery is derived (no table) so "survives restart" means it recomputes from persisted ship/asteroid/structure inputs. Driving publishAll with stub peers that capture ws.send JSON exercises the real delta path deterministically (no sockets / no timing flakiness) because send is synchronous when HAYSTACK_STREAM_DELAY_MS/JITTER are unset. NEXT (passes:false): P8 — before/after orders-of-magnitude summary table (numbers already in the P3/P4/P2 entries; just collate).
 ---
+
+## 2026-06-08T08:58:43Z - P8 (orders-of-magnitude summary — final item)
+- Item: collation/summary gate; NO production code change. Re-measured publishAll across the full default matrix at HEAD (b133e92) so the "after" column is freshly observed this iteration, not copied from the P3/P4/P2 entries. Soundness check that it is signal not noise: post-P4 the cost is field-INDEPENDENT, and this run confirms it — 1x2000 p50 0.14 ≈ 1x100k p50 0.12, and 16x2000 p50 1.37 ≈ 16x100k p50 1.44 (field size moves the number <6%); the player-count axis is the only one that scales.
+
+### BEFORE (pre-perf baseline @ 5 km/s) -> AFTER (HEAD b133e92 @ 5 km/s)
+| config players x visibleAsteroids | publishAll p50 ms | publishAll p95 ms | MB/s per peer | effective visible (after) |
+|---|---|---|---|---|
+| 1 x 2000   | 1.44    -> 0.14 | 322.00  -> 0.18 | 5.30   -> 0.033 | 2030   |
+| 16 x 2000  | 317.44  -> 1.37 | 1104.00 -> 1.58 | 2.10   -> 0.188 | 2030   |
+| 1 x 100k   | 90.59   -> 0.12 | 418.85  -> 0.14 | 260.95 -> 0.033 | 100030 |
+| 4 x 100k   | 359.16  -> 0.35 | 987.00  -> 0.52 | 98.20  -> 0.053 | 100030 |
+| 16 x 100k  | 2166.93 -> 1.44 | 3650.68 -> 1.60 | 94.33  -> 0.188 | 100030 |  <-- TARGET workload
+(baseline p50/p95/MBps from prd.json baselineAtHead + the P0/P1 entry; "after" = the bench run logged this iteration.)
+
+### Achieved multiple — TARGET workload (16 players x 100k @ 5 km/s)
+- publishAll p50: 2166.93 ms -> 1.44 ms  = 1505x faster
+- publishAll p95: 3650.68 ms -> 1.60 ms  = 2282x faster  (= 4.8% of the 33.3 ms / 30 Hz tick budget; ~20x headroom; ~10x under the <16 ms aim)
+- MB/s per peer:  94.33 -> 0.188         = 502x less bandwidth  (~2.7 orders of magnitude)
+- Capacity intact: effective client-visible asteroids = 100030 >= 100000, sustained while flying 5 km/s (re-pages a cell ~every 7 ticks).
+- Single-player 1x100k for reference: p50 90.59 -> 0.12 = 755x; p95 418.85 -> 0.14 = 2992x; bandwidth 260.95 -> 0.033 MB/s = 7908x (~3.9 orders).
+- PRD P8 bar = >=100x publishAll AND >=1 order-of-magnitude bandwidth at 16x100k. EXCEEDED: ~15x past the latency bar (1505x vs 100x) and ~50x past the bandwidth bar (502x vs 10x). Realized gain is BETTER than target, so there is no shortfall to report.
+
+### Where the orders of magnitude came from (structural removals, not constant-factor tuning)
+- P3: removed the per-peer per-tick JSON.stringify of the 100k-rock array (a ~77 ms/peer FLOOR) -> change-detection is O(1) in field size (cell-stable fingerprint).
+- P4: took the deterministic 100k static field OFF THE WIRE (client derives it from the seed) -> publishAll cost AND bandwidth became field-INDEPENDENT; also deleted the per-crossing cubic cell-scan + full-field resend. Biggest single lever: the field stopped being server work at all.
+- P2: computed the SHARED world once per tick instead of once per peer -> player scaling went O(players^2)/super-linear -> sub-linear.
+- Net shape: per-tick cost was ~O(players x field); it is now ~O(players) with a small constant and ZERO field term.
+- Files: ralph/progress.txt, ralph/prd.json (P8 passes:true). No production code touched this iteration.
+- **Learnings:** Each of the three dominant O() terms was REMOVED rather than shrunk, which is why the final number barely moves with field size and grows only gently with players. Honest residual (carried from P2, not a regression): each peer's delta still serializes the shared moving ships/pilots arrays, so a small O(players) slope remains (perPeerEach ~0.12->0.15 ms over 1->32 players); truly-flat scaling would need shared-fragment pre-serialization (deferred — unnecessary while 16x100k p95 sits at 1.6 ms vs the 16 ms aim). With P8 flipped, ALL PRD items P0-P8 pass: a single player sustains >=100k visible asteroids at 5 km/s, and 16 concurrent players broadcast at 30 Hz inside ~5% of the tick budget.
+---

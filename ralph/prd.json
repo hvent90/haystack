@@ -32,7 +32,7 @@
       "spec": "PASS: benchmark at {players: target.concurrentPlayers, visibleAsteroids:100000, 5 km/s} shows publishAll p95 < tickBudgetMs/2 (~16 ms, knob) AND no overrun ticks over the run." },
     { "id": "P7", "name": "No functional/quality regression at scale", "priority": 7, "passes": true,
       "spec": "PASS: `bun run verify` green (minus documented pre-existing fails); e2e screenshot/multiplayer/ui green; and a checked validation confirms at high density that mining, a surface/pocket scan, asteroid/deposit discovery, multiplayer remote-position sync, and chat all still work, and a focused client applies world-stream updates at ~30 Hz. Ship/cargo/credits/structures/discoveries still survive a server restart." },
-    { "id": "P8", "name": "Orders-of-magnitude summary", "priority": 8, "passes": false,
+    { "id": "P8", "name": "Orders-of-magnitude summary", "priority": 8, "passes": true,
       "spec": "PASS: progress.txt contains a before/after table (baseline vs final) and the achieved multiple — target: publishAll cost at {16 players, 100k, 5 km/s} reduced from ~2167 ms to under ~16 ms (>=100x), and MB/s per peer cut by >=1 order of magnitude. If the realized gain is less, state the measured number and the binding limit honestly." }
   ]
 }
