@@ -33,3 +33,33 @@
 - verify: typecheck GREEN; format GREEN (touched files); parity GREEN (0/7 divergence); integration 54 pass / 1 PRE-EXISTING fail (million-scale diagnostic, fails without our changes too).
 - **Learnings:** material-identity gating on onAfterRender is the clean way to count post-frustum-cull submitted instances across any number of meshes without double-counting shadow/normal passes. renderer.info needs autoReset=false + manual per-frame reset under the EffectComposer. The single-bounding-sphere mesh can't be culled when the camera is inside its sphere, so proving facing-empty~0 in C3 needs edge positioning, not just rotation. deriveVirtualField at 100k is 100-280ms — a hard cell-cross hitch that C4 must amortize.
 ---
+
+## [2026-06-08T16:11:50Z] - C1
+- Measurement/recording item (no code change). Re-ran C0's client-render harness against current HEAD to confirm the client baseline reproduces, then ran the world-stream server bench at limit 2000 vs 100000 (stable 200-tick sample) to confirm server cost is independent of renderLimit. Parity re-confirmed green.
+- CONSOLIDATED BASELINE TABLE (current HEAD, 2026-06-08):
+  | metric | client @2000 | client @100000 |
+  |---|---|---|
+  | derivedAsteroidCount | 2030 | 100030 |
+  | submittedInstanceCount (facing field) | 2000 | 2000 (CAPPED at ASTEROID_CAPACITY=2000) |
+  | cameraFacingEmpty submitted | 2000 | 2000 (no real per-instance culling) |
+  | asteroidDrawCalls | 1 | 1 |
+  | drawCalls (whole frame, all passes) | 70 | 70 |
+  | asteroidTriangles | 72000 | 72000 |
+  | renderedTriangles (whole frame) | 216617 | 216617 |
+  | fieldDeriveMs | 9.4 | 282.5 |
+  | worstCellCrossFrameMs | 221.7 | 0 (move phase starves WS; no in-window cross) |
+  | medianFrameMs | 126.0 | 136.05 |
+  - In-process deriveVirtualField @100k: derived=100000, median=107.96ms (min 52.53 / max 132.69).
+  - SERVER world-stream bench (16 players, 5000 m/s, 200 ticks / 30 warmup):
+  | metric | server @2000 | server @100000 | delta |
+  |---|---|---|---|
+  | publishAll p50 | 1.32 ms | 1.33 ms | +0.8% |
+  | publishAll p95 | 1.60 ms | 1.60 ms | 0% |
+  | bytesPerSecPerPeer | 187578 | 187602 | +0.01% |
+  | peakRssMb | 425 | 418 | — |
+  - SERVER INDEPENDENCE CONFIRMED: publishAll p95 and bytes/sec/peer are within ~1% (≪15%) across a 50x change in renderLimit. The field is client-derived; the server streams seeded rocks + FieldSummary only. (Note: a noisy 20-tick sample showed p95 1.67→1.99 = +19%; the 200-tick sample collapses that to 0% — the apparent delta was pure sampling noise, p50/bytes were always flat.)
+- The CLIENT @100k baseline is the catastrophe C2–C5 must fix: derives 100k but submits only 2000 (ASTEROID_CAPACITY cap), facing-empty still 2000 (single bounding sphere, no real culling), 282ms field derive per cell-cross, ~7 FPS median in headless swiftshader (matches the real-hardware <1 FPS report on full GPU geometry).
+- Files changed: ralph/prd-client.json (C1 passes=true), ralph/progress-client.txt (this entry). No source touched.
+- verify: parity GREEN (0/7 divergence). No code change ⇒ typecheck/tests unaffected since C0 (54 pass / 1 pre-existing fail).
+- **Learnings:** Use ≥200 ticks for the world-stream p95 — a 20-tick sample swings p95 ±20% on noise alone while p50 and bytes/sec stay rock-flat; the robust independence signals are p50 + bytes/sec/peer, not a short-sample p95. The client baseline is fully reproducible run-to-run on the deterministic counts (derived/submitted/draws/tris identical to C0); only the swiftshader frame-ms drift.
+---
