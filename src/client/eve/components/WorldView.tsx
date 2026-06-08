@@ -19,6 +19,8 @@ import { clamp, formatDistance, toScene, vectorMagnitude } from "../vector";
 import { sameSelection } from "../overview";
 import { flightRenderStore } from "../renderStore";
 import { AudioListenerRig, RemoteShipAudio } from "./SpatialAudio";
+import { ShipFlashlight, SunDisc, SunLight } from "./SceneLighting";
+import { ScenePostProcessing } from "./ScenePostProcessing";
 
 // Live owned-ship origin used to position every world object relative to the
 // camera. Read from the render store (smoothed, 60fps) when seeded, otherwise
@@ -44,6 +46,8 @@ export function WorldView({
   flightMode,
   mouseDeflection,
   flightInputScale,
+  flashlightOn,
+  scanNonce,
   stageRef,
   onSelect,
   onContextMenu,
@@ -61,6 +65,8 @@ export function WorldView({
   flightMode: FlightMode;
   mouseDeflection: { x: number; y: number; z: number };
   flightInputScale: number;
+  flashlightOn: boolean;
+  scanNonce: number;
   stageRef: RefObject<HTMLDivElement | null>;
   onSelect: (selection: Selection) => void;
   onContextMenu: (event: ReactMouseEvent<HTMLElement>, target: Selection | null) => void;
@@ -99,11 +105,12 @@ export function WorldView({
           waypoint={waypoint}
           onProject={setScreenPoints}
         />
-        <color attach="background" args={["#10100f"]} />
-        <ambientLight intensity={0.62} />
-        <pointLight position={[8, 12, 10]} intensity={1.4} color="#f5c16f" />
+        <color attach="background" args={["#03040a"]} />
+        <SunLight />
         <ConditionalListenerRig ctx={audioContext} volume={audioVolume}>
           <group>
+            <SunDisc />
+            <ShipFlashlight fallbackOrientation={myShip.orientation} on={flashlightOn} />
             <GridStars />
             <InstancedAsteroids asteroids={asteroids} fallbackOrigin={myShip.position} />
             {structures.map((structure) => (
@@ -125,6 +132,7 @@ export function WorldView({
               ))}
           </group>
         </ConditionalListenerRig>
+        <ScenePostProcessing scanNonce={scanNonce} />
       </Canvas>
       <div
         className="reticle"

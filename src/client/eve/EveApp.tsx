@@ -118,6 +118,8 @@ export function EveApp(): ReactNode {
   const [cruiseLock, setCruiseLock] = useState(false);
   const [mouseDeflection, setMouseDeflection] = useState<Vector3>({ x: 0, y: 0, z: 0 });
   const [flightInputScale, setFlightInputScale] = useState(flightInputScaleMax);
+  const [flashlightOn, setFlashlightOn] = useState(false);
+  const [scanNonce, setScanNonce] = useState(0);
   const streamRef = useRef<WebSocket | null>(null);
   const sessionRef = useRef<Session | null>(null);
   const predictionRef = useRef(new OwnedShipPrediction());
@@ -354,6 +356,21 @@ export function EveApp(): ReactNode {
         return;
       }
 
+      // Flashlight toggle (F) and scan pulse (V) work in any mode, as long as the user is not
+      // typing into a field. Placed before the flight-key gate so they fire in cursor mode too.
+      if (!isEditableTarget(event.target) && !event.repeat) {
+        if (event.code === "KeyF") {
+          event.preventDefault();
+          setFlashlightOn((on) => !on);
+          return;
+        }
+        if (event.code === "KeyV") {
+          event.preventDefault();
+          setScanNonce((nonce) => nonce + 1);
+          return;
+        }
+      }
+
       if (
         isEditableTarget(event.target) ||
         flightModeRef.current !== "flight" ||
@@ -581,6 +598,8 @@ export function EveApp(): ReactNode {
         flightMode={flightMode}
         mouseDeflection={mouseDeflection}
         flightInputScale={flightInputScale}
+        flashlightOn={flashlightOn}
+        scanNonce={scanNonce}
         stageRef={stageRef}
         onSelect={selectTarget}
         onContextMenu={openContextMenu}
