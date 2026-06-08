@@ -1,4 +1,5 @@
 import type { Asteroid, FieldSummary, Mineral, Vector3, WorldSnapshot } from "../../shared/types";
+import { renderStats } from "./render-stats";
 
 // Client-side reconstruction of the deterministic virtual asteroid field.
 //
@@ -225,12 +226,19 @@ export class FieldDeriver {
     const key = `${cx}-${cy}-${cz}-${field.renderedLimit}-${field.seed}-${field.cellSize}`;
     const cellChanged = key !== this.cellKey;
     if (cellChanged) {
+      const start = performance.now();
       this.virtual = deriveVirtualField(position, field);
       this.cellKey = key;
+      if (cellChanged || this.mergedSeededRef !== this.seeded) {
+        this.rebuildMerged();
+      }
+      renderStats.recordDerive(performance.now() - start, this.merged.length);
+      return this.merged;
     }
-    if (cellChanged || this.mergedSeededRef !== this.seeded) {
+    if (this.mergedSeededRef !== this.seeded) {
       this.rebuildMerged();
     }
+    renderStats.setDerivedCount(this.merged.length);
     return this.merged;
   }
 }

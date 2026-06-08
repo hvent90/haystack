@@ -5,5 +5,31 @@
 - e2e harness uses Playwright/chromium; tests/e2e/screenshot.ts shows the boot pattern: Bun.spawn(["bun","src/server/main.ts"]) + Bun.spawn(["bunx","vite",...]) then chromium.launch(); waits for [data-testid='haystack-app'] then a canvas. Reuse this for the client-render benchmark.
 - Field generators MUST stay in exact parity: scripts/bench/parity-check.ts compares server streamedFieldAsteroids vs client deriveVirtualField. Touch ids/positions/order => fix both sides in one commit.
 - Real-hardware baseline (user report): 100k asteroids rendered at < 1 FPS on a 2025 MacBook Pro. The render path (full 100k instance submission, no culling, full rebuild per cell-cross) is the bottleneck — not the server.
+- Client render stats are app-exposed via window.__HAYSTACK_RENDER_STATS__ (src/client/eve/render-stats.ts, published each frame from RenderDriver in WorldView.tsx). submittedInstanceCount is accumulated from the asteroid InstancedMesh's onAfterRender, GATED ON MATERIAL IDENTITY (renderedMaterial === the asteroid MeshStandardMaterial). three only calls onAfterRender for objects that survive frustum culling; the asteroid material is used ONLY in the main color pass (shadow pass -> depth material, post NormalPass -> normal material), so the gate counts each in-view instance exactly once/frame and will naturally SUM across per-cell sub-meshes once the field is chunked (C3). This is the robust culling signal — do not replace with renderer.info.
+- renderer.info.render auto-resets on every internal render() call and the postprocessing EffectComposer issues MANY per frame, so a naive read returns only the last fullscreen quad. RenderDriver sets gl.info.autoReset=false and reads+resets once per frame to get whole-frame totals (drawCalls/renderedTriangles across shadow+normal+color+post; ~3x the asteroid color-pass tris). The asteroid-specific asteroidDrawCalls/asteroidTriangles (submitted * 36 tris for dodecahedron detail-0) are the precise per-field numbers.
+- window.__HAYSTACK_RENDER_DEBUG__ = { reset(), faceAway(on) }. faceAway rotates the camera 180° (RenderDriver applies a yaw180 quaternion) so the benchmark can measure an empty-view submitted count. No effect in normal play (nothing sets it). NOTE: from the field CENTER the camera sits INSIDE the field's bounding sphere so facing-away still submits everything at baseline; making cameraFacingEmpty ~0 (C3) will require positioning the ship at the field EDGE looking outward.
+- client-render benchmark: scripts/bench/client-render.ts. Per HAYSTACK_RENDERED_LIMIT it boots server+vite+chromium, joins a pilot (CLI), loads the client, waits for the derive, then samples 3 phases: steady (facing field), faceAway (empty), and a thrust-burst movement phase for worstCellCrossFrameMs. Plus an in-process deriveVirtualField micro-bench at 100k. Knobs: BENCH_LIMIT_GRID, BENCH_PORT, BENCH_CLIENT_PORT, BENCH_HEADFUL. Thrust is driven via POST /api/ships/:id/thrust (impulse clamped to mag 12 per call, so it sends a burst to build speed).
+- PRE-EXISTING FAIL (not ours): tests/integration/server.test.ts "diagnoses million-scale virtual asteroid index" expects materializedAsteroids < 10000 but gets 407360. Fails identically with our client changes stashed. Server-side field-diagnostic test, unrelated to the client render path. 54 pass / 1 fail.
 
-## (iteration entries appended below)
+## [2026-06-08T00:00:00Z] - C0
+- Built the client-render benchmark harness (scripts/bench/client-render.ts) + app-exposed render telemetry (src/client/eve/render-stats.ts), instrumented RenderDriver (frame tick, autoReset capture, faceAway) and the asteroid InstancedMesh (material-gated onAfterRender submitted count) in WorldView.tsx, and timed deriveVirtualField inside FieldDeriver.
+- Baseline table (measured this run; headless swiftshader frame ms is noisy/slow — counts are the robust signal):
+  | metric | renderLimit=2000 | renderLimit=100000 |
+  |---|---|---|
+  | derivedAsteroidCount | 2030 | 100030 |
+  | submittedInstanceCount (facing field) | 2000 | 2000 (CAPPED by ASTEROID_CAPACITY) |
+  | cameraFacingEmpty submitted | 2000 | 2000 (no real culling) |
+  | asteroidDrawCalls | 1 | 1 |
+  | drawCalls (whole frame, all passes) | 70 | 70 |
+  | asteroidTriangles | 72000 | 72000 |
+  | renderedTriangles (whole frame) | 216617 | 216617 |
+  | fieldDeriveMs | 9.4 | 280.1 |
+  | worstCellCrossFrameMs | 227.7 | 0 (no cross in-window) |
+  | medianFrameMs | 126.35 | 134.25 |
+  | cellCrossCount (move phase) | 11 | 0 |
+  - In-process deriveVirtualField @100k: derived=100000, median=111.4ms (min 50.9 / max 136.2).
+  - Reading: at limit=100000 the client DOES derive 100k rocks but submits only 2000 (the ASTEROID_CAPACITY=2000 cap, C2's target); facing-away still submits the full 2000 (all-or-nothing single bounding sphere, C3's target); deriveVirtualField costs ~111-280ms per cell-cross (C4/C5). At 100k the move phase logged 0 cell crosses: the 134ms-frame loop starves WS processing so the ship never re-pages a cell in-window — itself the baseline catastrophe; the 111ms micro-bench is the clean cross cost.
+- Files changed: scripts/bench/client-render.ts (new), src/client/eve/render-stats.ts (new), src/client/eve/field-derivation.ts, src/client/eve/components/WorldView.tsx
+- verify: typecheck GREEN; format GREEN (touched files); parity GREEN (0/7 divergence); integration 54 pass / 1 PRE-EXISTING fail (million-scale diagnostic, fails without our changes too).
+- **Learnings:** material-identity gating on onAfterRender is the clean way to count post-frustum-cull submitted instances across any number of meshes without double-counting shadow/normal passes. renderer.info needs autoReset=false + manual per-frame reset under the EffectComposer. The single-bounding-sphere mesh can't be culled when the camera is inside its sphere, so proving facing-empty~0 in C3 needs edge positioning, not just rotation. deriveVirtualField at 100k is 100-280ms — a hard cell-cross hitch that C4 must amortize.
+---

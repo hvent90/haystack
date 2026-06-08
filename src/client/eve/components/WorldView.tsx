@@ -23,6 +23,7 @@ import { sameSelection } from "../overview";
 import { flightRenderStore } from "../renderStore";
 import { fogColor, fogFar, fogNear, shadowBubbleFadeFar, shadowBubbleFadeNear } from "../lighting";
 import { sunlitForId } from "../sun-occlusion";
+import { getRenderDebugControls, renderStats } from "../render-stats";
 import { AudioListenerRig, RemoteShipAudio } from "./SpatialAudio";
 import { ShipFlashlight, SunDisc, SunLight } from "./SceneLighting";
 import { ScenePostProcessing } from "./ScenePostProcessing";
@@ -998,13 +999,31 @@ function RenderDriver({ fallbackShip }: { fallbackShip: Ship }): null {
   const cockpit = useMemo(() => new ThreeVector3(0, 0.12, 0), []);
   const cockpitWorld = useMemo(() => new ThreeVector3(), []);
   const quaternion = useMemo(() => new ThreeQuaternion(), []);
+  // 180° yaw about world-up, used only by the benchmark's faceAway control to
+  // point the camera at the empty hemisphere behind the ship.
+  const yaw180 = useMemo(() => new ThreeQuaternion(0, 1, 0, 0), []);
+  const infoArmed = useRef(false);
 
-  useFrame(({ camera }, delta) => {
+  useFrame(({ camera, gl }, delta) => {
+    // renderer.info auto-resets on every internal render() call, and the
+    // post-processing composer issues many per frame — so the default reading is
+    // just the last fullscreen quad. Disable auto-reset and drain the previous
+    // frame's fully-accumulated totals here, before this frame renders.
+    if (!infoArmed.current) {
+      gl.info.autoReset = false;
+      infoArmed.current = true;
+    }
+    renderStats.frameTick(delta * 1000, gl.info.render.calls, gl.info.render.triangles);
+    gl.info.reset();
+
     flightRenderStore.advance(delta);
     const orientation = flightRenderStore.hasOwned()
       ? flightRenderStore.ownedRenderQuaternion()
       : fallbackShip.orientation;
     quaternion.set(orientation.x, orientation.y, orientation.z, orientation.w).normalize();
+    if (getRenderDebugControls().faceAway) {
+      quaternion.multiply(yaw180);
+    }
     cockpitWorld.copy(cockpit).applyQuaternion(quaternion);
     camera.position.copy(cockpitWorld);
     camera.quaternion.copy(quaternion);
@@ -1212,6 +1231,23 @@ function InstancedAsteroids({
         material={material}
         castShadow
         receiveShadow
+        onAfterRender={(_renderer, _scene, _camera, geometry, renderedMaterial) => {
+          // three only invokes onAfterRender for objects that survive frustum
+          // culling, and the asteroid material is used solely in the main color
+          // pass (shadow -> depth material, NormalPass -> normal material), so
+          // this counts each in-view instance exactly once per frame.
+          if (renderedMaterial !== material) {
+            return;
+          }
+          const mesh = meshRef.current;
+          if (mesh === null) {
+            return;
+          }
+          const index = geometry.index;
+          const trianglesPerInstance =
+            index === null ? (geometry.attributes.position?.count ?? 0) / 3 : index.count / 3;
+          renderStats.noteSubmitted(mesh.count, trianglesPerInstance);
+        }}
       >
         <dodecahedronGeometry args={[1, 0]} />
       </instancedMesh>
