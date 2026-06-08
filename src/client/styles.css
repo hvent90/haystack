@@ -466,6 +466,62 @@ tr:focus-visible {
   pointer-events: none;
 }
 
+/* Selected-target direction arrow: pinned to screen center, rotated toward the
+   selected object so you always know which way to turn to face it. */
+.selection-arrow-layer {
+  position: absolute;
+  z-index: 6;
+  inset: 0;
+  pointer-events: none;
+}
+
+.selection-arrow {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 128px;
+  height: 0;
+  transform-origin: 0 0;
+  transition: opacity 120ms linear;
+  will-change: transform, opacity;
+}
+
+.selection-arrow-shaft {
+  position: absolute;
+  left: 46px;
+  top: -1.5px;
+  width: 70px;
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(to right, rgb(226 177 93 / 0%), var(--accent-amber));
+  box-shadow: 0 0 6px rgb(226 177 93 / 55%);
+}
+
+.selection-arrow-head {
+  position: absolute;
+  left: 114px;
+  top: -6px;
+  width: 0;
+  height: 0;
+  border-top: 6px solid transparent;
+  border-bottom: 6px solid transparent;
+  border-left: 12px solid var(--accent-amber);
+  transform-origin: 4px center;
+  filter: drop-shadow(0 0 4px rgb(226 177 93 / 70%));
+  animation: selection-arrow-pulse 1.3s ease-in-out infinite;
+}
+
+@keyframes selection-arrow-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.28);
+  }
+}
+
 .top-rail {
   position: absolute;
   z-index: 8000;

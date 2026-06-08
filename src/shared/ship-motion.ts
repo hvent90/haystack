@@ -108,7 +108,7 @@ export function integrateShipTick(ship: Ship, dt: number, heldInput: HeldFlightI
       y: nextShip.position.y + nextShip.velocity.y * dt,
       z: nextShip.position.z + nextShip.velocity.z * dt,
     },
-    heat: Math.max(0, nextShip.heat - dt * 0.85),
+    heat: Math.max(0, nextShip.heat - dt * 4.25),
   };
   return nextShip;
 }

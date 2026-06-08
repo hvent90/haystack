@@ -33,6 +33,11 @@ type ScreenPoint = {
   visible: boolean;
 };
 
+type SelectionArrow = {
+  angleDeg: number;
+  strength: number;
+};
+
 export function WorldView({
   rows,
   asteroids,
@@ -73,6 +78,11 @@ export function WorldView({
     [rows],
   );
   const [screenPoints, setScreenPoints] = useState<Record<string, ScreenPoint>>({});
+  const [selectionArrow, setSelectionArrow] = useState<SelectionArrow | null>(null);
+  const selectedRow = useMemo(
+    () => (selected === null ? null : (rows.find((row) => sameSelection(row, selected)) ?? null)),
+    [rows, selected],
+  );
   const angularSpeed = vectorMagnitude(myShip.angularVelocity);
   const angularStable = angularSpeed <= autoRotationStabilizerThresholdRadians;
 
@@ -97,7 +107,9 @@ export function WorldView({
           rows={bracketRows}
           myShip={myShip}
           waypoint={waypoint}
+          selectedRow={selectedRow}
           onProject={setScreenPoints}
+          onArrow={setSelectionArrow}
         />
         <color attach="background" args={["#10100f"]} />
         <ambientLight intensity={0.62} />
@@ -149,6 +161,7 @@ export function WorldView({
         onSelect={onSelect}
         onContextMenu={onContextMenu}
       />
+      <SelectionArrowLayer arrow={selectionArrow} />
     </div>
   );
 }
@@ -215,15 +228,21 @@ function SceneProjection({
   rows,
   myShip,
   waypoint,
+  selectedRow,
   onProject,
+  onArrow,
 }: {
   rows: OverviewRow[];
   myShip: Ship;
   waypoint: Waypoint | null;
+  selectedRow: OverviewRow | null;
   onProject: (points: Record<string, ScreenPoint>) => void;
+  onArrow: (arrow: SelectionArrow | null) => void;
 }): null {
   const projected = useMemo(() => new ThreeVector3(), []);
+  const viewScratch = useMemo(() => new ThreeVector3(), []);
   const lastSignature = useRef("");
+  const lastArrowSig = useRef("none");
 
   useFrame(({ camera }) => {
     const origin = renderOrigin(myShip.position);
@@ -265,6 +284,25 @@ function SceneProjection({
         camera,
         projected,
       );
+    }
+
+    let nextArrow: SelectionArrow | null = null;
+    if (selectedRow !== null) {
+      const target =
+        selectedRow.position !== null
+          ? selectedRow.position
+          : bearingPoint(origin, selectedRow.bearing);
+      if (target !== null) {
+        nextArrow = projectSelectionArrow(target, origin, camera, projected, viewScratch);
+      }
+    }
+    const arrowSig =
+      nextArrow === null
+        ? "none"
+        : `${Math.round(nextArrow.angleDeg)}:${nextArrow.strength.toFixed(2)}`;
+    if (arrowSig !== lastArrowSig.current) {
+      lastArrowSig.current = arrowSig;
+      onArrow(nextArrow);
     }
 
     const signature = Object.entries(next)
@@ -697,6 +735,94 @@ function projectWorldPoint(
   };
 }
 
+// A point far along a unit bearing, used when the selected contact has a known
+// direction but no resolved world position (e.g. a raw scan hit).
+function bearingPoint(
+  origin: { x: number; y: number; z: number },
+  bearing: { x: number; y: number; z: number },
+): { x: number; y: number; z: number } | null {
+  const mag = Math.hypot(bearing.x, bearing.y, bearing.z);
+  if (mag < 1e-6) {
+    return null;
+  }
+  const reach = 1_000_000;
+  return {
+    x: origin.x + (bearing.x / mag) * reach,
+    y: origin.y + (bearing.y / mag) * reach,
+    z: origin.z + (bearing.z / mag) * reach,
+  };
+}
+
+// Direction from screen center toward the selected target. Returns the CSS
+// rotation (degrees) for a right-pointing arrow plus a 0..1 strength used to
+// fade the arrow out as the target nears the center of view (you've found it).
+// Targets behind the camera flip the projected direction so the arrow still
+// points the short way around.
+function projectSelectionArrow(
+  target: { x: number; y: number; z: number },
+  origin: { x: number; y: number; z: number },
+  camera: Camera,
+  scratch: ThreeVector3,
+  view: ThreeVector3,
+): SelectionArrow | null {
+  const scene = toScene(target, origin);
+  scratch.set(scene.x, scene.y, scene.z);
+  camera.updateMatrixWorld();
+  camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+  view.copy(scratch).applyMatrix4(camera.matrixWorldInverse);
+  const behind = view.z >= 0;
+  scratch.project(camera);
+  let dx = scratch.x;
+  let dy = scratch.y;
+  if (behind) {
+    dx = -dx;
+    dy = -dy;
+  }
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) {
+    return null;
+  }
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-4) {
+    // Dead-center: in front means you're already facing it (hide the arrow);
+    // directly behind means nudge straight down to prompt a turn-around.
+    return behind ? { angleDeg: 90, strength: 1 } : null;
+  }
+  // CSS y-axis points down, so negate dy when converting the NDC direction
+  // (y-up) into a screen-space rotation for a right-pointing arrow.
+  const angleDeg = (Math.atan2(-dy / len, dx / len) * 180) / Math.PI;
+  const strength = behind
+    ? 1
+    : clamp((Math.hypot(scratch.x, scratch.y) - 0.12) / (0.5 - 0.12), 0, 1);
+  if (!behind && strength <= 0.02) {
+    return null;
+  }
+  return { angleDeg, strength };
+}
+
+// Single HUD arrow pinned to the screen center, rotated toward the selected
+// target. Pointer-events are disabled so it never intercepts clicks.
+function SelectionArrowLayer({ arrow }: { arrow: SelectionArrow | null }): ReactNode {
+  if (arrow === null) {
+    return null;
+  }
+  return (
+    <div className="selection-arrow-layer" aria-hidden={true}>
+      <div
+        className="selection-arrow"
+        data-testid="selection-arrow"
+        data-angle-degrees={Math.round(arrow.angleDeg)}
+        style={{
+          transform: `rotate(${arrow.angleDeg}deg)`,
+          opacity: 0.2 + 0.8 * arrow.strength,
+        }}
+      >
+        <span className="selection-arrow-shaft" />
+        <span className="selection-arrow-head" />
+      </div>
+    </div>
+  );
+}
+
 // First child in the scene: advances the render store once per frame (must run
 // before any consumer samples it), drives the first-person camera from the
 // smoothed owned orientation, and exposes the rendered origin for measurement.
@@ -718,8 +844,16 @@ function RenderDriver({ fallbackShip }: { fallbackShip: Ship }): null {
 
     if (typeof window !== "undefined") {
       const origin = renderOrigin(fallbackShip.position);
-      (window as unknown as { __probe?: { owned: Vector3 } }).__probe = {
+      (
+        window as unknown as {
+          __probe?: {
+            owned: Vector3;
+            ownedQuat: { x: number; y: number; z: number; w: number };
+          };
+        }
+      ).__probe = {
         owned: { x: origin.x, y: origin.y, z: origin.z },
+        ownedQuat: { x: quaternion.x, y: quaternion.y, z: quaternion.z, w: quaternion.w },
       };
     }
   });
