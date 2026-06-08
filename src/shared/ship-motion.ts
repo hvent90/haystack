@@ -5,8 +5,8 @@ export const shipInputFreshSeconds = 0.3;
 export const autoRotationStabilizerThresholdRadians = (0.2 * Math.PI) / 180;
 
 const mainAcceleration = 34;
-const lateralAcceleration = 18;
-const verticalAcceleration = 14;
+const lateralAcceleration = 90;
+const verticalAcceleration = 70;
 const cruiseAcceleration = 42;
 const cruiseSpeed = 220;
 const boostImpulse = 12;

@@ -269,6 +269,11 @@ tr:focus-visible {
   transform: translate(-50%, -50%) rotate(45deg);
 }
 
+.velocity-vector[data-clamped="true"] {
+  opacity: 0.5;
+  transform: translate(-50%, -50%) rotate(45deg) scale(0.7);
+}
+
 .angular-torque-line {
   position: absolute;
   inset: 0;

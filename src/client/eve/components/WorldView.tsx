@@ -286,14 +286,14 @@ function SceneProjection({
       next["waypoint"] = projectWorldPoint(waypoint.position, origin, camera, projected);
     }
     const speed = vectorMagnitude(myShip.velocity);
-    if (speed > 0.35) {
+    if (speed > 0.05) {
       const projectionDistance = Math.max(1800, Math.min(14000, speed * 42));
       const velocityDirection = {
         x: myShip.velocity.x / speed,
         y: myShip.velocity.y / speed,
         z: myShip.velocity.z / speed,
       };
-      next["velocity"] = projectWorldPoint(
+      next["velocity"] = projectWorldPointClamped(
         {
           x: origin.x + velocityDirection.x * projectionDistance,
           y: origin.y + velocityDirection.y * projectionDistance,
@@ -407,10 +407,11 @@ function FlightVectorLayer({
       >
         <circle cx="50%" cy="50%" r={`${stabilizerRing.radius}%`} />
       </svg>
-      {velocityPoint?.visible === true ? (
+      {velocityPoint !== undefined ? (
         <div
           className="velocity-vector"
           data-testid="velocity-vector"
+          data-clamped={!velocityPoint.visible}
           style={{ left: `${velocityPoint.x}%`, top: `${velocityPoint.y}%` }}
         />
       ) : null}
@@ -783,6 +784,37 @@ function projectWorldPoint(
     y: Math.max(10, Math.min(88, Math.round((-scratch.y * 50 + 50) * 10) / 10)),
     visible,
   };
+}
+
+// Like projectWorldPoint but always returns a usable position by clamping to
+// the screen boundary. Sets visible=true when on-screen, visible=false when
+// edge-clamped. Behind-camera points are flipped before clamping.
+function projectWorldPointClamped(
+  position: { x: number; y: number; z: number },
+  origin: { x: number; y: number; z: number },
+  camera: Camera,
+  scratch: ThreeVector3,
+): ScreenPoint {
+  const scene = toScene(position, origin);
+  scratch.set(scene.x, scene.y, scene.z);
+  camera.updateMatrixWorld();
+  scratch.project(camera);
+  if (!Number.isFinite(scratch.x) || !Number.isFinite(scratch.y)) {
+    return { x: 50, y: 10, visible: false };
+  }
+  let nx = scratch.x;
+  let ny = scratch.y;
+  // Behind camera — flip so the clamped indicator still points the right way
+  if (scratch.z > 1) {
+    nx = -nx;
+    ny = -ny;
+  }
+  const onScreen =
+    scratch.z >= -1 && scratch.z <= 1 && nx >= -1 && nx <= 1 && ny >= -1 && ny <= 1;
+  // Clamp to safe HUD margins
+  const x = Math.max(6, Math.min(94, Math.round((nx * 50 + 50) * 10) / 10));
+  const y = Math.max(10, Math.min(88, Math.round((-ny * 50 + 50) * 10) / 10));
+  return { x, y, visible: onScreen };
 }
 
 // A point far along a unit bearing, used when the selected contact has a known
