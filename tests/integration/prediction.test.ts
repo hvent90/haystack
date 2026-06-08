@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
 import { OwnedShipPrediction } from "../../src/client/eve/prediction";
-import { applyShipCommandForPrediction } from "../../src/shared/ship-motion";
+import {
+  applyShipCommandForPrediction,
+  autoRotationStabilizerThresholdRadians,
+} from "../../src/shared/ship-motion";
 import type { FlightInputCommand, Ship } from "../../src/shared/types";
 
 const thrustForward: FlightInputCommand = {
@@ -111,6 +114,60 @@ describe("owned ship prediction", () => {
     }
 
     expect(prediction.bufferedInputCount).toBe(4);
+  });
+
+  test("auto-stabilizes sub-threshold angular drift without braking linear velocity", () => {
+    const ship = {
+      ...baseShip(),
+      velocity: { x: 12, y: 0, z: -4 },
+      angularVelocity: { x: autoRotationStabilizerThresholdRadians * 0.5, y: 0, z: 0 },
+    };
+
+    const next = applyShipCommandForPrediction(ship, {
+      kind: "flight",
+      throttle: 0,
+      active: true,
+      cruiseLock: false,
+      strafe: { x: 0, y: 0, z: 0 },
+      rotation: { x: 0, y: 0, z: 0 },
+    });
+
+    expect(next.angularVelocity.x).toBe(0);
+    expect(next.velocity.x).toBeCloseTo(ship.velocity.x, 6);
+    expect(next.velocity.z).toBeCloseTo(ship.velocity.z, 6);
+    expect(next.heat).toBe(0);
+  });
+
+  test("auto-stabilizer does not suppress intentional low-rate rotation input", () => {
+    const next = applyShipCommandForPrediction(baseShip(), {
+      kind: "flight",
+      throttle: 0,
+      active: true,
+      cruiseLock: false,
+      strafe: { x: 0, y: 0, z: 0 },
+      rotation: { x: 0.1, y: 0, z: 0 },
+    });
+
+    expect(next.angularVelocity.x).toBeGreaterThan(0);
+    expect(next.angularVelocity.x).toBeLessThan(autoRotationStabilizerThresholdRadians);
+  });
+
+  test("auto-stabilizes sub-threshold angular drift under tiny corrective input", () => {
+    const ship = {
+      ...baseShip(),
+      angularVelocity: { x: autoRotationStabilizerThresholdRadians * 0.5, y: 0, z: 0 },
+    };
+
+    const next = applyShipCommandForPrediction(ship, {
+      kind: "flight",
+      throttle: 0,
+      active: true,
+      cruiseLock: false,
+      strafe: { x: 0, y: 0, z: 0 },
+      rotation: { x: -0.001, y: 0, z: 0 },
+    });
+
+    expect(next.angularVelocity.x).toBe(0);
   });
 });
 
