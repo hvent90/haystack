@@ -30,8 +30,20 @@ import type {
   WorldSnapshot,
 } from "../shared/types";
 import type { HaystackDb } from "./db";
-import { fieldDiagnostic, fieldSummary, streamedFieldAsteroids, virtualScanHits } from "./field";
+import {
+  fieldDiagnostic,
+  fieldSummary,
+  streamedFieldAsteroids,
+  streamedFieldToken,
+  virtualScanHits,
+} from "./field";
 import { getServerWorld } from "./world";
+
+// Symbol-keyed (so JSON.stringify ignores it -> wire format unchanged) cheap
+// fingerprint of the `asteroids` array, attached to every snapshot. The world stream
+// reads it to detect field changes in O(1) instead of JSON.stringify-ing the whole
+// (up to 100k) field every tick. See listAsteroids for how it is composed.
+export const ASTEROIDS_FINGERPRINT: unique symbol = Symbol("haystack.asteroidsFingerprint");
 
 type ShipRow = {
   pilot_id: string;
@@ -184,13 +196,13 @@ export function getSnapshot(
   const organizations = listOrganizations(pilots);
   const me = pilotId === null ? null : (pilots.find((pilot) => pilot.id === pilotId) ?? null);
   const ships = listShips(db);
-  const asteroids = listAsteroids(db, pilotId);
+  const { asteroids, fingerprint: asteroidsFingerprint } = listAsteroids(db, pilotId);
   const deposits = listDeposits(db, pilotId);
   const structures = listStructures(db, pilotId);
   const cargo = pilotId === null ? [] : listCargo(db, pilotId);
   const chat = listSnapshotChat(db, pilotId);
 
-  return {
+  const snapshot: WorldSnapshot = {
     serverTime: new Date().toISOString(),
     field: fieldSummary(),
     me,
@@ -204,6 +216,10 @@ export function getSnapshot(
     cargo,
     chat,
   };
+  // Stored under a symbol key so JSON.stringify(snapshot) (the on-wire payload) ignores
+  // it; the world stream reads it for O(1) field change-detection.
+  (snapshot as { [ASTEROIDS_FINGERPRINT]?: string })[ASTEROIDS_FINGERPRINT] = asteroidsFingerprint;
+  return snapshot;
 }
 
 export function applyThrust(db: HaystackDb, pilotId: string, command: ThrustCommand): Ship {
@@ -846,10 +862,19 @@ function listShips(db: HaystackDb): Ship[] {
   return rows.map(mapShip);
 }
 
-function listAsteroids(db: HaystackDb, pilotId: string | null): Asteroid[] {
+// Returns the player's visible asteroids plus a cheap change-detection `fingerprint`.
+// The streamed virtual field is a pure function of the ship's cell (+ renderedLimit), so
+// its token stands in for the whole (up to 100k) array without serializing it; the small
+// seeded set is hashed in full. Two ticks with an equal fingerprint have a byte-identical
+// `asteroids` array, letting the world stream skip the per-tick JSON.stringify of the field.
+function listAsteroids(
+  db: HaystackDb,
+  pilotId: string | null,
+): { asteroids: Asteroid[]; fingerprint: string } {
   const rows = db.query("SELECT * FROM asteroids").all() as AsteroidRow[];
   if (pilotId === null) {
-    return rows.map((row) => mapAsteroid(row, false));
+    const asteroids = rows.map((row) => mapAsteroid(row, false));
+    return { asteroids, fingerprint: `none|${JSON.stringify(asteroids)}` };
   }
   const ship = requireShip(db, pilotId);
   const seededAsteroids = rows.map((row) => {
@@ -860,7 +885,8 @@ function listAsteroids(db: HaystackDb, pilotId: string | null): Asteroid[] {
     };
   });
   const virtualAsteroids = streamedFieldAsteroids(ship.position);
-  return [...seededAsteroids, ...virtualAsteroids];
+  const fingerprint = `${streamedFieldToken(ship.position)}|${JSON.stringify(seededAsteroids)}`;
+  return { asteroids: [...seededAsteroids, ...virtualAsteroids], fingerprint };
 }
 
 function listDeposits(db: HaystackDb, pilotId: string | null): Deposit[] {

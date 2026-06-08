@@ -101,7 +101,7 @@ const streamedFieldCacheLimit = 64;
 export function streamedFieldAsteroids(position: Vector3): Asteroid[] {
   const cell = worldToCell(position);
   const limit = renderedLimit();
-  const key = `${cell.x}-${cell.y}-${cell.z}-${limit}`;
+  const key = streamFieldKey(cell, limit);
   const cached = streamedFieldCache.get(key);
   if (cached !== undefined) {
     // LRU touch: re-insert so a frequently-revisited cell isn't evicted while a
@@ -119,6 +119,18 @@ export function streamedFieldAsteroids(position: Vector3): Asteroid[] {
   }
   streamedFieldCache.set(key, asteroids);
   return asteroids;
+}
+
+function streamFieldKey(cell: Cell, limit: number): string {
+  return `${cell.x}-${cell.y}-${cell.z}-${limit}`;
+}
+
+// Cheap, cell-stable identity of the streamed field a position resolves to. Two
+// positions in the same cell (at the same renderedLimit) yield the same token, so the
+// world stream can detect "field unchanged this tick" without serializing the
+// nearest-`renderedLimit` (up to 100k) rock array. Mirrors the LRU cache key exactly.
+export function streamedFieldToken(position: Vector3): string {
+  return streamFieldKey(worldToCell(position), renderedLimit());
 }
 
 function cellCenter(cell: Cell): Vector3 {

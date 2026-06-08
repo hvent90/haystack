@@ -4,7 +4,11 @@
 - The asteroid field is deterministic (src/server/field.ts), already cell-quantized + LRU-cached (streamedFieldAsteroids), and mirrored client-side (src/client/eve/sun-occlusion.ts) -> the client could generate it from the seed; the server need not stream 100k static rocks.
 - getSnapshot (src/server/sim.ts:175) runs advanceWorld(db) + several SELECT * full-table reads (ships, asteroids, deposits, structures) + the field query, all PER PEER PER TICK. Only `me`, `cargo`, and the distance-based `discovered` flags are actually per-pilot; the bulk (virtual field, structures, other ships) is identical across peers.
 - Data backend is fair game (RALPH.md): in-memory authoritative state / indexes / client-side field derivation all allowed; just preserve restart-durability of ship/cargo/credits/structures/discoveries.
-- Pre-existing failing tests (NOT caused by perf work): field-diagnostic materializedAsteroids threshold (stale since density commit 10266fc), prediction + jitter e2e (timing). Confirm against HEAD before blaming a change.
+- Pre-existing failing tests (NOT caused by perf work): field-diagnostic materializedAsteroids threshold (stale since density commit 10266fc; HEAD returns 407360 vs <10000 expected), prediction + jitter e2e (timing). Confirm against HEAD before blaming a change.
+- `oxfmt --check .` (part of `bun run verify`) flags PRE-EXISTING unformatted files NOT touched by perf work: tracked ralph/prd.json + ralph/RALPH.md, and untracked src/cli/*, docs/*. Verify your own changed files with `bunx oxfmt --check <paths>`; never reformat the unrelated files (don't commit them).
+- Change-detection (P3 DONE): realtime.ts hashSnapshotKey special-cases the `asteroids` key and reads a symbol-keyed fingerprint (ASTEROIDS_FINGERPRINT) that getSnapshot attaches to every snapshot. Fingerprint = `streamedFieldToken(pos)|JSON.stringify(seededAsteroids)`. The token = the field LRU cache key (cell coords + renderedLimit), so equal token <=> byte-identical 100k virtual array (no false negatives). Symbol key => JSON.stringify ignores it => wire format byte-identical. DON'T reintroduce JSON.stringify of the whole field for change-detection.
+- After P3 the per-tick FLOOR is gone (~0.6ms when not crossing a cell) but CROSSING ticks still cost ~340ms = queryVirtualAsteroids cubic cell scan (~310ms, 240^3 cells for the streamed field) + ~38ms stringify-on-send of the full field. This is why P2/P5/P6 still fail: at 16 players ~2.3 crossings/tick dominate. NEXT = P4 (kill the cubic scan + stop re-sending the full 100k field on every crossing). Bandwidth (MB/s per peer) is UNCHANGED by P3 (still 196 MB/s @ 1x100k) — that's P4's job.
+- Client CANNOT render the field without the streamed rocks (only src/client/eve/sun-occlusion.ts derives positions/radii locally, for shadows only). Rendering/minimap/overview/selection all read snapshot.asteroids directly. So P4 via client-side derivation is a protocol+client change (not server-only); a smaller P4 = incremental add/remove deltas on crossing + an indexed (non-cubic) field query.
 
 ## [P0 + P1] baseline + profiled bottleneck
 - Built scripts/bench/world-stream.ts (in-process publishAll driver, 5 km/s flight, stub peers count bytes). Made field renderedLimit env-configurable (HAYSTACK_RENDERED_LIMIT, default 2000).
@@ -19,4 +23,19 @@
     2. Cubic cell scan (queryVirtualAsteroids builds ~1M candidates, sorts) on each cell crossing -> p95 spikes (322 ms even at 2000).
     3. Full 100k field re-serialized into deltas on crossings -> 261 MB/s/peer at 1x100k.
 - Learnings: a stationary player already gets 0-byte deltas (field byte-stable within a cell from the prior client-choke fix). The dominant cost is CPU (change-detection + scan), not only bandwidth. Computing the shared world once per tick (P2) and replacing stringify-hashing with dirty/version tracking (P3) are the two structural wins; incremental field paging + client-side derivation (P4) kills the bandwidth + cubic scan.
+---
+
+## 2026-06-08T07:40:51Z - P3
+- Bottleneck (profiled): per-peer per-tick change-detection JSON.stringify'd the 100k-rock `asteroids` array (~25MB) TWICE every tick (collectChangedKeys + storeShadow) even when the field was byte-stable within a cell -> a 76.8ms/peer FLOOR (38.6 + 37.4 ms). getSnapshot rebuild itself was only 0.79ms (field is LRU-cached per cell). Change: replace stringify-hash of the field with a cheap cell-stable fingerprint.
+  - field.ts: extract streamFieldKey() + export streamedFieldToken(pos) = the LRU cache key (cell coords + renderedLimit).
+  - sim.ts: listAsteroids returns {asteroids, fingerprint=`token|JSON.stringify(seeded)`}; getSnapshot attaches it under symbol ASTEROIDS_FINGERPRINT (ignored by JSON.stringify -> wire byte-identical).
+  - realtime.ts: hashSnapshotKey special-cases "asteroids" to use the fingerprint.
+- Benchmark @ 5 km/s (publishAll p50 / p95 ms):
+    1  x 100k :  90.59 / 418.85  ->  0.60 / 340.53   (p50 151x)
+    4  x 100k : 367.16 / 1003.78 ->  2.37 / 678.80    (p50 155x)
+    16 x 100k :2051.27 / 2820.70 ->369.66 / 1304.45   (p50 5.5x, p95 2.2x)
+  - Change-detection cost alone, field unchanged, is now FLAT in field size: 0.022 ms at 2k / 50k / 100k / 250k visible (was ~76ms at 100k). ~3500x, O(1) in field. (getSnapshot's array build grows 0.18->1.14ms across that range; that's allocation, not change-detection.)
+  - Bandwidth UNCHANGED (196 MB/s/peer @ 1x100k) — P3 is CPU-only; bandwidth is P4.
+- Files: src/server/field.ts, src/server/sim.ts, src/server/realtime.ts | typecheck green; my 3 files oxfmt-clean; integration 54 pass / 1 fail (pre-existing materializedAsteroids, identical 407360 at HEAD); multiplayer e2e exit 0; screenshot e2e exit 0.
+- **Learnings:** The field array is reference-stable per cell (streamedFieldAsteroids LRU), but getSnapshot returns a fresh `[...seeded, ...virtual]` each tick so you can't use top-array identity — use a cell TOKEN instead. Symbol-keyed snapshot props are invisible to JSON.stringify, so you can smuggle change-detection metadata without touching the wire. P3 kills the FLOOR but NOT the crossing spike (cubic scan + full-field resend) -> p95 still ~340ms @ 1 player, and at 16 players the ever-present crossings keep p50 high. P2/P5/P6 remain blocked on P4. Profile said P3 (change-detection) >> P2 (shared-compute dedup): getSnapshot is 0.79ms so deduping it across peers saves ~0.8ms/peer, negligible vs the 76ms stringify — so P2's "sub-linear" can't pass until the per-peer crossing cost (P4) is gone.
 ---

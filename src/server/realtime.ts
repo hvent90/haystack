@@ -12,7 +12,7 @@ import type {
   WorldStreamClientMessage,
   WorldStreamServerMessage,
 } from "../shared/types";
-import { getPilot, getSnapshot } from "./sim";
+import { ASTEROIDS_FINGERPRINT, getPilot, getSnapshot } from "./sim";
 import type { ServerWorld } from "./world";
 
 type WorldPeer = {
@@ -273,6 +273,15 @@ function createPatch(snapshot: WorldSnapshot, changed: WorldSnapshotKey[]): Worl
 }
 
 function hashSnapshotKey(snapshot: WorldSnapshot, key: WorldSnapshotKey): string {
+  // The field is the one snapshot key whose serialization is huge (up to 100k rocks);
+  // getSnapshot attaches a cheap cell-stable fingerprint so change-detection never has
+  // to JSON.stringify the whole field every tick. All other keys are tiny.
+  if (key === "asteroids") {
+    const fingerprint = (snapshot as { [ASTEROIDS_FINGERPRINT]?: string })[ASTEROIDS_FINGERPRINT];
+    if (fingerprint !== undefined) {
+      return fingerprint;
+    }
+  }
   return JSON.stringify(snapshot[key]);
 }
 
