@@ -12,8 +12,29 @@ import type {
   WorldStreamClientMessage,
   WorldStreamServerMessage,
 } from "../shared/types";
-import { ASTEROIDS_FINGERPRINT, getPilot, getSnapshot } from "./sim";
+import {
+  ASTEROIDS_FINGERPRINT,
+  buildSharedWorld,
+  getPilot,
+  getPilotView,
+  getSnapshot,
+} from "./sim";
+import type { SharedWorld } from "./sim";
 import type { ServerWorld } from "./world";
+
+// Snapshot keys whose value is identical for every peer on a tick (no per-pilot overlay), so
+// their change-detection hash can be computed once per tick instead of once per peer. The
+// remaining keys (me/asteroids/deposits/structures/cargo/chat) carry a per-pilot overlay and
+// are hashed per peer. serverTime is excluded from replicatedKeys entirely (always re-sent).
+const sharedSnapshotKeys: WorldSnapshotKey[] = [
+  "field",
+  "pilots",
+  "activePilotIds",
+  "organizations",
+  "ships",
+];
+
+type SharedHashes = ReadonlyMap<WorldSnapshotKey, string>;
 
 type WorldPeer = {
   id: string;
@@ -136,8 +157,14 @@ export class WorldStream {
     try {
       this.world.advanceToNow();
       this.currentTick += 1;
+      // Build the shared world — and the change-detection hashes of its peer-identical keys —
+      // ONCE per tick. Each peer then only derives its per-pilot overlay, so broadcast cost is
+      // O(players) (one delta each) instead of the old O(players^2) (every peer rebuilding and
+      // re-hashing the whole shared world). See P2 in ralph/prd.json.
+      const shared = buildSharedWorld(this.world.db, this.activePilotIds());
+      const sharedHashes = computeSharedHashes(shared);
       for (const peer of this.peers.values()) {
-        this.flushPeer(peer);
+        this.flushPeer(peer, shared, sharedHashes);
       }
     } finally {
       this.publishing = false;
@@ -197,15 +224,15 @@ export class WorldStream {
     });
   }
 
-  private flushPeer(peer: WorldPeer): void {
+  private flushPeer(peer: WorldPeer, shared: SharedWorld, sharedHashes: SharedHashes): void {
     if (peer.ws.readyState !== 1) {
       this.close(peer.id);
       return;
     }
 
-    const snapshot = getSnapshot(this.world.db, peer.pilotId, this.activePilotIds());
-    const changed = collectChangedKeys(peer, snapshot);
-    storeShadow(peer, snapshot);
+    const snapshot = getPilotView(this.world.db, shared, peer.pilotId);
+    const changed = collectChangedKeys(peer, snapshot, sharedHashes);
+    storeShadow(peer, snapshot, sharedHashes);
     if (changed.length === 0) {
       return;
     }
@@ -250,15 +277,39 @@ function streamDelayMs(message: WorldStreamServerMessage): number {
   return boundedBase + ((message.tick * 37) % (boundedJitter + 1));
 }
 
-function collectChangedKeys(peer: WorldPeer, snapshot: WorldSnapshot): WorldSnapshotKey[] {
+// Hashes of the shared (peer-identical) snapshot keys, computed once per tick. JSON.stringify
+// of the shared value equals what hashSnapshotKey would produce per peer (the snapshot shares
+// those values by reference), so reusing these is byte-equivalent to the old per-peer hashing.
+function computeSharedHashes(shared: SharedWorld): SharedHashes {
+  const hashes = new Map<WorldSnapshotKey, string>();
+  for (const key of sharedSnapshotKeys) {
+    hashes.set(key, JSON.stringify(shared[key as keyof SharedWorld]));
+  }
+  return hashes;
+}
+
+function hashKeyFor(
+  snapshot: WorldSnapshot,
+  key: WorldSnapshotKey,
+  sharedHashes?: SharedHashes,
+): string {
+  const shared = sharedHashes?.get(key);
+  return shared !== undefined ? shared : hashSnapshotKey(snapshot, key);
+}
+
+function collectChangedKeys(
+  peer: WorldPeer,
+  snapshot: WorldSnapshot,
+  sharedHashes?: SharedHashes,
+): WorldSnapshotKey[] {
   return replicatedKeys.filter(
-    (key) => peer.shadowHashes.get(key) !== hashSnapshotKey(snapshot, key),
+    (key) => peer.shadowHashes.get(key) !== hashKeyFor(snapshot, key, sharedHashes),
   );
 }
 
-function storeShadow(peer: WorldPeer, snapshot: WorldSnapshot): void {
+function storeShadow(peer: WorldPeer, snapshot: WorldSnapshot, sharedHashes?: SharedHashes): void {
   for (const key of worldSnapshotKeys) {
-    peer.shadowHashes.set(key, hashSnapshotKey(snapshot, key));
+    peer.shadowHashes.set(key, hashKeyFor(snapshot, key, sharedHashes));
   }
 }
 

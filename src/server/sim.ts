@@ -10,6 +10,7 @@ import type {
   ChatRequest,
   CreatePilotRequest,
   Deposit,
+  FieldSummary,
   MineRequest,
   MineResult,
   Mineral,
@@ -178,32 +179,82 @@ export function getPilot(db: HaystackDb, pilotId: string): Pilot | null {
   return row === null ? null : mapPilot(row);
 }
 
-export function getSnapshot(
+// World state that is identical for every connected peer on a given tick: the player
+// roster, every ship, the static seeded rows (asteroids/deposits/structures), the field
+// summary and the active-pilot list. The world stream builds this ONCE per tick (see
+// buildSharedWorld) and feeds it to getPilotView for each peer, so the shared world — and
+// its change-detection hashing in realtime.ts — costs O(1) in player count instead of
+// being rebuilt and re-hashed per peer (the old O(players^2) broadcast). The per-peer cost
+// then collapses to just the per-pilot overlay (discovered flags, cargo, chat). See P2.
+export type SharedWorld = {
+  serverTime: string;
+  field: FieldSummary;
+  pilots: CharacterCard[];
+  pilotsById: Map<string, CharacterCard>;
+  organizations: OrganizationSummary[];
+  ships: Ship[];
+  shipsByPilot: Map<string, Ship>;
+  asteroidRows: AsteroidRow[];
+  depositRows: DepositRow[];
+  structureRows: StructureRow[];
+  activePilotIds: string[];
+};
+
+export function buildSharedWorld(
   db: HaystackDb,
-  pilotId: string | null,
   activePilotIds: readonly string[] = [],
-): WorldSnapshot {
+): SharedWorld {
   advanceWorld(db);
 
   const pilots = listCharacterCards(db);
-  const knownPilotIds = new Set(pilots.map((pilot) => pilot.id));
+  const pilotsById = new Map(pilots.map((pilot) => [pilot.id, pilot] as const));
   const organizations = listOrganizations(pilots);
-  const me = pilotId === null ? null : (pilots.find((pilot) => pilot.id === pilotId) ?? null);
   const ships = listShips(db);
-  const { asteroids, fingerprint: asteroidsFingerprint } = listAsteroids(db, pilotId);
-  const deposits = listDeposits(db, pilotId);
-  const structures = listStructures(db, pilotId);
+  const shipsByPilot = new Map(ships.map((ship) => [ship.pilotId, ship] as const));
+  const asteroidRows = db.query("SELECT * FROM asteroids").all() as AsteroidRow[];
+  const depositRows = db.query("SELECT * FROM deposits").all() as DepositRow[];
+  const structureRows = db.query("SELECT * FROM structures").all() as StructureRow[];
+
+  return {
+    serverTime: new Date().toISOString(),
+    field: fieldSummary(),
+    pilots,
+    pilotsById,
+    organizations,
+    ships,
+    shipsByPilot,
+    asteroidRows,
+    depositRows,
+    structureRows,
+    activePilotIds: [...new Set(activePilotIds.filter((id) => pilotsById.has(id)))].sort(),
+  };
+}
+
+// Derives one peer's snapshot from the shared world. Only the per-pilot overlay is computed
+// here: `me`, the distance-based `discovered` flags, cargo, and chat. The shared arrays
+// (pilots/ships/field/...) are shared by reference, so a peer's delta serializes them but the
+// world stream hashes them once per tick (not once per peer).
+export function getPilotView(
+  db: HaystackDb,
+  shared: SharedWorld,
+  pilotId: string | null,
+): WorldSnapshot {
+  const me = pilotId === null ? null : (shared.pilotsById.get(pilotId) ?? null);
+  const ship = pilotId === null ? null : shipFor(shared, pilotId);
+  const { asteroids, fingerprint } = asteroidsForPilot(shared.asteroidRows, ship);
+  const deposits = depositsForPilot(shared.depositRows, shared.asteroidRows, ship);
+  const structures = structuresForPilot(shared.structureRows, ship, pilotId);
   const cargo = pilotId === null ? [] : listCargo(db, pilotId);
   const chat = listSnapshotChat(db, pilotId);
 
   const snapshot: WorldSnapshot = {
-    serverTime: new Date().toISOString(),
-    field: fieldSummary(),
+    serverTime: shared.serverTime,
+    field: shared.field,
     me,
-    pilots,
-    activePilotIds: [...new Set(activePilotIds.filter((id) => knownPilotIds.has(id)))].sort(),
-    organizations,
-    ships,
+    pilots: shared.pilots,
+    activePilotIds: shared.activePilotIds,
+    organizations: shared.organizations,
+    ships: shared.ships,
     asteroids,
     deposits,
     structures,
@@ -212,8 +263,16 @@ export function getSnapshot(
   };
   // Stored under a symbol key so JSON.stringify(snapshot) (the on-wire payload) ignores
   // it; the world stream reads it for O(1) field change-detection.
-  (snapshot as { [ASTEROIDS_FINGERPRINT]?: string })[ASTEROIDS_FINGERPRINT] = asteroidsFingerprint;
+  (snapshot as { [ASTEROIDS_FINGERPRINT]?: string })[ASTEROIDS_FINGERPRINT] = fingerprint;
   return snapshot;
+}
+
+export function getSnapshot(
+  db: HaystackDb,
+  pilotId: string | null,
+  activePilotIds: readonly string[] = [],
+): WorldSnapshot {
+  return getPilotView(db, buildSharedWorld(db, activePilotIds), pilotId);
 }
 
 export function applyThrust(db: HaystackDb, pilotId: string, command: ThrustCommand): Ship {
@@ -856,22 +915,28 @@ function listShips(db: HaystackDb): Ship[] {
   return rows.map(mapShip);
 }
 
-// Returns the player's seeded (DB) asteroids plus a change-detection `fingerprint`. The
-// deterministic virtual field (up to 100k static rocks) is NOT included: the client
-// regenerates it locally from `field` (seed/cellSize/renderedLimit) + the ship position
-// (see src/client/eve/field-derivation.ts). Streaming only the small mutable seeded set
-// means a 5 km/s cell crossing costs no server-side field scan and no multi-MB field
-// re-send. The fingerprint covers just the seeded set (the field is no longer here).
-function listAsteroids(
-  db: HaystackDb,
-  pilotId: string | null,
+function shipFor(shared: SharedWorld, pilotId: string): Ship {
+  const ship = shared.shipsByPilot.get(pilotId);
+  if (ship === undefined) {
+    throw new Error("Ship not found.");
+  }
+  return ship;
+}
+
+// Builds the player's seeded (DB) asteroid view plus a change-detection `fingerprint` from
+// pre-fetched rows (shared across peers) + this peer's ship. The deterministic virtual field
+// (up to 100k static rocks) is NOT included: the client regenerates it locally from `field`
+// (seed/cellSize/renderedLimit) + the ship position (see src/client/eve/field-derivation.ts).
+// Streaming only the small mutable seeded set means a 5 km/s cell crossing costs no
+// server-side field scan and no multi-MB field re-send. A null ship == anonymous viewer.
+function asteroidsForPilot(
+  rows: AsteroidRow[],
+  ship: Ship | null,
 ): { asteroids: Asteroid[]; fingerprint: string } {
-  const rows = db.query("SELECT * FROM asteroids").all() as AsteroidRow[];
-  if (pilotId === null) {
+  if (ship === null) {
     const asteroids = rows.map((row) => mapAsteroid(row, false));
     return { asteroids, fingerprint: `none|${JSON.stringify(asteroids)}` };
   }
-  const ship = requireShip(db, pilotId);
   const seededAsteroids = rows.map((row) => {
     const asteroid = mapAsteroid(row, true);
     return {
@@ -882,24 +947,28 @@ function listAsteroids(
   return { asteroids: seededAsteroids, fingerprint: JSON.stringify(seededAsteroids) };
 }
 
-function listDeposits(db: HaystackDb, pilotId: string | null): Deposit[] {
-  const rows = db.query("SELECT * FROM deposits").all() as DepositRow[];
-  if (pilotId === null) {
-    return rows.map((row) => mapDeposit(row, false));
+function depositsForPilot(
+  depositRows: DepositRow[],
+  asteroidRows: AsteroidRow[],
+  ship: Ship | null,
+): Deposit[] {
+  if (ship === null) {
+    return depositRows.map((row) => mapDeposit(row, false));
   }
-  const ship = requireShip(db, pilotId);
-  const nearest = nearestAsteroidRow(db, ship.position);
-  return rows.map((row) => ({
+  const nearest = nearestAsteroidRowFrom(asteroidRows, ship.position);
+  return depositRows.map((row) => ({
     ...mapDeposit(row, nearest?.id === row.asteroid_id),
   }));
 }
 
-function listStructures(db: HaystackDb, pilotId: string | null): Structure[] {
-  const rows = db.query("SELECT * FROM structures").all() as StructureRow[];
-  if (pilotId === null) {
+function structuresForPilot(
+  rows: StructureRow[],
+  ship: Ship | null,
+  pilotId: string | null,
+): Structure[] {
+  if (ship === null) {
     return rows.map((row) => mapStructure(row, !row.hidden));
   }
-  const ship = requireShip(db, pilotId);
   return rows.map((row) => {
     const structure = mapStructure(row, true);
     return {
@@ -933,7 +1002,13 @@ function listSnapshotChat(db: HaystackDb, pilotId: string | null): ChatMessage[]
 
 function nearestAsteroidRow(db: HaystackDb, position: Vector3): AsteroidRow | undefined {
   const rows = db.query("SELECT * FROM asteroids").all() as AsteroidRow[];
-  return rows.sort((left, right) => {
+  return nearestAsteroidRowFrom(rows, position);
+}
+
+// Same nearest-row selection as nearestAsteroidRow but over a pre-fetched, shared row array.
+// Slices before sorting so the shared array (reused by every peer this tick) is never mutated.
+function nearestAsteroidRowFrom(rows: AsteroidRow[], position: Vector3): AsteroidRow | undefined {
+  return rows.slice().sort((left, right) => {
     const leftDistance = distance(position, { x: left.x, y: left.y, z: left.z });
     const rightDistance = distance(position, { x: right.x, y: right.y, z: right.z });
     return leftDistance - rightDistance;
