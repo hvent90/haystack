@@ -1048,7 +1048,21 @@ function RenderDriver({ fallbackShip }: { fallbackShip: Ship }): null {
   return null;
 }
 
-const ASTEROID_CAPACITY = 2000;
+// The InstancedMesh is allocated with a fixed max-instance buffer (its third
+// `args` value), so to hold the full derived field we size that buffer to the
+// derived count instead of the old hard 2000 ceiling. Capacity is bucketed and
+// only ever grows (high-water mark): the derived set size is stable per
+// renderedLimit, so the mesh is allocated once and never thrashes. At
+// HAYSTACK_RENDERED_LIMIT=100000 this holds all ~100k rocks with no truncation.
+const ASTEROID_CAPACITY_BUCKET = 4096;
+
+function instanceCapacityFor(count: number, previous: number): number {
+  const needed = Math.max(
+    ASTEROID_CAPACITY_BUCKET,
+    Math.ceil(count / ASTEROID_CAPACITY_BUCKET) * ASTEROID_CAPACITY_BUCKET,
+  );
+  return Math.max(previous, needed);
+}
 
 function glslFloat(value: number): string {
   return Number.isInteger(value) ? `${value}.0` : `${value}`;
@@ -1134,12 +1148,23 @@ function InstancedAsteroids({
   // cell, so it never changes for a given rock) rather than re-parsed every frame.
   const seedCache = useRef(new Map<string, number>());
 
+  // High-water-mark instance-buffer capacity sized to the derived field. Grows to
+  // fit, never shrinks, bucketed so the InstancedMesh is allocated once for a given
+  // renderedLimit (changing `args` recreates the mesh, so we keep it stable).
+  const capacityRef = useRef(ASTEROID_CAPACITY_BUCKET);
+  const capacity = instanceCapacityFor(asteroids.length, capacityRef.current);
+  capacityRef.current = capacity;
+  const meshArgs = useMemo<[undefined, undefined, number]>(
+    () => [undefined, undefined, capacity],
+    [capacity],
+  );
+
   // Per-instance sun occlusion (Tier 2), rebuilt only when the asteroid set changes. The
   // sunlitForId cache means we only march rocks we haven't seen before.
   const sunlit = useMemo(() => {
-    const values = new Float32Array(ASTEROID_CAPACITY);
+    const values = new Float32Array(capacity);
     values.fill(1);
-    const count = Math.min(asteroids.length, ASTEROID_CAPACITY);
+    const count = Math.min(asteroids.length, capacity);
     for (let index = 0; index < count; index += 1) {
       const asteroid = asteroids[index];
       if (asteroid === undefined) {
@@ -1148,7 +1173,7 @@ function InstancedAsteroids({
       values[index] = sunlitForId(asteroid.id);
     }
     return values;
-  }, [asteroids]);
+  }, [asteroids, capacity]);
 
   // Layout phase (same as the matrix build below) so the occlusion scalar and the
   // instance matrices commit together before paint — no transient dark frame on a
@@ -1175,7 +1200,7 @@ function InstancedAsteroids({
     if (mesh === null) {
       return;
     }
-    const count = Math.min(asteroids.length, ASTEROID_CAPACITY);
+    const count = Math.min(asteroids.length, capacity);
     for (let index = 0; index < count; index += 1) {
       const asteroid = asteroids[index];
       if (asteroid === undefined) {
@@ -1203,7 +1228,7 @@ function InstancedAsteroids({
     mesh.count = count;
     mesh.instanceMatrix.needsUpdate = true;
     mesh.computeBoundingSphere();
-  }, [asteroids, transform]);
+  }, [asteroids, transform, capacity]);
 
   // Floating-origin rebase: shift the whole field once per frame (O(1)).
   useFrame(() => {
@@ -1227,7 +1252,7 @@ function InstancedAsteroids({
     <group ref={groupRef}>
       <instancedMesh
         ref={meshRef}
-        args={[undefined, undefined, ASTEROID_CAPACITY]}
+        args={meshArgs}
         material={material}
         castShadow
         receiveShadow

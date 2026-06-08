@@ -63,3 +63,21 @@
 - verify: parity GREEN (0/7 divergence). No code change ⇒ typecheck/tests unaffected since C0 (54 pass / 1 pre-existing fail).
 - **Learnings:** Use ≥200 ticks for the world-stream p95 — a 20-tick sample swings p95 ±20% on noise alone while p50 and bytes/sec stay rock-flat; the robust independence signals are p50 + bytes/sec/peer, not a short-sample p95. The client baseline is fully reproducible run-to-run on the deterministic counts (derived/submitted/draws/tris identical to C0); only the swiftshader frame-ms drift.
 ---
+
+## [2026-06-08T18:30:00Z] - C2
+- Measured: at HEAD the client derived 100030 rocks at limit=100000 but submitted only 2000 — the hard `ASTEROID_CAPACITY = 2000` ceiling in WorldView.tsx (the InstancedMesh `args` max-instance buffer + a `Math.min(_, 2000)` on every build loop). Single change: replaced the fixed cap with a high-water-mark dynamic capacity sized to the derived count, bucketed to 4096 (`instanceCapacityFor`). The instance-buffer arg, the `aSunlit` Float32Array, and both build loops now use that capacity; `meshArgs` is memoized so the mesh allocates once per renderedLimit (changing `args` recreates the InstancedMesh — `capacity` added to the two layout-effect dep arrays so a capacity growth rebuilds matrices into the new mesh).
+- Benchmark before → after (client-render harness, limits 2000 + 100000):
+  | metric | @100k BEFORE | @100k AFTER |
+  |---|---|---|
+  | derivedAsteroidCount | 100030 | 100030 |
+  | submittedInstanceCount (facing field) | 2000 (CAPPED) | 100010 (FULL SET, no truncation) |
+  | cameraFacingEmpty submitted | 2000 | 100010 (still all-or-nothing — C3) |
+  | asteroidDrawCalls | 1 | 1 |
+  | asteroidTriangles | 72000 | 3600360 |
+  | renderedTriangles (whole frame) | 216617 | 10801697 |
+  | medianFrameMs | 136 | 2906.5 (~0.3 FPS) |
+  - @2000 after: derived=2030, submitted=2010 (was 2000-capped) — no behavior change for normal play.
+  - The full set is now held/rendered (cap removed). The exploded triangles / 2.9s frames are the EXPECTED baseline catastrophe that C3 (frustum culling), C4 (amortized build), and C5 (distance LOD) exist to fix — C2 only lifts the ceiling. Benchmark ran green within timeout (single 100k InstancedMesh did not crash/hang swiftshader).
+- Files changed: src/client/eve/components/WorldView.tsx | verify: typecheck GREEN, format GREEN (touched files), parity GREEN (0/7 divergence), integration 54 pass / 1 PRE-EXISTING fail (million-scale diagnostic, unrelated).
+- **Learnings:** R3F recreates an `<instancedMesh>` when its `args` change, so a stable (memoized) capacity is required to avoid per-frame reallocation; a high-water-mark capacity keyed off the derived count allocates exactly once because the derived set size is stable per renderedLimit. Because capacity only grows when `asteroids.length` grows (and `asteroids` is a fresh reference then), the existing `[asteroids]`-keyed layout effects already re-run on recreation, but adding `capacity` to their deps makes the rebuild-into-new-mesh contract explicit. A single 100k-instance InstancedMesh submits ALL 100k from the field center (one bounding sphere ⇒ no per-instance cull) — confirms C3 must chunk into per-cell sub-meshes.
+---
