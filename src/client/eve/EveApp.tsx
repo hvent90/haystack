@@ -385,7 +385,8 @@ export function EveApp(): ReactNode {
       if (!active && !lastFlightActiveRef.current && !hasOneShot) {
         return;
       }
-      sendFlightInput(buildFlightInput(active));
+      const flightInput = buildFlightInput(active);
+      sendFlightInput(flightInput);
       lastFlightActiveRef.current = active;
       const nextMouseDeflection = {
         x: mouseDeflectionRef.current.x * relativeMouseDecay,
@@ -396,8 +397,12 @@ export function EveApp(): ReactNode {
       setMouseDeflection(nextMouseDeflection);
       const ship = sessionRef.current === null ? null : myShipRef.current;
       if (ship !== null) {
+        const { strafe, rotation } = flightInput;
         audio.engine.setEngineState({
           throttle: ship.throttle,
+          // Maneuvering-thruster activity drives the RCS air-nozzle layer.
+          rcs: Math.min(1, Math.hypot(strafe.x, strafe.y, strafe.z)),
+          rotation: Math.min(1, Math.hypot(rotation.x, rotation.y, rotation.z)),
           boost: false,
           heat: ship.heat,
           cruiseLock: ship.cruiseLock,
@@ -978,7 +983,6 @@ export function EveApp(): ReactNode {
     oneShotRef.current = { boost: false };
     const keys = heldKeysRef.current;
     const inputScale = active ? flightInputScaleRef.current : 1;
-    const keyboardYaw = Number(keys.has("KeyA")) - Number(keys.has("KeyD"));
     const keyboardThrottleInput = Number(keys.has("KeyW")) - Number(keys.has("KeyS"));
     const rawThrottle =
       active && keyboardThrottleInput !== 0
@@ -992,7 +996,7 @@ export function EveApp(): ReactNode {
       active,
       strafe: active
         ? {
-            x: (Number(keys.has("KeyC")) - Number(keys.has("KeyZ"))) * inputScale,
+            x: (Number(keys.has("KeyD")) - Number(keys.has("KeyA"))) * inputScale,
             y:
               (Number(keys.has("Space")) -
                 Number(keys.has("ControlLeft") || keys.has("ControlRight"))) *
@@ -1003,7 +1007,7 @@ export function EveApp(): ReactNode {
       rotation: active
         ? {
             x: mouseDeflectionRef.current.x * inputScale,
-            y: clamp(mouseDeflectionRef.current.y + keyboardYaw * 0.35, -1, 1) * inputScale,
+            y: mouseDeflectionRef.current.y * inputScale,
             z: (Number(keys.has("KeyQ")) - Number(keys.has("KeyE"))) * inputScale,
           }
         : { x: 0, y: 0, z: 0 },

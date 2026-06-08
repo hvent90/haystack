@@ -2,6 +2,7 @@ import type { FlightInputCommand, Quaternion, Ship, ThrustCommand, Vector3 } fro
 
 export const shipFixedDt = 1 / 60;
 export const shipInputFreshSeconds = 0.3;
+export const autoRotationStabilizerThresholdRadians = (0.2 * Math.PI) / 180;
 
 const mainAcceleration = 34;
 const lateralAcceleration = 18;
@@ -12,7 +13,8 @@ const boostImpulse = 12;
 const linearThrusterHeatPerImpulse = 0.16;
 const angularThrusterHeatPerImpulse = 0.8;
 const angularAcceleration: Vector3 = { x: 1.65, y: 0.95, z: 2.3 };
-const maxAngularRate: Vector3 = { x: 1.15, y: 0.72, z: 1.55 };
+export const shipMaxAngularRate: Vector3 = { x: 1.15, y: 0.72, z: 1.55 };
+const rotationInputEpsilon = 0.0001;
 
 export type HeldFlightInput = FlightInputCommand & {
   active: true;
@@ -95,6 +97,8 @@ export function integrateShipTick(ship: Ship, dt: number, heldInput: HeldFlightI
   let nextShip = cloneShip(ship);
   if (heldInput !== null) {
     nextShip = integrateHeldInput(nextShip, dt, heldInput);
+  } else {
+    nextShip = applyAutoRotationStabilizer(nextShip, zeroVector(), nextShip.angularVelocity);
   }
   nextShip = integrateOrientation(nextShip, dt);
   nextShip = {
@@ -174,6 +178,7 @@ function integrateHeldInput(ship: Ship, dt: number, input: HeldFlightInput): Shi
       subtractVectors(nextAngularVelocity, ship.angularVelocity),
     ),
   };
+  nextShip = applyAutoRotationStabilizer(nextShip, rotation, ship.angularVelocity);
 
   const strafe = input.strafe;
   if (nextShip.cruiseLock) {
@@ -277,6 +282,38 @@ function integrateStabilizer(ship: Ship, dt: number): Ship {
   };
 }
 
+function applyAutoRotationStabilizer(
+  ship: Ship,
+  rotationInput: Vector3,
+  previousAngularVelocity: Vector3,
+): Ship {
+  if (!shouldAutoStabilizeRotation(ship.angularVelocity, rotationInput, previousAngularVelocity)) {
+    return ship;
+  }
+  return {
+    ...ship,
+    angularVelocity: zeroVector(),
+  };
+}
+
+function shouldAutoStabilizeRotation(
+  angularVelocity: Vector3,
+  rotationInput: Vector3,
+  previousAngularVelocity: Vector3,
+): boolean {
+  const angularSpeed = length(angularVelocity);
+  if (angularSpeed > autoRotationStabilizerThresholdRadians) {
+    return false;
+  }
+
+  const inputMagnitude = length(rotationInput);
+  if (inputMagnitude <= rotationInputEpsilon) {
+    return true;
+  }
+
+  return dotVectors(previousAngularVelocity, rotationInput) < 0;
+}
+
 function applyBoost(ship: Ship): Ship {
   if (ship.heat >= 96) {
     return ship;
@@ -340,6 +377,10 @@ function subtractVectors(left: Vector3, right: Vector3): Vector3 {
   };
 }
 
+function dotVectors(left: Vector3, right: Vector3): number {
+  return left.x * right.x + left.y * right.y + left.z * right.z;
+}
+
 function scaleVector(vector: Vector3, scale: number): Vector3 {
   return {
     x: vector.x * scale,
@@ -371,9 +412,9 @@ function clampAxes(vector: Vector3): Vector3 {
 
 function clampAngularVector(vector: Vector3): Vector3 {
   return {
-    x: clamp(vector.x, -maxAngularRate.x, maxAngularRate.x),
-    y: clamp(vector.y, -maxAngularRate.y, maxAngularRate.y),
-    z: clamp(vector.z, -maxAngularRate.z, maxAngularRate.z),
+    x: clamp(vector.x, -shipMaxAngularRate.x, shipMaxAngularRate.x),
+    y: clamp(vector.y, -shipMaxAngularRate.y, shipMaxAngularRate.y),
+    z: clamp(vector.z, -shipMaxAngularRate.z, shipMaxAngularRate.z),
   };
 }
 

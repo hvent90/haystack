@@ -131,32 +131,30 @@ tr:focus-visible {
   z-index: 4;
   left: 50%;
   top: 50%;
-  width: 54px;
-  height: 54px;
-  border: 1px solid rgb(135 208 189 / 62%);
+  width: 5px;
+  height: 5px;
+  border: 1px solid rgb(135 208 189 / 58%);
+  border-radius: 999px;
+  background: rgb(135 208 189 / 46%);
+  box-shadow:
+    0 0 0 1px rgb(10 18 16 / 74%),
+    0 0 7px rgb(135 208 189 / 18%);
   transform: translate(-50%, -50%);
   pointer-events: none;
 }
 
+.reticle[data-angular-stable="true"] {
+  border-color: rgb(162 255 237 / 94%);
+  background: rgb(162 255 237 / 88%);
+  box-shadow:
+    0 0 0 1px rgb(10 18 16 / 74%),
+    0 0 7px rgb(125 229 216 / 62%),
+    0 0 18px rgb(125 229 216 / 36%);
+}
+
 .reticle::before,
 .reticle::after {
-  position: absolute;
-  content: "";
-  background: rgb(135 208 189 / 72%);
-}
-
-.reticle::before {
-  left: 50%;
-  top: -16px;
-  width: 1px;
-  height: 86px;
-}
-
-.reticle::after {
-  left: -16px;
-  top: 50%;
-  width: 86px;
-  height: 1px;
+  content: none;
 }
 
 .flight-input-scale-meter {
@@ -281,25 +279,85 @@ tr:focus-visible {
   filter: drop-shadow(0 0 7px rgb(200 123 60 / 34%));
 }
 
+.angular-roll-line {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 44px;
+  height: 44px;
+  overflow: visible;
+  pointer-events: none;
+  filter: drop-shadow(0 0 6px rgb(200 123 60 / 28%));
+  transform: translate(-50%, -50%);
+}
+
+.angular-stabilizer-ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  filter: drop-shadow(0 0 5px rgb(135 208 189 / 26%));
+}
+
+.angular-stabilizer-ring circle {
+  fill: transparent;
+  stroke: rgb(135 208 189 / 38%);
+  stroke-dasharray: 2 3;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.angular-stabilizer-ring[data-angular-stable="true"] circle {
+  stroke: rgb(125 229 216 / 76%);
+  stroke-dasharray: none;
+  stroke-width: 1.2;
+}
+
 .angular-torque-line line {
-  stroke: rgb(200 123 60 / 88%);
+  stroke: rgb(var(--angular-indicator-rgb, 200 123 60) / 88%);
   stroke-dasharray: 4 3;
   stroke-linecap: round;
   stroke-width: 1.4;
   vector-effect: non-scaling-stroke;
 }
 
+.angular-roll-line .angular-roll-arc {
+  fill: none;
+  stroke: rgb(var(--angular-indicator-rgb, 200 123 60) / 88%);
+  stroke-linecap: round;
+  stroke-width: 4;
+}
+
 .angular-torque-line circle {
-  fill: rgb(200 123 60 / 28%);
-  stroke: rgb(226 177 93 / 78%);
+  fill: rgb(var(--angular-indicator-rgb, 200 123 60) / 28%);
+  stroke: rgb(var(--angular-indicator-rgb, 226 177 93) / 78%);
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
 
+.angular-roll-line .angular-roll-pip {
+  fill: rgb(var(--angular-indicator-rgb, 200 123 60) / 34%);
+  stroke: rgb(var(--angular-indicator-rgb, 226 177 93) / 82%);
+  stroke-width: 2.4;
+}
+
 .angular-torque-line .angular-torque-cap {
-  stroke: rgb(226 177 93 / 92%);
+  stroke: rgb(var(--angular-indicator-rgb, 226 177 93) / 92%);
   stroke-dasharray: none;
   stroke-width: 2;
+}
+
+.angular-roll-line .angular-roll-cap {
+  fill: rgb(var(--angular-indicator-rgb, 226 177 93) / 88%);
+  stroke: rgb(35 24 15 / 82%);
+  stroke-width: 1.4;
+}
+
+.angular-torque-line[data-angular-stable="true"],
+.angular-roll-line[data-angular-stable="true"] {
+  filter: drop-shadow(0 0 5px rgb(125 229 216 / 34%)) drop-shadow(0 0 10px rgb(125 229 216 / 16%));
 }
 
 .angular-speed-label {

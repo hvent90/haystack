@@ -6,8 +6,6 @@ export function isFlightKey(code: string): boolean {
     code === "KeyA" ||
     code === "KeyS" ||
     code === "KeyD" ||
-    code === "KeyZ" ||
-    code === "KeyC" ||
     code === "Space" ||
     code === "ControlLeft" ||
     code === "ControlRight" ||

@@ -15,7 +15,9 @@ export type OneShotId =
 
 /** Continuous engine state fed from the ship snapshot each flight tick (Plan 3). */
 export interface EngineState {
-  throttle: number; // -1..1
+  throttle: number; // -1..1 main fore/aft engine
+  rcs: number; // 0..1 translation (strafe) RCS thruster activity
+  rotation: number; // 0..1 angular (attitude) RCS thruster activity
   boost: boolean;
   heat: number; // 0..100
   cruiseLock: boolean;

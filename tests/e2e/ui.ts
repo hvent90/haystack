@@ -324,6 +324,16 @@ async function verifyAimDeltaAlignment(page: Page, pilotId: string): Promise<voi
     (await page.getByTestId("flight-input-scale-pip").boundingBox()) !== null,
     "flight input scale pip visible",
   );
+  assert(
+    (await page
+      .getByTestId("angular-stabilizer-ring")
+      .getAttribute("data-threshold-degrees-per-second")) === "0.2",
+    "angular stabilizer ring exposes the 0.2 deg/s cutoff",
+  );
+  assert(
+    (await page.getByTestId("hud-reticle").getAttribute("data-angular-stable")) === "true",
+    "center reticle exposes angular stable state at rest",
+  );
   await api(`/api/ships/${encodeURIComponent(pilotId)}/thrust`, {
     method: "POST",
     body: JSON.stringify({
@@ -365,7 +375,7 @@ async function verifyAimDeltaAlignment(page: Page, pilotId: string): Promise<voi
       frame: "world",
     }),
   });
-  await page.waitForSelector("[data-testid='angular-torque-cap']", { state: "attached" });
+  await page.waitForSelector("[data-testid='angular-roll-cap']", { state: "attached" });
   assert(
     /deg\/s/.test(await page.getByTestId("angular-speed-label").innerText()),
     "angular speed label reports degrees per second",
@@ -439,8 +449,8 @@ async function verifyAimDeltaAlignment(page: Page, pilotId: string): Promise<voi
   assert(alignment.dx <= 1 && alignment.dy <= 1, "aim delta line endpoint aligns with icon center");
 
   assert(
-    (await count(page, "[data-testid='angular-torque-cap']")) === 1,
-    "angular torque cap visible at max length",
+    (await count(page, "[data-testid='angular-roll-cap']")) === 1,
+    "angular roll cap visible at max length",
   );
 
   await page.keyboard.press("AltLeft");

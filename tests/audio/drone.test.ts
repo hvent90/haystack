@@ -1,11 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { engineDroneMasterGain } from "../../src/client/audio/drone";
+import { rcsNozzleGain } from "../../src/client/audio/nozzle";
 
 describe("engineDroneMasterGain", () => {
   test("keeps a stopped idle ship effectively silent", () => {
     expect(
       engineDroneMasterGain({
         throttle: 0,
+        rcs: 0,
+        rotation: 0,
         boost: false,
         heat: 0,
         cruiseLock: false,
@@ -18,6 +21,8 @@ describe("engineDroneMasterGain", () => {
     expect(
       engineDroneMasterGain({
         throttle: 1,
+        rcs: 0,
+        rotation: 0,
         boost: false,
         heat: 20,
         cruiseLock: false,
@@ -29,6 +34,8 @@ describe("engineDroneMasterGain", () => {
   test("keeps coasting ships audible without using the full throttle level", () => {
     const coasting = engineDroneMasterGain({
       throttle: 0,
+      rcs: 0,
+      rotation: 0,
       boost: false,
       heat: 10,
       cruiseLock: false,
@@ -36,5 +43,75 @@ describe("engineDroneMasterGain", () => {
     });
     expect(coasting).toBeGreaterThan(0.08);
     expect(coasting).toBeLessThan(0.2);
+  });
+
+  test("opens the roar for strafe (translation RCS) — regular-thruster sound", () => {
+    const strafing = engineDroneMasterGain({
+      throttle: 0,
+      rcs: 0.15,
+      rotation: 0,
+      boost: false,
+      heat: 0,
+      cruiseLock: false,
+      speed: 0,
+    });
+    expect(strafing).toBeGreaterThan(0.15);
+  });
+
+  test("roar ignores rotation — that drives the nozzle, not the engine", () => {
+    const rotatingOnly = engineDroneMasterGain({
+      throttle: 0,
+      rcs: 0,
+      rotation: 1,
+      boost: false,
+      heat: 0,
+      cruiseLock: false,
+      speed: 0,
+    });
+    expect(rotatingOnly).toBeLessThan(0.001);
+  });
+});
+
+describe("rcsNozzleGain", () => {
+  test("is silent with no rotation input", () => {
+    expect(
+      rcsNozzleGain({
+        throttle: 1,
+        rcs: 0,
+        rotation: 0,
+        boost: false,
+        heat: 0,
+        cruiseLock: false,
+        speed: 120,
+      }),
+    ).toBe(0);
+  });
+
+  test("opens the nozzle for rotation thrusters alone", () => {
+    expect(
+      rcsNozzleGain({
+        throttle: 0,
+        rcs: 0,
+        rotation: 0.4,
+        boost: false,
+        heat: 0,
+        cruiseLock: false,
+        speed: 0,
+      }),
+    ).toBeGreaterThan(0.2);
+  });
+
+  test("ignores strafe (rcs) — translation is the engine roar, not the nozzle", () => {
+    expect(
+      rcsNozzleGain({
+        throttle: 0,
+        rcs: 1,
+        rotation: 0,
+        boost: false,
+        heat: 0,
+        cruiseLock: false,
+        speed: 0,
+      }),
+    ).toBe(0);
   });
 });

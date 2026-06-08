@@ -9,6 +9,10 @@ import {
   type InstancedMesh,
 } from "three";
 import type { Asteroid, Ship, Structure, Vector3 } from "../../../shared/types";
+import {
+  autoRotationStabilizerThresholdRadians,
+  shipMaxAngularRate,
+} from "../../../shared/ship-motion";
 import type { FlightMode, OverviewRow, Selection, Waypoint } from "../types";
 import { flightInputScaleMax, flightInputScaleMin } from "../constants";
 import { clamp, formatDistance, toScene, vectorMagnitude } from "../vector";
@@ -69,6 +73,8 @@ export function WorldView({
     [rows],
   );
   const [screenPoints, setScreenPoints] = useState<Record<string, ScreenPoint>>({});
+  const angularSpeed = vectorMagnitude(myShip.angularVelocity);
+  const angularStable = angularSpeed <= autoRotationStabilizerThresholdRadians;
 
   return (
     <div
@@ -120,7 +126,12 @@ export function WorldView({
           </group>
         </ConditionalListenerRig>
       </Canvas>
-      <div className="reticle" data-testid="hud-reticle" />
+      <div
+        className="reticle"
+        data-testid="hud-reticle"
+        data-angular-stable={angularStable}
+        data-angular-speed-degrees-per-second={((angularSpeed * 180) / Math.PI).toFixed(2)}
+      />
       <FlightInputScaleMeter scale={flightInputScale} />
       <FlightVectorLayer
         velocityPoint={screenPoints["velocity"]}
@@ -292,9 +303,22 @@ function FlightVectorLayer({
   const aimDistance = Math.sqrt(dx * dx + dy * dy);
   const showAim = flightMode === "flight" && aimDistance > 1.2;
   const torque = angularTorqueIndicator(angularVelocity, flightInputScale);
+  const roll = angularRollIndicator(angularVelocity.z, flightInputScale);
+  const stabilizerRing = angularStabilizerRing(flightInputScale);
+  const angularStable = vectorMagnitude(angularVelocity) <= autoRotationStabilizerThresholdRadians;
 
   return (
     <div className="flight-vector-layer" aria-hidden="true">
+      <svg
+        className="angular-stabilizer-ring"
+        data-testid="angular-stabilizer-ring"
+        data-radius-percent={stabilizerRing.radius.toFixed(1)}
+        data-threshold-degrees-per-second={stabilizerRing.thresholdDegreesPerSecond.toFixed(1)}
+        data-angular-stable={angularStable}
+        focusable="false"
+      >
+        <circle cx="50%" cy="50%" r={`${stabilizerRing.radius}%`} />
+      </svg>
       {velocityPoint?.visible === true ? (
         <div
           className="velocity-vector"
@@ -314,8 +338,11 @@ function FlightVectorLayer({
           <svg
             className="angular-torque-line"
             data-testid="angular-torque-line"
-            data-roll-dir={torque.rollDirection}
             data-capped={torque.capped}
+            data-angular-stable={torque.stable}
+            data-speed-degrees-per-second={torque.speedDegreesPerSecond.toFixed(2)}
+            data-max-degrees-per-second={torque.maxDegreesPerSecond.toFixed(2)}
+            style={angularCaptureStyle(torque.captureBlend)}
             focusable="false"
           >
             <line x1="50%" y1="50%" x2={`${torque.x}%`} y2={`${torque.y}%`} />
@@ -350,6 +377,38 @@ function FlightVectorLayer({
             {torque.degreesPerSecond}
           </div>
         </>
+      ) : null}
+      {roll !== null ? (
+        <svg
+          className="angular-roll-line"
+          data-testid="angular-roll-line"
+          data-roll-dir={roll.direction}
+          data-capped={roll.capped}
+          data-angular-stable={roll.stable}
+          data-arc-degrees={roll.arcDegrees.toFixed(1)}
+          data-speed-degrees-per-second={roll.speedDegreesPerSecond.toFixed(2)}
+          data-max-degrees-per-second={roll.maxDegreesPerSecond.toFixed(2)}
+          style={angularCaptureStyle(roll.captureBlend)}
+          viewBox="0 0 100 100"
+          focusable="false"
+        >
+          <path className="angular-roll-arc" d={roll.pathD} />
+          {roll.capped ? (
+            <polygon
+              className="angular-roll-cap"
+              data-testid="angular-roll-cap"
+              points={roll.capPoints}
+            />
+          ) : (
+            <circle
+              className="angular-roll-pip"
+              data-testid="angular-roll-pip"
+              cx={roll.endX}
+              cy={roll.endY}
+              r="3.8"
+            />
+          )}
+        </svg>
       ) : null}
       {showAim ? (
         <>
@@ -401,7 +460,6 @@ function angularTorqueIndicator(
 ): {
   x: number;
   y: number;
-  rollDirection: string;
   capped: boolean;
   capStartX: number;
   capStartY: number;
@@ -411,25 +469,28 @@ function angularTorqueIndicator(
   labelY: number;
   labelAngle: number;
   degreesPerSecond: string;
+  speedDegreesPerSecond: number;
+  maxDegreesPerSecond: number;
+  stable: boolean;
+  captureBlend: number;
 } | null {
   const screenX = angularVelocity.y;
   const screenY = angularVelocity.x;
   const planarMagnitude = Math.sqrt(screenX * screenX + screenY * screenY);
-  const rollMagnitude = Math.abs(angularVelocity.z);
-  const scaledFloor = 0.018 * clamp(flightInputScale, flightInputScaleMin, flightInputScaleMax);
-  if (planarMagnitude <= scaledFloor && rollMagnitude <= scaledFloor) {
+  if (planarMagnitude <= 0.000001) {
     return null;
   }
 
-  const fallbackRollDirection = angularVelocity.z >= 0 ? -1 : 1;
-  const directionX =
-    planarMagnitude > scaledFloor ? screenX / planarMagnitude : fallbackRollDirection;
-  const directionY = planarMagnitude > scaledFloor ? screenY / planarMagnitude : 0;
-  const magnitude = Math.max(planarMagnitude, rollMagnitude);
-  const rawLength =
-    (magnitude * 18) / clamp(flightInputScale, flightInputScaleMin, flightInputScaleMax);
-  const capped = rawLength >= 26;
-  const length = Math.min(26, rawLength);
+  const directionX = screenX / planarMagnitude;
+  const directionY = screenY / planarMagnitude;
+  const maxDisplayRate = maxAngularDisplayRate(
+    { x: angularVelocity.x, y: angularVelocity.y, z: 0 },
+    flightInputScale,
+  );
+  const maxLength = 26;
+  const normalizedLength = clamp(planarMagnitude / maxDisplayRate, 0, 1);
+  const capped = normalizedLength >= 1;
+  const length = normalizedLength * maxLength;
   const capSize = 2.4;
   const capX = -directionY * capSize;
   const capY = directionX * capSize;
@@ -439,12 +500,6 @@ function angularTorqueIndicator(
   return {
     x: Math.round((50 + directionX * length) * 10) / 10,
     y: Math.round((50 + directionY * length) * 10) / 10,
-    rollDirection:
-      angularVelocity.z > scaledFloor
-        ? "positive"
-        : angularVelocity.z < -scaledFloor
-          ? "negative"
-          : "none",
     capped,
     capStartX: Math.round((50 + directionX * length - capX) * 10) / 10,
     capStartY: Math.round((50 + directionY * length - capY) * 10) / 10,
@@ -453,8 +508,166 @@ function angularTorqueIndicator(
     labelX: Math.round((50 + directionX * Math.max(10, length * 0.58)) * 10) / 10,
     labelY: Math.round((50 + directionY * Math.max(10, length * 0.58)) * 10) / 10,
     labelAngle: Math.round(labelAngle * 10) / 10,
-    degreesPerSecond: `${Math.round((magnitude * 180) / Math.PI)} deg/s`,
+    degreesPerSecond: `${Math.round((planarMagnitude * 180) / Math.PI)} deg/s`,
+    speedDegreesPerSecond: (planarMagnitude * 180) / Math.PI,
+    maxDegreesPerSecond: (maxDisplayRate * 180) / Math.PI,
+    stable: planarMagnitude <= autoRotationStabilizerThresholdRadians,
+    captureBlend: angularCaptureBlend(planarMagnitude),
   };
+}
+
+function angularRollIndicator(
+  rollVelocity: number,
+  flightInputScale: number,
+): {
+  direction: "positive" | "negative";
+  capped: boolean;
+  pathD: string;
+  endX: number;
+  endY: number;
+  capPoints: string;
+  arcDegrees: number;
+  speedDegreesPerSecond: number;
+  maxDegreesPerSecond: number;
+  stable: boolean;
+  captureBlend: number;
+} | null {
+  const magnitude = Math.abs(rollVelocity);
+  if (magnitude <= 0.000001) {
+    return null;
+  }
+
+  const direction = rollVelocity >= 0 ? "positive" : "negative";
+  const directionSign = direction === "positive" ? 1 : -1;
+  const maxDisplayRate = maxAngularDisplayRate({ x: 0, y: 0, z: rollVelocity }, flightInputScale);
+  const normalizedLength = clamp(magnitude / maxDisplayRate, 0, 1);
+  const capped = normalizedLength >= 1;
+  const maxArcDegrees = 300;
+  const arcDegrees = normalizedLength * maxArcDegrees;
+  const radius = 37;
+  const startAngle = -90;
+  const endAngle = startAngle + directionSign * arcDegrees;
+  const start = pointOnCircle(50, 50, radius, startAngle);
+  const end = pointOnCircle(50, 50, radius, endAngle);
+  const largeArc = arcDegrees > 180 ? 1 : 0;
+  const sweep = direction === "positive" ? 1 : 0;
+  return {
+    direction,
+    capped,
+    pathD: `M ${roundSvg(start.x)} ${roundSvg(start.y)} A ${radius} ${radius} 0 ${largeArc} ${sweep} ${roundSvg(end.x)} ${roundSvg(end.y)}`,
+    endX: roundSvg(end.x),
+    endY: roundSvg(end.y),
+    capPoints: rollArrowPoints(endAngle, directionSign, end),
+    arcDegrees,
+    speedDegreesPerSecond: (magnitude * 180) / Math.PI,
+    maxDegreesPerSecond: (maxDisplayRate * 180) / Math.PI,
+    stable: magnitude <= autoRotationStabilizerThresholdRadians,
+    captureBlend: angularCaptureBlend(magnitude),
+  };
+}
+
+function angularCaptureBlend(angularSpeed: number): number {
+  return clamp(1 - angularSpeed / autoRotationStabilizerThresholdRadians, 0, 1);
+}
+
+function angularCaptureStyle(captureBlend: number): CSSProperties {
+  const orange = { r: 200, g: 123, b: 60 };
+  const cyan = { r: 125, g: 229, b: 216 };
+  return {
+    "--angular-indicator-rgb": [
+      Math.round(orange.r + (cyan.r - orange.r) * captureBlend),
+      Math.round(orange.g + (cyan.g - orange.g) * captureBlend),
+      Math.round(orange.b + (cyan.b - orange.b) * captureBlend),
+    ].join(" "),
+  } as CSSProperties;
+}
+
+function pointOnCircle(
+  centerX: number,
+  centerY: number,
+  radius: number,
+  angleDegrees: number,
+): { x: number; y: number } {
+  const angle = (angleDegrees * Math.PI) / 180;
+  return {
+    x: centerX + Math.cos(angle) * radius,
+    y: centerY + Math.sin(angle) * radius,
+  };
+}
+
+function rollArrowPoints(
+  angleDegrees: number,
+  directionSign: number,
+  tip: { x: number; y: number },
+): string {
+  const angle = (angleDegrees * Math.PI) / 180;
+  const tangent = {
+    x: -Math.sin(angle) * directionSign,
+    y: Math.cos(angle) * directionSign,
+  };
+  const radial = {
+    x: Math.cos(angle),
+    y: Math.sin(angle),
+  };
+  const base = {
+    x: tip.x - tangent.x * 9,
+    y: tip.y - tangent.y * 9,
+  };
+  const wing = 4.6;
+  const left = {
+    x: base.x + radial.x * wing,
+    y: base.y + radial.y * wing,
+  };
+  const right = {
+    x: base.x - radial.x * wing,
+    y: base.y - radial.y * wing,
+  };
+  return `${roundSvg(tip.x)},${roundSvg(tip.y)} ${roundSvg(left.x)},${roundSvg(left.y)} ${roundSvg(right.x)},${roundSvg(right.y)}`;
+}
+
+function roundSvg(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function angularStabilizerRing(flightInputScale: number): {
+  radius: number;
+  thresholdDegreesPerSecond: number;
+} {
+  const maxDisplayRate = maxAngularRingDisplayRate(flightInputScale);
+  return {
+    radius: clamp((autoRotationStabilizerThresholdRadians / maxDisplayRate) * 26, 0, 26),
+    thresholdDegreesPerSecond: (autoRotationStabilizerThresholdRadians * 180) / Math.PI,
+  };
+}
+
+function maxAngularDisplayRate(
+  angularVelocity: { x: number; y: number; z: number },
+  flightInputScale: number,
+): number {
+  const magnitude = vectorMagnitude(angularVelocity);
+  if (magnitude <= 0.000001) {
+    return maxAngularRingDisplayRate(flightInputScale);
+  }
+
+  const scale = clamp(flightInputScale, flightInputScaleMin, flightInputScaleMax);
+  const unitX = angularVelocity.x / magnitude;
+  const unitY = angularVelocity.y / magnitude;
+  const unitZ = angularVelocity.z / magnitude;
+  const maxX =
+    Math.abs(unitX) <= 0.000001 ? Number.POSITIVE_INFINITY : shipMaxAngularRate.x / Math.abs(unitX);
+  const maxY =
+    Math.abs(unitY) <= 0.000001 ? Number.POSITIVE_INFINITY : shipMaxAngularRate.y / Math.abs(unitY);
+  const maxZ =
+    Math.abs(unitZ) <= 0.000001 ? Number.POSITIVE_INFINITY : shipMaxAngularRate.z / Math.abs(unitZ);
+  return Math.max(autoRotationStabilizerThresholdRadians, Math.min(maxX, maxY, maxZ) * scale);
+}
+
+function maxAngularRingDisplayRate(flightInputScale: number): number {
+  const scale = clamp(flightInputScale, flightInputScaleMin, flightInputScaleMax);
+  return Math.max(
+    autoRotationStabilizerThresholdRadians,
+    vectorMagnitude(shipMaxAngularRate) * scale,
+  );
 }
 
 function projectWorldPoint(
