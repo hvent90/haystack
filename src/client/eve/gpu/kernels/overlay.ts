@@ -82,11 +82,9 @@ export const genFieldOverlay = Fn(() => {
   // SMOOTHNESS: this MUST stay a plain sinusoid of t — hashing it (fract(sin(x)*43758.5453))
   // re-rolls white noise every frame, which reads as the whole field vibrating (the original
   // step-6 bug; pinned by gpu-overlay-bound.test.ts "temporally SMOOTH").
-  const wob = vec3(
-    sin(ph.add(t)),
-    sin(ph.add(t).add(1.7)),
-    sin(ph.add(t).add(3.1)),
-  ).mul(WOBBLE_AMPLITUDE_METERS);
+  const wob = vec3(sin(ph.add(t)), sin(ph.add(t).add(1.7)), sin(ph.add(t).add(3.1))).mul(
+    WOBBLE_AMPLITUDE_METERS,
+  );
 
   // Well pull — mirrors wells.wellPullMeters exactly: per-well Gaussian falloff toward the
   // center, per-well clamp to 0.9·distance (no overshoot), total clamped to the hard cap.

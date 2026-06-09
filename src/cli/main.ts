@@ -368,7 +368,10 @@ async function screenshot(parsed: ParsedArgs, state: CliState): Promise<void> {
   const out = resolve(String(parsed.flags.get("out") ?? "screenshots/haystack-cli.png"));
   const viewport = screenshotViewport(parsed.flags);
   const { chromium } = await import("playwright");
-  const browser = await chromium.launch();
+  // The app requires WebGPU; headless Chromium only exposes a device with these flags.
+  const browser = await chromium.launch({
+    args: ["--enable-unsafe-webgpu", "--enable-unsafe-swiftshader"],
+  });
   const page = await browser.newPage({
     viewport: {
       width: viewport.cssWidth,

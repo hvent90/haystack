@@ -229,9 +229,26 @@ export type RenderDebugControls = {
   // flight is uncontrollable at 100k under headless swiftshader — the starved client
   // prediction either stalls or runs away clear past the field.
   drift: number;
+  // Benchmark-only camera orientation override: when non-null, the camera looks along this
+  // world direction instead of the ship orientation (e.g. down-sun, so every visible rock
+  // face is sun-facing and brightness variation isolates the shadow terms). Position is
+  // untouched. No effect in normal play (nothing sets it).
+  lookDir: { x: number; y: number; z: number } | null;
+  // Benchmark-only A/B switches for the two-tier asteroid shadow blend: tier1 = the
+  // near-camera shadow map, tier2 = the per-instance aSunlit occlusion scalar. Forcing a
+  // tier off replaces its term with 1.0 (fully lit) so screenshot diffs isolate what each
+  // tier contributes. Both true in normal play.
+  shadowTier1: boolean;
+  shadowTier2: boolean;
 };
 
-const debugControls: RenderDebugControls = { faceAway: false, drift: 0 };
+const debugControls: RenderDebugControls = {
+  faceAway: false,
+  drift: 0,
+  lookDir: null,
+  shadowTier1: true,
+  shadowTier2: true,
+};
 
 export function getRenderDebugControls(): RenderDebugControls {
   return debugControls;
@@ -245,6 +262,8 @@ if (typeof window !== "undefined") {
         reset: () => void;
         faceAway: (on: boolean) => void;
         drift: (metersPerDelta: number) => void;
+        lookDir: (dir: { x: number; y: number; z: number } | null) => void;
+        shadowTiers: (tier1: boolean, tier2: boolean) => void;
       };
     }
   ).__HAYSTACK_RENDER_DEBUG__ = {
@@ -255,6 +274,13 @@ if (typeof window !== "undefined") {
     },
     drift: (metersPerDelta: number) => {
       debugControls.drift = metersPerDelta;
+    },
+    lookDir: (dir: { x: number; y: number; z: number } | null) => {
+      debugControls.lookDir = dir;
+    },
+    shadowTiers: (tier1: boolean, tier2: boolean) => {
+      debugControls.shadowTier1 = tier1;
+      debugControls.shadowTier2 = tier2;
     },
   };
 }

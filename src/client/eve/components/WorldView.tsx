@@ -31,7 +31,12 @@ import { ShipFlashlight, SunDisc, SunLight } from "./SceneLighting";
 // derive, pos = base + overlay, zero-copy positionNode). There is no WebGL fallback (§1.1/§5).
 import { makeWebGPUFactory } from "../gpu/renderer-factory";
 import { ScenePostProcessing } from "./ScenePostProcessing";
-import { makeLodAsteroidMaterial, originMeters } from "../gpu/kernels/render-node";
+import {
+  makeLodAsteroidMaterial,
+  originMeters,
+  shadowTier1Enable,
+  shadowTier2Enable,
+} from "../gpu/kernels/render-node";
 import { frameCounter, genFieldOverlay } from "../gpu/kernels/overlay";
 import { makeCullPipeline } from "../gpu/kernels/cull";
 import {
@@ -1036,6 +1041,7 @@ function RenderDriver({ fallbackShip }: { fallbackShip: Ship }): null {
   // benchmark's faceAway control to look straight along world +Y into the void
   // above the lifted camera. See the faceAway block below.
   const lookUp = useMemo(() => new ThreeQuaternion(Math.SQRT1_2, 0, 0, Math.SQRT1_2), []);
+  const lookTarget = useMemo(() => new ThreeVector3(), []);
   const infoArmed = useRef(false);
 
   useFrame(({ camera, gl }, delta) => {
@@ -1058,7 +1064,21 @@ function RenderDriver({ fallbackShip }: { fallbackShip: Ship }): null {
     cockpitWorld.copy(cockpit).applyQuaternion(quaternion);
     camera.position.copy(cockpitWorld);
     camera.quaternion.copy(quaternion);
-    if (getRenderDebugControls().faceAway) {
+    const debug = getRenderDebugControls();
+    // Benchmark-only shadow-tier A/B switches (1 = on; 0 forces the term to fully lit).
+    shadowTier1Enable.value = debug.shadowTier1 ? 1 : 0;
+    shadowTier2Enable.value = debug.shadowTier2 ? 1 : 0;
+    if (debug.lookDir !== null) {
+      // Benchmark-only orientation override: look along a fixed world direction (the world
+      // group is only translated, never rotated, so scene direction == world direction).
+      lookTarget.set(
+        cockpitWorld.x + debug.lookDir.x,
+        cockpitWorld.y + debug.lookDir.y,
+        cockpitWorld.z + debug.lookDir.z,
+      );
+      camera.lookAt(lookTarget);
+    }
+    if (debug.faceAway) {
       // Measure real per-chunk frustum culling on an empty view: the ship sits at
       // the field CENTER (spawn origin), so the derived ball surrounds it and a mere
       // 180° yaw still stares into rocks. Instead lift the camera far above the whole

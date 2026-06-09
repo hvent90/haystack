@@ -29,7 +29,13 @@ import {
 } from "three/tsl";
 
 import { MAX_RESIDENT, pos } from "../buffers";
-import { LOD_BANDS_SCENE, LOD_COUNT, MAX_DRAW_SCENE, METERS_PER_SCENE_UNIT } from "../cull-cpu";
+import {
+  LOD_BANDS_SCENE,
+  LOD_COUNT,
+  MAX_DRAW_SCENE,
+  METERS_PER_SCENE_UNIT,
+  SHADOW_CASTER_SCENE,
+} from "../cull-cpu";
 import { originMeters } from "./render-node";
 
 const WORKGROUP = 256;
@@ -166,7 +172,10 @@ export function makeCullPipeline(lodVertexCounts: readonly number[]): CullPipeli
               outside.assign(uint(1));
             });
           });
-          If(outside.equal(uint(0)), () => {
+          // Off-frustum rocks inside the shadow-caster bubble are kept so the shadow
+          // depth pass (which draws the same compacted lists) sees off-screen up-sun
+          // casters (cull-cpu.SHADOW_CASTER_SCENE).
+          If(outside.equal(uint(0)).or(nearest.lessThan(float(SHADOW_CASTER_SCENE))), () => {
             If(nearest.lessThan(float(LOD_BANDS_SCENE[0])), () => {
               const at = atomicAdd(bandCounts.element(uint(0)), uint(1));
               lodLists[0]!.element(at).assign(instanceIndex);

@@ -9,6 +9,13 @@
 
 import type { Matrix4 } from "three";
 
+import {
+  shadowBubbleHalf,
+  shadowCameraFar,
+  shadowCameraNear,
+  shadowLightDistance,
+} from "../lighting";
+
 export const LOD_COUNT = 4;
 // Upper NEAREST-distance (dist - radius, scene units) per band, carried over from the
 // legacy per-chunk cull (WorldView LOD_BAND_SCENE): dodeca -> icosa -> octa -> tetra.
@@ -17,6 +24,20 @@ export const LOD_BANDS_SCENE = [4, 9, 13] as const;
 // drawn (the fog has fully extinguished it well before — fogFar is 18).
 export const MAX_DRAW_SCENE = 18;
 export const METERS_PER_SCENE_UNIT = 1000;
+
+// Shadow-caster keep radius (scene units): rocks whose nearest point is within this
+// distance of the camera survive the cull EVEN OFF-FRUSTUM. The shadow depth pass draws
+// the same compacted lists as the main pass, so a strict camera-frustum cull would drop
+// off-screen up-sun casters and their shadows would pop in/out as the camera turns. This
+// sphere circumscribes the camera-following ortho shadow box (lateral ±shadowBubbleHalf;
+// depth from shadowCameraNear to shadowCameraFar of a light shadowLightDistance up-sun),
+// so every rock the shadow camera can see is kept. Off-frustum keeps cost vertex work
+// only — the rasterizer clips them in the main pass.
+export const SHADOW_CASTER_SCENE = Math.hypot(
+  shadowBubbleHalf,
+  shadowBubbleHalf,
+  Math.max(shadowCameraFar - shadowLightDistance, shadowLightDistance - shadowCameraNear),
+);
 
 // The LOD band for a rock whose NEAREST point (dist - radius) is `nearest` scene units
 // away. Caller has already culled nearest >= MAX_DRAW_SCENE.
@@ -131,7 +152,8 @@ export function cullCPU(
         break;
       }
     }
-    if (!inside) {
+    // Off-frustum rocks inside the shadow-caster bubble are kept (see SHADOW_CASTER_SCENE).
+    if (!inside && nearest >= SHADOW_CASTER_SCENE) {
       continue;
     }
     lists[lodBandFor(nearest)]!.push(slot);

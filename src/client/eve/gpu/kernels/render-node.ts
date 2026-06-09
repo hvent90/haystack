@@ -49,6 +49,12 @@ const METERS_PER_SCENE_UNIT = 1000;
 // (`originMeters.value.copy(ownShipMeters)`).
 export const originMeters = uniform(new THREE.Vector3());
 
+// Benchmark-only A/B switches for the two shadow tiers (1 = on, 0 = term forced to 1.0 /
+// fully lit). Driven from RenderDebugControls each frame; both 1 in normal play. They let
+// the shadow-diag harness prove each tier's visible contribution by screenshot diff.
+export const shadowTier1Enable = uniform(1);
+export const shadowTier2Enable = uniform(1);
+
 // Build the asteroid NodeMaterial. positionNode = floating-origin placement of a unit-radius
 // base geometry, scaled by per-instance radius (pos.w), translated to (pos.xyz - origin)/1000.
 export function makeAsteroidMaterial(): InstanceType<typeof THREE.MeshStandardNodeMaterial> {
@@ -114,8 +120,10 @@ export function makeLodAsteroidMaterial(
   );
   // @types/three narrows receivedShadowNode to () => Node; three's own docs (and runtime,
   // NodeMaterial.setupLightingModel) pass the shadow as the first Fn arg.
-  mat.receivedShadowNode = Fn(([shadow]: [ShaderNodeObject<THREE.Node>]) =>
-    mix(clamp(aSunlit, 0, 1), shadow, bubbleWeight),
-  ) as unknown as typeof mat.receivedShadowNode;
+  mat.receivedShadowNode = Fn(([shadow]: [ShaderNodeObject<THREE.Node>]) => {
+    const sunlitTerm = mix(float(1), clamp(aSunlit, 0, 1), shadowTier2Enable);
+    const shadowTerm = mix(float(1), shadow, shadowTier1Enable);
+    return mix(sunlitTerm, shadowTerm, bubbleWeight);
+  }) as unknown as typeof mat.receivedShadowNode;
   return mat;
 }

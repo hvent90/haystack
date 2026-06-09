@@ -90,7 +90,9 @@ describe("cullCPU", () => {
     // 3: 11 units ahead                  -> band 2
     // 4: 16 units ahead                  -> band 3
     // 5: 30 units ahead (beyond draw)    -> culled
-    // 6: 6 units BEHIND the camera       -> culled (frustum)
+    // 6: 6 units BEHIND the camera       -> KEPT, band 1 (off-frustum but inside the
+    //    shadow-caster bubble — the shadow depth pass needs off-screen up-sun casters)
+    // 7: 17.5 units BEHIND the camera    -> culled (off-frustum, outside the bubble)
     const ahead = new Vector3(0, 0.1, -1).normalize();
     const mk = (units: number, radius: number) => ({
       x: origin.x + ahead.x * units * 1000,
@@ -106,6 +108,7 @@ describe("cullCPU", () => {
       mk(16, 200),
       mk(30, 200),
       mk(-6, 200),
+      mk(-17.5, 200),
     ];
     const pos = new Float32Array(rocks.length * 4);
     rocks.forEach((rock, i) => {
@@ -118,7 +121,7 @@ describe("cullCPU", () => {
     const result = cullCPU(pos, rocks.length, origin, planes);
     expect(result.lists.length).toBe(LOD_COUNT);
     expect([...result.lists[0]!]).toEqual([1]);
-    expect([...result.lists[1]!]).toEqual([2]);
+    expect([...result.lists[1]!]).toEqual([2, 6]);
     expect([...result.lists[2]!]).toEqual([3]);
     expect([...result.lists[3]!]).toEqual([4]);
   });
