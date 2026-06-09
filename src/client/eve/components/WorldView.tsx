@@ -59,7 +59,8 @@ type SelectionBox = {
 };
 
 export function WorldView({
-  rows,
+  bracketRows,
+  selectedRow,
   asteroids,
   structures,
   ships,
@@ -78,7 +79,12 @@ export function WorldView({
   audioContext,
   audioVolume,
 }: {
-  rows: OverviewRow[];
+  // Pre-materialized by EveApp's overview model: the nearest positioned rows for the
+  // in-world brackets, and the selected row (resolved by key, so it is correct even when
+  // the selected object is far away / outside the virtualized overview window). The full
+  // overview is never materialized as a 50k-row array here anymore.
+  bracketRows: OverviewRow[];
+  selectedRow: OverviewRow | null;
   asteroids: Asteroid[];
   structures: Structure[];
   ships: Ship[];
@@ -97,17 +103,9 @@ export function WorldView({
   audioContext: AudioContext | null;
   audioVolume: number;
 }): ReactNode {
-  const bracketRows = useMemo(
-    () => rows.filter((row) => row.position !== null).slice(0, 32),
-    [rows],
-  );
   const [screenPoints, setScreenPoints] = useState<Record<string, ScreenPoint>>({});
   const [selectionArrow, setSelectionArrow] = useState<SelectionArrow | null>(null);
   const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
-  const selectedRow = useMemo(
-    () => (selected === null ? null : (rows.find((row) => sameSelection(row, selected)) ?? null)),
-    [rows, selected],
-  );
   const angularSpeed = vectorMagnitude(myShip.angularVelocity);
   const angularStable = angularSpeed <= autoRotationStabilizerThresholdRadians;
 

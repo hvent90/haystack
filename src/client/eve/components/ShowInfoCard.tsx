@@ -1,22 +1,21 @@
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
 import type { WorldSnapshot } from "../../../shared/types";
-import { kindLabel, sameSelection } from "../overview";
+import { kindLabel } from "../overview";
 import type { OverviewRow, Selection } from "../types";
 import { formatDistance } from "../vector";
 
 export function ShowInfoCard({
   target,
   snapshot,
-  rows,
+  row,
   onClose,
 }: {
   target: Selection;
   snapshot: WorldSnapshot;
-  rows: OverviewRow[];
+  row: OverviewRow | null;
   onClose: () => void;
 }): ReactNode {
-  const row = rows.find((candidate) => sameSelection(candidate, target));
   const pilot =
     target.kind === "ship" ? snapshot.pilots.find((candidate) => candidate.id === target.id) : null;
   return (
@@ -44,7 +43,7 @@ export function ShowInfoCard({
             <span>{pilot.scanPower.toFixed(2)} scan</span>
             <span>{pilot.miningPower.toFixed(1)} mining</span>
           </>
-        ) : row !== undefined ? (
+        ) : row !== null ? (
           <>
             <span>{kindLabel(row.kind)}</span>
             <span>{row.id}</span>

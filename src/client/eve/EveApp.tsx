@@ -63,7 +63,12 @@ import {
   loadLayout,
   patchWindowState,
 } from "./layout";
-import { buildOverviewRows, filterOverviewRows, sameSelection, sortOverviewRows } from "./overview";
+import {
+  buildAsteroidScaffold,
+  buildOverviewModel,
+  materializeRowByKey,
+  nearestPositionedRows,
+} from "./overview";
 import {
   mergeWorldPatchForOwnedPrediction,
   mergeWorldSnapshotForOwnedPrediction,
@@ -71,7 +76,7 @@ import {
   replaceOwnedShip,
 } from "./prediction";
 import { FieldDeriver, withDerivedField } from "./field-derivation";
-import { getRenderDebugControls } from "./render-stats";
+import { getRenderDebugControls, renderStats } from "./render-stats";
 import { flightRenderStore } from "./renderStore";
 import type {
   ChatChannel,
@@ -169,10 +174,41 @@ export function EveApp(): ReactNode {
   const myShipRef = useRef<Ship | null>(null);
   const previousChatIdsRef = useRef<Set<string>>(new Set());
   const predictCommitRef = useRef(0);
+  // Coalescer state: the live world snapshot is merged synchronously on every 30Hz
+  // delta into liveSnapshotRef (the source of truth for the merge pipeline), while
+  // the React `snapshot` state is mirrored from it at ~10Hz. This breaks the
+  // every-delta -> full-reconcile loop: the cheap merge runs at 30Hz, the expensive
+  // React reconcile (overview rebuild, prop diffing) runs at ~10Hz. The 3D scene is
+  // unaffected because the camera/ships already read flightRenderStore in useFrame.
+  const liveSnapshotRef = useRef<WorldSnapshot | null>(null);
+  const flushRafRef = useRef<number | null>(null);
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushDirtyRef = useRef(false);
+  const lastFlushMsRef = useRef(0);
 
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
+
+  // Coalescer lifecycle: on unmount, cancel any pending flush and do one final
+  // synchronous flush so the last delta is never stranded (StrictMode runs the real
+  // unmount cleanup last, after the dev double-invoke).
+  useEffect(() => {
+    return () => {
+      if (flushRafRef.current !== null) {
+        cancelAnimationFrame(flushRafRef.current);
+        flushRafRef.current = null;
+      }
+      if (flushTimerRef.current !== null) {
+        clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = null;
+      }
+      if (flushDirtyRef.current && liveSnapshotRef.current !== null) {
+        flushDirtyRef.current = false;
+        setSnapshot(liveSnapshotRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -197,7 +233,7 @@ export function EveApp(): ReactNode {
             resetPredictionFromSnapshot(world, pilot.id);
             setSession({ pilot, snapshot: world });
             fieldDeriverRef.current.setSeeded(world.asteroids);
-            setSnapshot(withDerivedField(world, fieldDeriverRef.current, pilot.id));
+            commitSnapshotNow(withDerivedField(world, fieldDeriverRef.current, pilot.id));
           }
           return;
         }
@@ -211,7 +247,7 @@ export function EveApp(): ReactNode {
         resetPredictionFromSnapshot(world, nextSession.pilot.id);
         setSession({ pilot: nextSession.pilot, snapshot: world });
         fieldDeriverRef.current.setSeeded(world.asteroids);
-        setSnapshot(withDerivedField(world, fieldDeriverRef.current, nextSession.pilot.id));
+        commitSnapshotNow(withDerivedField(world, fieldDeriverRef.current, nextSession.pilot.id));
       }
     }
   }, []);
@@ -226,7 +262,7 @@ export function EveApp(): ReactNode {
     const deriver = fieldDeriverRef.current;
     const pilotId = session.pilot.id;
     deriver.setUpdateListener(() => {
-      setSnapshot((current) =>
+      applySnapshot((current) =>
         current === null ? current : withDerivedField(current, deriver, pilotId),
       );
     });
@@ -256,7 +292,7 @@ export function EveApp(): ReactNode {
       if (drift <= 0 || deriver.isBusy()) {
         return;
       }
-      setSnapshot((current) =>
+      applySnapshot((current) =>
         current === null
           ? current
           : withDerivedField(driftOwnedShip(current, pilotId, driftXRef, drift), deriver, pilotId),
@@ -278,44 +314,52 @@ export function EveApp(): ReactNode {
             resetPredictionFromSnapshot(message.snapshot, session.pilot.id);
             pushRemotesToStore(message.snapshot.ships, session.pilot.id, message.serverTimeMs);
             fieldDeriverRef.current.setSeeded(message.snapshot.asteroids);
-            setSnapshot(
+            commitSnapshotNow(
               withDerivedField(message.snapshot, fieldDeriverRef.current, session.pilot.id),
             );
             return;
-          case "delta":
-            if (message.patch.ships !== undefined) {
-              pushRemotesToStore(message.patch.ships, session.pilot.id, message.serverTimeMs);
+          case "delta": {
+            // Side effects run synchronously at delta receipt (exactly once per message,
+            // not at the throttled flush and not twice under StrictMode): buffer remote
+            // ships for 60fps interpolation, seed prediction if unseeded, seed the field
+            // deriver. The producer passed to applySnapshot is then pure.
+            const patch = message.patch;
+            if (patch.ships !== undefined) {
+              pushRemotesToStore(patch.ships, session.pilot.id, message.serverTimeMs);
             }
-            setSnapshot((current) => {
-              if (current === null) {
-                return current;
+            const predictedShip = predictedShipForAuthoritativeMerge();
+            if (predictedShip === null && patch.ships !== undefined) {
+              const ownedShip =
+                patch.ships.find((ship) => ship.pilotId === session.pilot.id) ?? null;
+              if (ownedShip !== null) {
+                predictionRef.current.reset(ownedShip);
+                flightRenderStore.resetOwned(ownedShip);
               }
-              const predictedShip = predictedShipForAuthoritativeMerge();
-              if (predictedShip === null && message.patch.ships !== undefined) {
-                const ownedShip =
-                  message.patch.ships.find((ship) => ship.pilotId === session.pilot.id) ?? null;
-                if (ownedShip !== null) {
-                  predictionRef.current.reset(ownedShip);
-                  flightRenderStore.resetOwned(ownedShip);
-                }
-              }
-              const merged = driftOwnedShip(
-                mergeWorldPatchForOwnedPrediction(
-                  current,
-                  message.patch,
-                  session.pilot.id,
-                  predictedShip,
-                ),
-                session.pilot.id,
-                driftXRef,
-                0,
-              );
-              if (message.patch.asteroids !== undefined) {
-                fieldDeriverRef.current.setSeeded(message.patch.asteroids);
-              }
-              return withDerivedField(merged, fieldDeriverRef.current, session.pilot.id);
-            });
+            }
+            if (patch.asteroids !== undefined) {
+              fieldDeriverRef.current.setSeeded(patch.asteroids);
+            }
+            applySnapshot((current) =>
+              current === null
+                ? current
+                : withDerivedField(
+                    driftOwnedShip(
+                      mergeWorldPatchForOwnedPrediction(
+                        current,
+                        patch,
+                        session.pilot.id,
+                        predictedShip,
+                      ),
+                      session.pilot.id,
+                      driftXRef,
+                      0,
+                    ),
+                    fieldDeriverRef.current,
+                    session.pilot.id,
+                  ),
+            );
             return;
+          }
           case "ack": {
             // Reconcile against the authoritative ship and fold any correction
             // into the render store's decaying error (smooth) rather than
@@ -585,23 +629,55 @@ export function EveApp(): ReactNode {
     } satisfies CharacterCard;
   }, [myShip, session, snapshot]);
 
-  const overviewRows = useMemo(() => {
+  // The field-static asteroid rows (id/name/clue/position/signature) only change when
+  // the visible *set* changes — i.e. when snapshot.asteroids gets a new reference on a
+  // cell crossing — not on every 30Hz position delta. Memoizing here means the
+  // per-commit overview build below only recomputes distance/bearing, not 50k strings.
+  const asteroidScaffold = useMemo(
+    () => buildAsteroidScaffold(snapshot?.asteroids ?? []),
+    [snapshot?.asteroids],
+  );
+
+  // The overview "model" holds the field-static scaffold + the small dynamic rows + a
+  // sorted index `order`, and materializes real OverviewRow objects only on demand. This
+  // is what kills the per-commit GC: previously the overview built ~5 objects per
+  // discovered rock (up to ~500k objects/commit at 100k) every commit; now the asteroid
+  // rows are never materialized in bulk — only the visible window, the selected row, the
+  // context/info row, and the in-world brackets are.
+  //
+  // The sorted `order` is only built when the Scanner window is open (it is the one
+  // O(field) array left); selection / brackets use byKey lookups + the nearest-first
+  // scaffold. (Closing the overview used to NOT stop the build — that is why the UI
+  // stayed slow with the windows shut.)
+  const scannerOpen = layout.scanner.open;
+  const overviewModel = useMemo(() => {
     if (snapshot === null || myShip === null || session === null) {
-      return [];
-    }
-    return buildOverviewRows(snapshot, myShip, session.pilot.id, latestScan);
-  }, [latestScan, myShip, session, snapshot]);
-
-  const visibleRows = useMemo(() => {
-    return sortOverviewRows(filterOverviewRows(overviewRows, overviewFilter), sort);
-  }, [overviewFilter, overviewRows, sort]);
-
-  const selectedRow = useMemo(() => {
-    if (selection === null) {
       return null;
     }
-    return overviewRows.find((row) => sameSelection(row, selection)) ?? null;
-  }, [overviewRows, selection]);
+    renderStats.noteOverviewBuild();
+    return buildOverviewModel(
+      asteroidScaffold,
+      snapshot,
+      myShip,
+      session.pilot.id,
+      latestScan,
+      overviewFilter,
+      sort,
+      scannerOpen,
+    );
+  }, [asteroidScaffold, snapshot, myShip, session, latestScan, overviewFilter, sort, scannerOpen]);
+
+  const selectedRow = useMemo(() => {
+    if (overviewModel === null || selection === null) {
+      return null;
+    }
+    return materializeRowByKey(overviewModel, `${selection.kind}:${selection.id}`);
+  }, [overviewModel, selection]);
+
+  const bracketRows = useMemo(
+    () => (overviewModel === null ? [] : nearestPositionedRows(overviewModel, 32)),
+    [overviewModel],
+  );
 
   const selectedAsteroidId =
     selectedRow?.kind === "asteroid" ? selectedRow.id : selectedRow?.asteroidId;
@@ -680,9 +756,9 @@ export function EveApp(): ReactNode {
   }
 
   const contextMenuRow =
-    contextMenu?.target === null || contextMenu?.target === undefined
+    overviewModel === null || contextMenu?.target === null || contextMenu?.target === undefined
       ? null
-      : (overviewRows.find((row) => sameSelection(row, contextMenu.target!)) ?? null);
+      : materializeRowByKey(overviewModel, `${contextMenu.target.kind}:${contextMenu.target.id}`);
   const canUse = session !== null && myShip !== null;
   const effectiveThrottle = keyboardThrottle !== 0 ? keyboardThrottle : throttle;
 
@@ -700,7 +776,8 @@ export function EveApp(): ReactNode {
       data-ack-tick={predictionRef.current.lastAcknowledgedTick}
     >
       <WorldView
-        rows={overviewRows}
+        bracketRows={bracketRows}
+        selectedRow={selectedRow}
         myShip={myShip}
         asteroids={visibleAsteroids}
         structures={visibleStructures}
@@ -769,7 +846,7 @@ export function EveApp(): ReactNode {
                 />
               ) : definition.key === "scanner" ? (
                 <ScannerWindow
-                  rows={visibleRows}
+                  model={overviewModel}
                   selected={selection}
                   sort={sort}
                   filter={overviewFilter}
@@ -865,7 +942,11 @@ export function EveApp(): ReactNode {
         <ShowInfoCard
           target={showInfoTarget}
           snapshot={snapshot}
-          rows={overviewRows}
+          row={
+            overviewModel === null
+              ? null
+              : materializeRowByKey(overviewModel, `${showInfoTarget.kind}:${showInfoTarget.id}`)
+          }
           onClose={() => setShowInfoTarget(null)}
         />
       ) : null}
@@ -893,18 +974,79 @@ export function EveApp(): ReactNode {
     </main>
   );
 
+  // Merge a world update synchronously into the live snapshot (the source of truth for
+  // the next merge) and schedule a throttled React commit. The producer must be PURE —
+  // all side effects (remote push, prediction reset, field seeding) run synchronously
+  // at the call site, before applySnapshot, so they fire exactly once per event.
+  function applySnapshot(producer: (current: WorldSnapshot | null) => WorldSnapshot | null): void {
+    const next = producer(liveSnapshotRef.current);
+    if (next === liveSnapshotRef.current) {
+      return;
+    }
+    liveSnapshotRef.current = next;
+    scheduleFlush();
+  }
+
+  // Hard reset (boot / hello / reconnect): replace the live snapshot and mirror it to
+  // React immediately, bypassing the throttle, so the first frame after connect is fresh.
+  function commitSnapshotNow(next: WorldSnapshot | null): void {
+    liveSnapshotRef.current = next;
+    flushDirtyRef.current = false;
+    lastFlushMsRef.current = nowMs();
+    setSnapshot(next);
+    renderStats.noteReactCommit();
+  }
+
+  function scheduleFlush(): void {
+    flushDirtyRef.current = true;
+    if (flushRafRef.current !== null || flushTimerRef.current !== null) {
+      return; // a flush is already queued (idempotent under StrictMode double-invoke)
+    }
+    if (typeof document !== "undefined" && document.hidden) {
+      // rAF is paused in a backgrounded tab; fall back to a timer so the update lands.
+      flushTimerRef.current = setTimeout(() => {
+        flushTimerRef.current = null;
+        flushPending();
+      }, snapshotFlushIntervalMs);
+      return;
+    }
+    flushRafRef.current = requestAnimationFrame(flushPending);
+  }
+
+  // rAF-driven, leading+trailing throttle. Polls each frame and commits once at least
+  // snapshotFlushIntervalMs has passed since the last commit; the dirty flag guarantees
+  // the trailing edge (the final delta) is always flushed.
+  function flushPending(): void {
+    flushRafRef.current = null;
+    if (!flushDirtyRef.current) {
+      return;
+    }
+    const now = nowMs();
+    if (now - lastFlushMsRef.current < snapshotFlushIntervalMs) {
+      flushRafRef.current = requestAnimationFrame(flushPending);
+      return;
+    }
+    flushDirtyRef.current = false;
+    lastFlushMsRef.current = now;
+    setSnapshot(liveSnapshotRef.current);
+    renderStats.noteReactCommit();
+  }
+
   async function refreshSnapshot(pilotId: string): Promise<void> {
     try {
       const world = await getWorld(pilotId);
-      setSnapshot((current) => {
-        const predictedShip = predictedShipForAuthoritativeMerge();
-        if (predictedShip === null) {
-          resetPredictionFromSnapshot(world, pilotId);
-        }
-        const merged = mergeWorldSnapshotForOwnedPrediction(current, world, pilotId, predictedShip);
-        fieldDeriverRef.current.setSeeded(world.asteroids);
-        return withDerivedField(merged, fieldDeriverRef.current, pilotId);
-      });
+      const predictedShip = predictedShipForAuthoritativeMerge();
+      if (predictedShip === null) {
+        resetPredictionFromSnapshot(world, pilotId);
+      }
+      fieldDeriverRef.current.setSeeded(world.asteroids);
+      applySnapshot((current) =>
+        withDerivedField(
+          mergeWorldSnapshotForOwnedPrediction(current, world, pilotId, predictedShip),
+          fieldDeriverRef.current,
+          pilotId,
+        ),
+      );
     } catch (nextError: unknown) {
       setError(messageFrom(nextError));
     }
@@ -1049,7 +1191,7 @@ export function EveApp(): ReactNode {
       flightStateRef.current = { throttle: 0, cruiseLock: false };
       setThrottle(0);
       setCruiseLock(false);
-      setSnapshot((current) =>
+      applySnapshot((current) =>
         current === null ? current : replaceOwnedShip(current, pilotId, ship),
       );
     });
@@ -1092,7 +1234,7 @@ export function EveApp(): ReactNode {
     // with re-renders that previously starved the animation loop.
     predictCommitRef.current += 1;
     if (predictCommitRef.current % 3 === 0) {
-      setSnapshot((current) =>
+      applySnapshot((current) =>
         current === null ? current : replaceOwnedShip(current, pilotId, predicted.ship),
       );
     }
@@ -1386,4 +1528,14 @@ export function EveApp(): ReactNode {
 
 function messageFrom(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown error";
+}
+
+// ~10.5Hz minimum interval between React snapshot commits. The 30Hz world stream is
+// merged synchronously into liveSnapshotRef at full rate; only the React mirror (which
+// drives the EVE overview/HUD/windows) is throttled to this cadence. The 3D scene and
+// owned/remote ship motion are unaffected — they read flightRenderStore in useFrame.
+const snapshotFlushIntervalMs = 95;
+
+function nowMs(): number {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
 }

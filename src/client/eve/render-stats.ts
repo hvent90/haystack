@@ -49,6 +49,13 @@ export type RenderStatsSnapshot = {
   worstCellCrossFrameMs: number;
   // Cell crossings (derive events) observed within the sample window.
   cellCrossCount: number;
+  // Monotonic count of React snapshot commits (one per coalesced setSnapshot flush).
+  // Before the 30Hz->React decoupling this tracked the delta rate (~30/s); after
+  // coalescing it should sit near the flush cadence (~10/s). A deterministic,
+  // hardware-independent signal that the every-delta->full-reconcile loop is broken.
+  reactCommitCount: number;
+  // Monotonic count of buildOverviewRows evaluations (one per overview rebuild).
+  overviewBuildCount: number;
 };
 
 const FRAME_WINDOW = 240;
@@ -73,6 +80,8 @@ class RenderStats {
   private lastFrameMs = 0;
   private worstCellCrossFrameMs = 0;
   private cellCrossCount = 0;
+  private reactCommitCount = 0;
+  private overviewBuildCount = 0;
 
   // Per-CROSS main-thread field work. A cell cross does: reconstruct (recordDerive) then,
   // in the React commit it triggers, the chunk partition + reconcile + per-chunk build
@@ -114,6 +123,16 @@ class RenderStats {
   // or a seeded-only change) so the benchmark always sees the real field size.
   setDerivedCount(derivedCount: number): void {
     this.derivedAsteroidCount = derivedCount;
+  }
+
+  // Called once per coalesced React snapshot commit (the throttled flush + hard resets).
+  noteReactCommit(): void {
+    this.reactCommitCount += 1;
+  }
+
+  // Called once per buildOverviewRows evaluation (the overview useMemo).
+  noteOverviewBuild(): void {
+    this.overviewBuildCount += 1;
   }
 
   // Called once per frame from the render driver, BEFORE the upcoming render, with
@@ -179,6 +198,8 @@ class RenderStats {
       // the next one finalizes its bucket.
       worstCellCrossFrameMs: Math.max(this.worstCellCrossFrameMs, this.currentCrossWorkMs),
       cellCrossCount: this.cellCrossCount,
+      reactCommitCount: this.reactCommitCount,
+      overviewBuildCount: this.overviewBuildCount,
     };
   }
 

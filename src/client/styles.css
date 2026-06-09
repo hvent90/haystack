@@ -1000,6 +1000,13 @@ tr:focus-visible {
   background: rgb(31 38 35 / 55%);
 }
 
+/* Virtualization spacers stand in for the off-screen rows; keep them inert. */
+.overview-table tr.overview-spacer,
+.overview-table tr.overview-spacer:hover {
+  border-left-color: transparent;
+  background: transparent;
+}
+
 .overview-table tr[data-selected="true"] {
   border-left-color: var(--accent-amber);
   background: rgb(64 46 24 / 62%);
