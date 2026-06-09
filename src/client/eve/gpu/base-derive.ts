@@ -9,7 +9,7 @@
 
 import type { FieldSummary, Vector3 } from "../../../shared/types";
 import { deriveVirtualField } from "../field-core";
-import { backingArrayOf, MAX_RESIDENT } from "./buffers";
+import { backingArrayOf, backingU32Of, MAX_RESIDENT } from "./buffers";
 import type { instancedArray } from "three/tsl";
 
 export type DerivedBase = {
@@ -17,6 +17,10 @@ export type DerivedBase = {
   base: Float32Array;
   // capacity*4 floats, vec4 per slot: [packed(reserved), mineralRichness, phaseSeed, 0].
   packAttr: Float32Array;
+  // capacity*4 uints, uvec4 per slot: [globalCellX, globalCellY, globalCellZ, residencyEpoch].
+  // Reconstructs the EXACT id `v-cx-cy-cz` for picking/promotion (§2.2), so temporal per-rock
+  // state never has to key on the non-deterministic compacted draw slot.
+  slotMeta: Uint32Array;
   // number of populated slots (= min(derived rocks, capacity)).
   count: number;
 };
@@ -36,11 +40,13 @@ export function deriveBase(
   position: Vector3,
   field: FieldSummary,
   capacity: number = MAX_RESIDENT,
+  residencyEpoch = 0,
 ): DerivedBase {
   const rocks = deriveVirtualField(position, field);
   const count = Math.min(rocks.length, capacity);
   const base = new Float32Array(capacity * 4);
   const packAttr = new Float32Array(capacity * 4);
+  const slotMeta = new Uint32Array(capacity * 4);
   for (let i = 0; i < count; i += 1) {
     const r = rocks[i]!;
     const o = i * 4;
@@ -51,8 +57,38 @@ export function deriveBase(
     base[o + 3] = r.radius;
     packAttr[o + 1] = r.mineralRichness;
     packAttr[o + 2] = phaseSeed(i);
+    // Cell coords come straight from the id `v-cx-cy-cz` (the same source packField uses), so
+    // slotMeta -> id is exact and string-table-free.
+    const parts = r.id.split("-");
+    slotMeta[o] = Number(parts[1]);
+    slotMeta[o + 1] = Number(parts[2]);
+    slotMeta[o + 2] = Number(parts[3]);
+    slotMeta[o + 3] = residencyEpoch;
   }
-  return { base, packAttr, count };
+  return { base, packAttr, slotMeta, count };
+}
+
+// The id↔slot bridge (§2.2): reconstruct the EXACT rock id `v-cx-cy-cz` from a slot's slotMeta
+// uvec4. This is how picking/promotion identify a rock without a string table and WITHOUT
+// relying on the compacted draw slot (which is non-deterministic). `slotMeta` is the Uint32Array
+// (DerivedBase.slotMeta or backingU32Of(slotMetaBuffer)); `slot` is the slot index.
+export function idFromSlotMeta(slotMeta: Uint32Array, slot: number): string {
+  const o = slot * 4;
+  return `v-${slotMeta[o]}-${slotMeta[o + 1]}-${slotMeta[o + 2]}`;
+}
+
+// Upload a u32 buffer image (e.g. slotMeta) into a uint/uvec storage node's backing store.
+export function seedU32FromCPU(
+  node: ReturnType<typeof instancedArray>,
+  derived: Uint32Array,
+): void {
+  const dst = backingU32Of(node);
+  if (derived.length > dst.length) {
+    throw new Error(`seedU32FromCPU: derived (${derived.length}) exceeds capacity (${dst.length})`);
+  }
+  dst.set(derived);
+  const attr = (node as unknown as { value?: { needsUpdate?: boolean } }).value;
+  if (attr) attr.needsUpdate = true;
 }
 
 // Upload source -> GPU buffer backing store. The actual device upload is lazy (three marks

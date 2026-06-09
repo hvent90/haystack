@@ -27,6 +27,11 @@ export const pos = instancedArray(MAX_RESIDENT, "vec4").setPBO(true);
 // x = bit-packed flags (later), y = mineralRichness, z = overlay phase seed, w = reserved.
 export const packAttr = instancedArray(MAX_RESIDENT, "vec4");
 
+// (globalCellX, globalCellY, globalCellZ, residencyEpoch). Reconstructs the EXACT id
+// `v-cx-cy-cz` for picking/promotion WITHOUT a string table (§2.2). Temporal per-rock state
+// keys on this, NEVER on the (non-deterministic) compacted draw slot.
+export const slotMeta = instancedArray(MAX_RESIDENT, "uvec4");
+
 // The Float32Array backing store of a TSL instancedArray storage node. This is the
 // CPU-side source that gets uploaded to the GPU; the base-parity gate reads it directly
 // (headless, no WebGPU device required). Access path verified against three@0.177.
@@ -37,6 +42,16 @@ export function backingArrayOf(node: ReturnType<typeof instancedArray>): Float32
   const arr = attr?.array;
   if (!(arr instanceof Float32Array)) {
     throw new Error("backingArrayOf: expected a Float32Array backing store on the storage node");
+  }
+  return arr;
+}
+
+// As backingArrayOf, but for a uint/uvec storage node (Uint32Array backing) — e.g. slotMeta.
+export function backingU32Of(node: ReturnType<typeof instancedArray>): Uint32Array {
+  const attr = (node as unknown as { value?: { array?: Uint32Array } }).value;
+  const arr = attr?.array;
+  if (!(arr instanceof Uint32Array)) {
+    throw new Error("backingU32Of: expected a Uint32Array backing store on the storage node");
   }
   return arr;
 }

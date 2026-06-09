@@ -20,7 +20,7 @@
   `tests/integration/server.test.ts:921` "diagnoses million-scale virtual asteroid index without
   materializing the field" expects `materializedAsteroids < 10000` but gets `407360`. This is a consequence
   of the earlier `renderedLimit 2000 → 50000` bump (commit `71b8596`). I did not touch it. After my work the
-  suite is **79 pass / 1 fail** (+25 new GPU tests, all pass; same single pre-existing failure).
+  suite is **84 pass / 1 fail** (+30 new GPU tests, all pass; same single pre-existing failure).
 
 ### Step 3 — determinism / base parity — commit `70c3956`
 The load-bearing half of step 3's gate. `base` is CPU-derived from the SAME `deriveVirtualField` the server
@@ -48,6 +48,18 @@ The doc's "research-grade TSL" risk, retired in isolation per §9.2 before anyth
 - **UNVERIFIED:** GPU execution of `kernels/binner.ts`. **KNOWN GPU GAP (must fix before use):** `scatter`
   calls `atomicAdd` on the non-atomic `cellStart` node — on a real device this needs an atomic view of that
   buffer (the file documents this). A GPU-vs-CPU parity gate is mandatory before collisions depend on it.
+
+### Step 4 (partial) — slotMeta id↔slot bridge — commit (see `git log`)
+The most-flagged step-4 trap, retired with a runnable CPU gate (the rest of step 4 — ring re-seed of crossed
+slabs + GPU cull/LOD indirect — is NOT built; see below).
+- Files: `slotMeta` buffer + `backingU32Of` in `buffers.ts`; `idFromSlotMeta` + `seedU32FromCPU` + slotMeta
+  derivation in `base-derive.ts`; `tests/integration/gpu-slotmeta-bridge.test.ts`.
+- **Gate: `bun test tests/integration/gpu-slotmeta-bridge.test.ts` → `5 pass / 0 fail`, 106504 assertions.**
+- What it proves (headless): `slotMeta` (uvec4 cx,cy,cz,epoch) reconstructs the EXACT `deriveVirtualField` id
+  `v-cx-cy-cz` for every slot, so temporal per-rock state can key on slotMeta and NEVER on the
+  non-deterministic compacted draw slot (§2.2). All cells lie in the FIELD 100³ id-space [0,99] (NOT the
+  collision 64³ — the documented off-by-one trap); residencyEpoch is carried; `seedU32FromCPU` writes the
+  real buffer backing.
 
 ### Step 1 — WebGPU renderer beachhead — commit `f918023`
 Section 7 step 1 + §8 bring-up code, as an **isolated, non-destructive** module set. **Does NOT touch the
@@ -111,7 +123,13 @@ designed before collisions can be made authoritative.
 
 ## NOT BUILT (and why) — steps 2, 4, 6, 7, 8, 9
 
-- **Step 2 (TSL post stack + ScanPulse), Step 4 (ring streaming + GPU cull/LOD indirect), Step 6 (cosmetic
+- **Step 4 remainder (ring re-seed + GPU cull/LOD indirect):** the slotMeta id-bridge above is done; the ring
+  bookkeeper (CPU derive of crossed slabs + sub-range upload into a fixed-capacity window) and the per-LOD
+  `IndirectStorageBufferAttribute` + `setIndirect` cull/compaction are NOT built. The ring re-seed is
+  CPU-gateable and a good next CPU-verifiable target; the cull/LOD indirect needs a device (and a stable
+  slot↔cell window design that differs from the current distance-sorted `deriveBase` layout — a design choice
+  to make deliberately, which is why I did not improvise it unverified).
+- **Step 2 (TSL post stack + ScanPulse), Step 6 (cosmetic
   motion: spin + gravity wells), Step 7 (collisions narrow phase):** their definition-of-done gates are
   **fundamentally GPU-execution / screenshot-visual** (parity screenshots, occupancy heatmap, 100k dense-belt
   validation, `renderer.info` instrumentation). None can pass without a device. Per the mission ("3 steps that
