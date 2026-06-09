@@ -68,6 +68,43 @@ This also closes the handoff's Open Work #2 (the "42.9 ms React-scheduler task")
 performance-track diffing on a coalesced 30 Hz snapshot commit. Production commits are sub-frame
 (`reactCommitCount` ≈ 6/s while streaming; 0 dropped frames).
 
+### Step 2 — TSL post stack + ScanPulse (commit 077e310)
+
+Three-native `PostProcessing` (scenePass MRT output+normal → ScanPulse → bloom → ACES via
+renderOutput) replaces the removed WebGL EffectComposer. ScanPulse re-derives the player-distance
+basis (fragment view position from depth via `getViewPosition`, lifted to scene space; radial gate
+= `length(scenePos)` since the owned ship IS the scene origin) — NOT the flagged `-getViewZ` trap.
+**New live-gate check:** press V mid-run, capture mid-pulse, require teal-dominant samples to
+multiply vs idle (HUD-off captures; idle 0 → pulse ~6000+ on Metal). 60 fps held with the stack on.
+
+### Step 4 remainder — GPU cull/LOD indirect + TSL aSunlit two-tier shadow (this commit)
+
+- **GPU cull/LOD compaction:** `cull-cpu.ts` (CPU executable spec, tested vs THREE.Frustum) +
+  `kernels/cull.ts` (clear → cull → publish): per-slot dead-slot/distance/frustum cull + banding,
+  compacted into 4 per-LOD slot lists + GPU-written `IndirectStorageBufferAttribute` instance
+  counts; 4 `drawIndirect` draws (legacy LOD geometry set: dodeca/icosa/octa/tetra). `setIndirect`
+  works on three 0.177 (the doc's "^0.183+" worry was unfounded — the WebGPU backend issues
+  drawIndirect from `geometry.indirect`). **Device-caught bug #5:** the first cull kernel bound 9
+  storage buffers (pos + 4 lists + 4 indirect) — over the default `maxStorageBuffersPerShaderStage`
+  of 8; Dawn rejected the pipeline (silently from JS — only the console showed it). Fixed by
+  accumulating into one atomic per-band counter buffer + a tiny publish kernel (cull binds 6).
+  **On-device gate (in `verify:gpu`):** GPU lists vs `cullCPU` on the SAME read-back pos bytes,
+  set-compared per band with an epsilon-boundary tolerance — PASS on Metal:
+  `gpu=[41,311,641,1584] visible=2577 cpu=2577; 0 eps-boundary flips`.
+- **aSunlit two-tier shadow in TSL:** `packAttr.w` now carries the sun-occlusion march value;
+  `makeLodAsteroidMaterial` blends `mix(aSunlit, shadowMapFactor, bubbleWeight)` via
+  `receivedShadowNode` (bubbleWeight = 1 - smoothstep(5, 8, viewDist) — the exact legacy
+  patchAsteroidShader semantics). **Perf trap caught by bench:gpu-cross:** marching 50k cold rocks
+  on the main thread cost ~440ms at boot — fixed by computing sunlit in the field WORKER alongside
+  the derive and priming the main-thread cache from the transferred array
+  (`sun-occlusion.primeSunlitCells`). Boot bucket 438.7 → 30.7 ms; per-cross worst 13.8 ms;
+  721/721 frames at 16.7 ms in the prod movement bench.
+- **Dead code removed** (the handoff's cleanup item, conditioned on this step): the legacy WebGL
+  per-chunk path — `AsteroidChunk`, `patchAsteroidShader`, `createAsteroidMaterial`, the per-chunk
+  LOD constants, and the now-orphaned `field-chunks.ts`.
+- NOTE: with indirect draws, `renderer.info` instance/triangle counts are NOMINAL (CPU-side
+  capacity), not actual — the live gate only requires them nonzero.
+
 ---
 
 ## DONE & VERIFIED — ON GPU (live device, both SwiftShader headless + real Apple Metal)

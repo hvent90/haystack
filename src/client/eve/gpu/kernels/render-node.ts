@@ -13,10 +13,23 @@
 // 1000 so the camera stays near the scene origin (precision), and scale the unit-radius base
 // geometry by radius/1000.
 
-import { Fn, attribute, instanceIndex, uniform } from "three/tsl";
+import {
+  Fn,
+  attribute,
+  clamp,
+  float,
+  instanceIndex,
+  mix,
+  positionView,
+  smoothstep,
+  uniform,
+  varying,
+  type ShaderNodeObject,
+} from "three/tsl";
 import * as THREE from "three/webgpu";
 
-import { pos } from "../buffers";
+import { shadowBubbleFadeFar, shadowBubbleFadeNear } from "../../lighting";
+import { packAttr, pos } from "../buffers";
 
 // 1000 m per scene unit (§2.6). The render basis divides meters by this.
 const METERS_PER_SCENE_UNIT = 1000;
@@ -35,5 +48,41 @@ export function makeAsteroidMaterial(): InstanceType<typeof THREE.MeshStandardNo
     const rel = p.xyz.sub(originMeters).div(METERS_PER_SCENE_UNIT); // ship-relative scene units
     return attribute("position").mul(p.w.div(METERS_PER_SCENE_UNIT)).add(rel); // scale by radius/1000
   })();
+  return mat;
+}
+
+// As makeAsteroidMaterial, but for the GPU-culled per-LOD draw path (step 4): the cull
+// kernel compacts visible slots into `lodList`, so the per-draw instanceIndex is a COMPACTED
+// index — the real slot is lodList[instanceIndex] (non-deterministic per frame; temporal
+// state keys on slotMeta, §2.2). Also restores the two-tier aSunlit shadow as TSL
+// (architecture §5): near the camera (bubbleWeight→1) the real shadow-map factor wins; far
+// away (bubbleWeight→0) the per-instance sun-occlusion scalar (packAttr.w, the
+// sun-occlusion.ts march) wins — the exact blend the legacy WebGL patchAsteroidShader
+// applied to the sun's light term, now via receivedShadowNode.
+export function makeLodAsteroidMaterial(
+  lodList: ShaderNodeObject<THREE.StorageBufferNode>,
+): InstanceType<typeof THREE.MeshStandardNodeMaterial> {
+  const mat = new THREE.MeshStandardNodeMaterial({ color: "#6f6a60", roughness: 0.96 });
+  const slot = lodList.element(instanceIndex);
+  mat.positionNode = Fn(() => {
+    const p = pos.element(slot);
+    const rel = p.xyz.sub(originMeters).div(METERS_PER_SCENE_UNIT);
+    return attribute("position").mul(p.w.div(METERS_PER_SCENE_UNIT)).add(rel);
+  })();
+  // Vertex-stage per-instance values, interpolated to the fragment stage where the shadow
+  // blend runs (instanceIndex is vertex-only).
+  const aSunlit = varying(packAttr.element(slot).w);
+  const bubbleWeight = varying(
+    smoothstep(
+      float(shadowBubbleFadeNear),
+      float(shadowBubbleFadeFar),
+      positionView.z.negate(),
+    ).oneMinus(),
+  );
+  // @types/three narrows receivedShadowNode to () => Node; three's own docs (and runtime,
+  // NodeMaterial.setupLightingModel) pass the shadow as the first Fn arg.
+  mat.receivedShadowNode = Fn(([shadow]: [ShaderNodeObject<THREE.Node>]) =>
+    mix(clamp(aSunlit, 0, 1), shadow, bubbleWeight),
+  ) as unknown as typeof mat.receivedShadowNode;
   return mat;
 }

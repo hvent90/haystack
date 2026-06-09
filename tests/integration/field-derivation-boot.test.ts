@@ -35,7 +35,8 @@ class FakeWorker {
   terminate(): void {}
   respondTo(request: FieldDeriveRequest): void {
     const packed = packField(deriveVirtualField(request.position, request.field));
-    this.onmessage?.({ data: { reqId: request.reqId, key: request.key, packed } });
+    const sunlit = new Float64Array(packed.count).fill(1);
+    this.onmessage?.({ data: { reqId: request.reqId, key: request.key, packed, sunlit } });
   }
 }
 

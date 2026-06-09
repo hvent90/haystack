@@ -1,19 +1,16 @@
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode, RefObject } from "react";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   DodecahedronGeometry,
   IcosahedronGeometry,
-  InstancedBufferAttribute,
-  MeshStandardMaterial,
+  Matrix4,
   Object3D,
   OctahedronGeometry,
   Quaternion as ThreeQuaternion,
-  ShaderChunk,
   TetrahedronGeometry,
   Vector3 as ThreeVector3,
   type Camera,
-  type InstancedMesh,
 } from "three";
 import type { Asteroid, Ship, Structure, Vector3 } from "../../../shared/types";
 import {
@@ -22,12 +19,10 @@ import {
 } from "../../../shared/ship-motion";
 import type { FlightMode, OverviewRow, Selection, Waypoint } from "../types";
 import { flightInputScaleMax, flightInputScaleMin } from "../constants";
-import { clamp, formatDistance, metersPerSceneUnit, toScene, vectorMagnitude } from "../vector";
+import { clamp, formatDistance, toScene, vectorMagnitude } from "../vector";
 import { sameSelection } from "../overview";
 import { flightRenderStore } from "../renderStore";
-import { fogColor, fogFar, fogNear, shadowBubbleFadeFar, shadowBubbleFadeNear } from "../lighting";
-import { sunlitForId } from "../sun-occlusion";
-import { CHUNK_METERS, reconcileChunks, type AsteroidChunkData } from "../field-chunks";
+import { fogColor, fogFar, fogNear } from "../lighting";
 import { getRenderDebugControls, renderStats } from "../render-stats";
 import { AudioListenerRig, RemoteShipAudio } from "./SpatialAudio";
 import { ShipFlashlight, SunDisc, SunLight } from "./SceneLighting";
@@ -36,8 +31,9 @@ import { ShipFlashlight, SunDisc, SunLight } from "./SceneLighting";
 // derive, pos = base + overlay, zero-copy positionNode). There is no WebGL fallback (§1.1/§5).
 import { makeWebGPUFactory } from "../gpu/renderer-factory";
 import { ScenePostProcessing } from "./ScenePostProcessing";
-import { makeAsteroidMaterial, originMeters } from "../gpu/kernels/render-node";
+import { makeLodAsteroidMaterial, originMeters } from "../gpu/kernels/render-node";
 import { frameCounter, genFieldOverlay } from "../gpu/kernels/overlay";
+import { makeCullPipeline } from "../gpu/kernels/cull";
 import {
   backingArrayOf,
   backingU32Of,
@@ -1088,117 +1084,21 @@ function RenderDriver({ fallbackShip }: { fallbackShip: Ship }): null {
 // (cellsPerAxis * cellSize / 2 = 56.5 km) so every chunk falls behind the camera.
 const EMPTY_VIEW_LIFT = 1000;
 
-// Per-chunk draw distance (scene units ~= km). A chunk whose nearest point is beyond
-// this from the camera is hidden (mesh.visible=false), so even within the frustum the
-// far shell of the derived ball is not submitted: this is the "distance" half of the
-// frustum+distance cull. Paired with the fog far plane (lighting.ts) so culled rocks
-// are already fogged out — no pop. Also drives camera-facing-empty to ~0 (the lifted
-// faceAway camera sits far beyond every chunk). The default-play field (renderedLimit
-// 2000) is a ~9 km ball, well inside this, so normal play is unaffected.
-const MAX_DRAW_SCENE = 18;
+// The GPU-resident asteroid field (docs/gpu-asteroids-architecture.md §8, §7 step 4). The
+// static field is streamed into the CPU-authored `base` buffer (bit-exact with the server
+// derive, §3.2 — NOT a GPU frac(sin) kernel); per frame the overlay compute writes
+// `pos = base + bounded wobble`, then the cull compute compacts visible slots into per-LOD
+// lists + GPU-written indirect instance counts, and FOUR indirect draws (one per LOD
+// geometry) render zero-copy through positionNode under the floating origin. No per-chunk
+// meshes, no setMatrixAt, no CPU in the cull. The aSunlit two-tier shadow rides packAttr.w
+// through the material's receivedShadowNode (the TSL port of the old patchAsteroidShader).
+const LOD_GEOMETRY_FACTORIES = [
+  () => new DodecahedronGeometry(1, 0), // band 0: full, 36 tris
+  () => new IcosahedronGeometry(1, 0), // band 1: 20 tris, near-identical silhouette
+  () => new OctahedronGeometry(1, 0), // band 2: 8 tris, fogged sub-dozen-px rocks
+  () => new TetrahedronGeometry(1, 0), // band 3: 4 tris, far heavily-fogged <5px specks
+] as const;
 
-// Per-chunk level-of-detail bands (scene units ~= km), tested against the chunk's NEAREST
-// point — the "LOD" half of C5's triangle bound. A 100k field draws ~18k in-view instances;
-// at full 36-tri dodecahedron detail that is ~640k asteroid triangles, but the far majority
-// are sub-10px specks already fading into the fog (fogNear/Far 9/18 km), so they cost full
-// geometry for no visible gain. Each chunk swaps to progressively cheaper geometry as it
-// recedes, bounding the submitted triangle count to a few thousand near rocks' worth
-// regardless of how many are in view. The whole-chunk swap is invisible because each step
-// down is small and only happens once a chunk has receded enough that its rocks are tiny
-// and fog-extinguished: dodeca->icosa keeps a near-identical silhouette; icosa->octa is past
-// 9 km where rocks are sub-pixel-dozen and fog has started; octa->tetra is past 13 km where
-// rocks are <5 px and fog is >40% extinguished. The near band keeps the player's immediate
-// surroundings at full fidelity, and the default-play 2000-rock field (~9 km ball) stays
-// full/near-full detail, so normal play is unchanged. Triangle counts per instance:
-// DodecahedronGeometry(1,0)=36, IcosahedronGeometry(1,0)=20, OctahedronGeometry(1,0)=8,
-// TetrahedronGeometry(1,0)=4. LOD_BAND_SCENE[i] is the upper nearest-corner distance for
-// band i; a chunk at/beyond the last threshold uses the final (cheapest) geometry.
-const LOD_BAND_SCENE = [4, 9, 13] as const;
-
-// Half the space-diagonal of a chunk cube (scene units): a chunk's farthest corner
-// from its center, used to test the chunk's NEAREST point against the draw distance.
-const CHUNK_RADIUS_SCENE = ((CHUNK_METERS / metersPerSceneUnit) * Math.sqrt(3)) / 2;
-
-// Reused scratch for the per-chunk distance test (single-threaded render loop).
-const chunkWorldCenter = new ThreeVector3();
-
-function glslFloat(value: number): string {
-  return Number.isInteger(value) ? `${value}.0` : `${value}`;
-}
-
-// Patch the asteroid material so the sun's contribution is the two-tier shadow blend:
-//   directLight.color *= mix(aSunlit, shadowMapFactor, bubbleWeight)
-// Near the camera (bubbleWeight -> 1) the real per-pixel shadow map wins; far away
-// (bubbleWeight -> 0) the per-instance occlusion scalar wins. Each replace is anchored to
-// the exact three r177 chunk text and throws if it is ever missing, so a future three bump
-// fails loudly instead of silently dropping the shadows.
-function patchAsteroidShader(shader: { vertexShader: string; fragmentShader: string }): void {
-  const fadeNear = glslFloat(shadowBubbleFadeNear);
-  const fadeFar = glslFloat(shadowBubbleFadeFar);
-  const apply = (source: string, anchor: string, replacement: string): string => {
-    if (!source.includes(anchor)) {
-      throw new Error(`asteroid shadow patch: missing shader anchor "${anchor.slice(0, 48)}"`);
-    }
-    return source.replace(anchor, replacement);
-  };
-
-  shader.vertexShader = apply(
-    shader.vertexShader,
-    "#include <common>",
-    "#include <common>\nattribute float aSunlit;\nvarying float vSunlit;\nvarying float vBubbleWeight;",
-  );
-  shader.vertexShader = apply(
-    shader.vertexShader,
-    "vViewPosition = - mvPosition.xyz;",
-    `vViewPosition = - mvPosition.xyz;\n\tvSunlit = aSunlit;\n\tvBubbleWeight = 1.0 - smoothstep( ${fadeNear}, ${fadeFar}, - mvPosition.z );`,
-  );
-  shader.fragmentShader = apply(
-    shader.fragmentShader,
-    "#include <common>",
-    "#include <common>\nvarying float vSunlit;\nvarying float vBubbleWeight;",
-  );
-
-  // The directional shadow term lives INSIDE the lights_fragment_begin chunk, which is still
-  // an unresolved `#include` at onBeforeCompile time. Expand that chunk ourselves, blend the
-  // sun's shadow factor with the per-instance occlusion, and substitute it for the directive.
-  const blendedLights = apply(
-    ShaderChunk.lights_fragment_begin,
-    "directLight.color *= ( directLight.visible && receiveShadow ) ? getShadow( directionalShadowMap[ i ], directionalLightShadow.shadowMapSize, directionalLightShadow.shadowIntensity, directionalLightShadow.shadowBias, directionalLightShadow.shadowRadius, vDirectionalShadowCoord[ i ] ) : 1.0;",
-    "float dirShadowFactor = ( directLight.visible && receiveShadow ) ? getShadow( directionalShadowMap[ i ], directionalLightShadow.shadowMapSize, directionalLightShadow.shadowIntensity, directionalLightShadow.shadowBias, directionalLightShadow.shadowRadius, vDirectionalShadowCoord[ i ] ) : 1.0;\n\t\tdirectLight.color *= mix( vSunlit, dirShadowFactor, vBubbleWeight );",
-  );
-  shader.fragmentShader = apply(
-    shader.fragmentShader,
-    "#include <lights_fragment_begin>",
-    blendedLights,
-  );
-}
-
-function createAsteroidMaterial(): MeshStandardMaterial {
-  const material = new MeshStandardMaterial({ color: "#6f6a60", roughness: 0.96 });
-  material.onBeforeCompile = (shader) => patchAsteroidShader(shader);
-  return material;
-}
-
-// The asteroid field is a static, deterministic set of rocks that never move in
-// world space — only the floating origin (the owned ship) moves. So we bake each
-// rock's ABSOLUTE field position into its instance matrix ONCE, when the visible
-// set changes, and apply the per-frame origin rebase to the wrapping group instead
-// of recomputing every matrix. group world position = -origin/1000 = toScene(0,
-// origin), so a baked instance at position/1000 lands exactly where
-// toScene(position, origin) would have put it. This turns O(N) matrix rebuilds +
-// a full instance-buffer GPU re-upload every frame into a single group.position
-// write per frame, which is what frees the main thread to drain the 30Hz world
-// stream (a saturated render loop was starving the un-gated WebSocket onmessage).
-// Baked positions stay within ±~57 scene units (the field half-extent), so the
-// float32 instance matrices keep sub-pixel (~mm at the far edge) precision.
-// The GPU-resident asteroid field (docs/gpu-asteroids-architecture.md §8). The static field is
-// uploaded ONCE per visible-set change into the CPU-authored `base` buffer (bit-exact with the
-// server derive, §3.2 — NOT a GPU frac(sin) kernel); per frame the overlay compute writes
-// `pos = base + bounded wobble` and the material's positionNode draws `pos` zero-copy under the
-// floating origin. ONE InstancedMesh of MAX_RESIDENT slots — no per-chunk meshes, no setMatrixAt.
-// (The legacy per-chunk WebGL path below — AsteroidChunk / patchAsteroidShader /
-// createAsteroidMaterial — is now dead code, superseded here; it is removed in step 4. The
-// aSunlit two-tier shadow and per-LOD indirect cull also return in steps 2/4 as TSL.)
 function InstancedAsteroids({
   asteroids,
   fallbackOrigin,
@@ -1210,10 +1110,23 @@ function InstancedAsteroids({
   const gl = useThree((state) => state.gl) as unknown as {
     compute(node: typeof genFieldOverlay): void;
   };
-  const material = useMemo(() => makeAsteroidMaterial(), []);
-  const geometry = useMemo(() => new IcosahedronGeometry(1, 1), []);
-  useEffect(() => () => geometry.dispose(), [geometry]);
-  const meshRef = useRef<InstancedMesh>(null);
+  const lod = useMemo(() => {
+    const geometries = LOD_GEOMETRY_FACTORIES.map((make) => make());
+    const pipeline = makeCullPipeline(
+      geometries.map((geometry) => geometry.attributes["position"]!.count),
+    );
+    geometries.forEach((geometry, band) => geometry.setIndirect(pipeline.indirectAttrs[band]!));
+    const materials = pipeline.lodLists.map((list) => makeLodAsteroidMaterial(list));
+    return { geometries, pipeline, materials };
+  }, []);
+  useEffect(
+    () => () => {
+      for (const geometry of lod.geometries) geometry.dispose();
+      for (const material of lod.materials) material.dispose();
+    },
+    [lod],
+  );
+  const projScreen = useMemo(() => new Matrix4(), []);
 
   // Ring-stream base/packAttr/slotMeta from the app's already-derived field (the worker +
   // reconcile output) on each visible-set change — a CPU derive + buffer SUB-RANGE write,
@@ -1237,212 +1150,48 @@ function InstancedAsteroids({
     markRangesForUpload(base, ranges);
     markRangesForUpload(packAttr, ranges);
     markRangesForUpload(slotMeta, ranges);
-    const mesh = meshRef.current;
-    if (mesh !== null) {
-      mesh.count = result.drawCount;
-    }
     renderStats.noteFieldWork(performance.now() - start);
   }, [asteroids]);
 
-  // Per frame: recentre the floating origin, advance the cosmetic ticker, and run the overlay
-  // compute in ONE submission (§3.3 — never computeAsync-awaited in the hot loop). The material
-  // positionNode reads `pos` and rebases by originMeters, so there is no per-frame group write.
-  useFrame(() => {
+  // Per frame: recentre the floating origin, advance the cosmetic ticker, refresh the
+  // frustum planes, and submit overlay + cull compute in ONE submission (§3.3 — never
+  // computeAsync-awaited in the hot loop). The camera transform was just written by
+  // RenderDriver (mounted first, same priority -> runs first); updateMatrixWorld also
+  // refreshes matrixWorldInverse, so the planes are THIS frame's.
+  useFrame(({ camera }) => {
     const origin = renderOrigin(fallbackOrigin);
     originMeters.value.set(origin.x, origin.y, origin.z);
     frameCounter.value += 1;
+    camera.updateMatrixWorld();
+    projScreen.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    lod.pipeline.updatePlanes(projScreen);
     gl.compute(genFieldOverlay);
+    gl.compute(lod.pipeline.clearCull);
+    gl.compute(lod.pipeline.cull);
+    gl.compute(lod.pipeline.publishCounts);
   });
 
   if (asteroids.length === 0) {
     return null;
   }
 
+  // One indirect draw per LOD band. The CPU-side instance count is the slot capacity; the
+  // REAL count is the GPU-written indirect instanceCount (so frustumCulled stays off and
+  // three's CPU-side info counts are nominal, not actual).
   return (
-    <instancedMesh
-      ref={meshRef}
-      args={[geometry, material, MAX_RESIDENT]}
-      frustumCulled={false}
-      castShadow
-      receiveShadow
-    />
+    <>
+      {lod.geometries.map((geometry, band) => (
+        <instancedMesh
+          key={band}
+          args={[geometry, lod.materials[band]!, MAX_RESIDENT]}
+          frustumCulled={false}
+          castShadow
+          receiveShadow
+        />
+      ))}
+    </>
   );
 }
-
-// One spatial chunk of the field: a self-contained InstancedMesh with its own
-// geometry (so it can carry a per-instance aSunlit occlusion attribute) and its own
-// bounding sphere (so three frustum-culls it independently of the other chunks).
-// Instance matrices bake the rocks' ABSOLUTE field positions; the parent group does
-// the per-frame origin rebase. The shared material is reused (not owned), so the mesh
-// uses dispose={null} and this component disposes only its own geometry on unmount.
-const AsteroidChunk = memo(function AsteroidChunk({
-  chunk,
-  material,
-  seedCache,
-}: {
-  chunk: AsteroidChunkData;
-  material: MeshStandardMaterial;
-  seedCache: Map<string, number>;
-}): ReactNode {
-  const { asteroids } = chunk;
-  const meshRef = useRef<InstancedMesh>(null);
-  const transform = useMemo(() => new Object3D(), []);
-  // Three level-of-detail geometries for this chunk. All carry the per-instance aSunlit
-  // attribute (set together in the build effect) and share the chunk's instanceMatrix
-  // (which lives on the mesh, not the geometry), so the per-frame distance loop can swap
-  // mesh.geometry between them with zero rebuild. The instance bounding sphere computed in
-  // the build effect stays valid across swaps because all three are unit-radius.
-  const lodGeometries = useMemo(
-    () => [
-      new DodecahedronGeometry(1, 0), // band 0: full, 36 tris
-      new IcosahedronGeometry(1, 0), // band 1: 20 tris, near-identical silhouette
-      new OctahedronGeometry(1, 0), // band 2: 8 tris, fogged sub-dozen-px rocks
-      new TetrahedronGeometry(1, 0), // band 3: 4 tris, far heavily-fogged <5px specks
-    ],
-    [],
-  );
-  useEffect(
-    () => () => {
-      for (const geometry of lodGeometries) {
-        geometry.dispose();
-      }
-    },
-    [lodGeometries],
-  );
-  // The LOD band currently bound to mesh.geometry; swap only when the band changes.
-  const lodBandRef = useRef(-1);
-
-  // This chunk's cube center in baked (absolute / 1000) scene coordinates. The parent
-  // group then translates by -origin/1000 each frame, so adding the group position
-  // gives the chunk's camera-relative world center for the distance test below.
-  const center = useMemo(
-    () => ({
-      x: ((chunk.cx + 0.5) * CHUNK_METERS) / metersPerSceneUnit,
-      y: ((chunk.cy + 0.5) * CHUNK_METERS) / metersPerSceneUnit,
-      z: ((chunk.cz + 0.5) * CHUNK_METERS) / metersPerSceneUnit,
-    }),
-    [chunk.cx, chunk.cy, chunk.cz],
-  );
-
-  // Distance cull + LOD select (once per frame). Hide the chunk when its nearest point is
-  // past the draw distance; three still frustum-culls the visible ones, so what survives is
-  // the intersection of in-frustum AND near — the frustum+distance "what's actually in
-  // view" set. Hidden chunks fire no onAfterRender, so they drop out of the submitted count.
-  // For visible chunks, pick the LOD geometry from the SAME nearest-corner distance so the
-  // far majority render as cheap geometry (the triangle bound, C5). Using the chunk's NEAREST
-  // corner (center distance minus the cube radius) means no near rock is ever wrongly culled
-  // or coarsened at a chunk boundary.
-  useFrame(({ camera }) => {
-    const mesh = meshRef.current;
-    const group = mesh?.parent;
-    if (mesh === null || group === undefined || group === null) {
-      return;
-    }
-    chunkWorldCenter.set(
-      center.x + group.position.x,
-      center.y + group.position.y,
-      center.z + group.position.z,
-    );
-    const nearest = chunkWorldCenter.distanceTo(camera.position) - CHUNK_RADIUS_SCENE;
-    mesh.visible = nearest < MAX_DRAW_SCENE;
-    if (!mesh.visible) {
-      return;
-    }
-    let band: number = LOD_BAND_SCENE.length;
-    for (let i = 0; i < LOD_BAND_SCENE.length; i += 1) {
-      if (nearest < LOD_BAND_SCENE[i]!) {
-        band = i;
-        break;
-      }
-    }
-    if (band !== lodBandRef.current) {
-      lodBandRef.current = band;
-      const next = lodGeometries[band];
-      if (next !== undefined && mesh.geometry !== next) {
-        mesh.geometry = next;
-      }
-    }
-  });
-
-  // Build the instance matrices + per-instance occlusion once per chunk-set change
-  // (NOT per frame), then compute this chunk's tight bounding sphere for culling.
-  useLayoutEffect(() => {
-    const mesh = meshRef.current;
-    if (mesh === null) {
-      return;
-    }
-    const buildStart = performance.now();
-    const count = asteroids.length;
-    const sunlit = new Float32Array(count);
-    for (let index = 0; index < count; index += 1) {
-      const asteroid = asteroids[index];
-      if (asteroid === undefined) {
-        continue;
-      }
-      const size = Math.max(0.04, asteroid.radius / metersPerSceneUnit);
-      let seed = seedCache.get(asteroid.id);
-      if (seed === undefined) {
-        seed = asteroid.id
-          .split("-")
-          .slice(1)
-          .reduce((a, b) => a + Number(b) * 7919, 0);
-        seedCache.set(asteroid.id, seed);
-      }
-      transform.position.set(
-        asteroid.position.x / metersPerSceneUnit,
-        asteroid.position.y / metersPerSceneUnit,
-        asteroid.position.z / metersPerSceneUnit,
-      );
-      transform.rotation.set(seed * 0.43, seed * 0.27, seed * 0.17);
-      transform.scale.set(size, size, size);
-      transform.updateMatrix();
-      mesh.setMatrixAt(index, transform.matrix);
-      sunlit[index] = sunlitForId(asteroid.id);
-    }
-    mesh.count = count;
-    mesh.instanceMatrix.needsUpdate = true;
-    // Bind the per-instance occlusion to ALL three LOD geometries (one shared attribute
-    // object => one GPU buffer), so whichever the distance loop has swapped in renders with
-    // the correct sunlit scalars. The attribute is per-instance, so its length is the rock
-    // count regardless of each geometry's vertex count.
-    const sunlitAttribute = new InstancedBufferAttribute(sunlit, 1);
-    for (const geometry of lodGeometries) {
-      geometry.setAttribute("aSunlit", sunlitAttribute);
-    }
-    // All three LOD geometries are unit-radius, so the instance bounding sphere is identical
-    // for any of them — compute it once from the mounted geometry; it survives LOD swaps.
-    mesh.computeBoundingSphere();
-    renderStats.noteFieldWork(performance.now() - buildStart);
-  }, [asteroids, transform, lodGeometries, seedCache]);
-
-  return (
-    <instancedMesh
-      ref={meshRef}
-      args={[lodGeometries[0], material, asteroids.length]}
-      castShadow
-      receiveShadow
-      dispose={null}
-      onAfterRender={(_renderer, _scene, _camera, geom, renderedMaterial) => {
-        // three only invokes onAfterRender for objects that survive frustum culling,
-        // and the asteroid material is used solely in the main color pass (shadow ->
-        // depth material, NormalPass -> normal material), so this counts each in-view
-        // instance exactly once per frame, summed across all visible chunks.
-        if (renderedMaterial !== material) {
-          return;
-        }
-        const mesh = meshRef.current;
-        if (mesh === null) {
-          return;
-        }
-        const index = geom.index;
-        const trianglesPerInstance =
-          index === null ? (geom.attributes.position?.count ?? 0) / 3 : index.count / 3;
-        renderStats.noteSubmitted(mesh.count, trianglesPerInstance);
-      }}
-    />
-  );
-});
-
 function StructureMesh({
   structure,
   fallbackOrigin,

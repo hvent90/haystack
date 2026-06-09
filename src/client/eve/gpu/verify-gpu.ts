@@ -12,11 +12,21 @@
 import * as THREE from "three/webgpu";
 
 import type { FieldSummary, Vector3 } from "../../../shared/types";
-import { base as baseBuffer, MAX_RESIDENT } from "./buffers";
+import { base as baseBuffer, MAX_RESIDENT, pos as posBuffer } from "./buffers";
 import { deriveBase, seedBaseFromCPU } from "./base-derive";
 import { binCPU, ELEMENTS_PER_BLOCK } from "./binner-cpu";
 import { makeBinnerKernels } from "./kernels/binner";
 import { genFieldOverlay } from "./kernels/overlay";
+import { makeCullPipeline } from "./kernels/cull";
+import { originMeters } from "./kernels/render-node";
+import {
+  cullCPU,
+  extractFrustumPlanes,
+  LOD_BANDS_SCENE,
+  LOD_COUNT,
+  MAX_DRAW_SCENE,
+  METERS_PER_SCENE_UNIT,
+} from "./cull-cpu";
 import { uint } from "three/tsl";
 
 type Renderer = InstanceType<typeof THREE.WebGPURenderer>;
@@ -202,10 +212,127 @@ export async function verifyBinnerScatter(renderer: Renderer): Promise<GateResul
   }
 }
 
+// END-STATE step-4 gate: run the GPU cull/LOD compaction over a real derived 50k field and
+// verify it against the CPU spec (cull-cpu.ts) on the SAME pos bytes (read back from the
+// device, so both sides see identical f32 inputs). The compaction ORDER is an atomic race,
+// so per-band membership is compared as sets. GPU f32 vs CPU f64 arithmetic can flip rocks
+// sitting exactly on a band/draw/frustum boundary, so mismatches are accepted ONLY within
+// an epsilon of a decision boundary — every other slot must agree exactly.
+export async function verifyCullLod(renderer: Renderer): Promise<GateResult> {
+  try {
+    const shipPos: Vector3 = { x: 0, y: 0, z: 0 };
+    const { base: cpuBytes } = deriveBase(shipPos, FIELD, MAX_RESIDENT);
+    seedBaseFromCPU(baseBuffer, cpuBytes);
+    originMeters.value.set(shipPos.x, shipPos.y, shipPos.z);
+    renderer.compute(genFieldOverlay); // writes pos = base + wobble
+    const posBytes = await readBackFloat32(renderer, posBuffer);
+
+    // A representative camera: cockpit offset, looking down -Z, the game's projection.
+    const camera = new THREE.PerspectiveCamera(68, 16 / 9, 0.01, 20000);
+    camera.position.set(0, 0.12, 0);
+    camera.lookAt(new THREE.Vector3(0, 0.1, -1));
+    camera.updateMatrixWorld(true);
+    camera.updateProjectionMatrix();
+    const projScreen = new THREE.Matrix4().multiplyMatrices(
+      camera.projectionMatrix,
+      camera.matrixWorldInverse,
+    );
+
+    const pipeline = makeCullPipeline([108, 60, 24, 12]);
+    pipeline.updatePlanes(projScreen);
+    renderer.compute(pipeline.clearCull);
+    renderer.compute(pipeline.cull);
+    renderer.compute(pipeline.publishCounts);
+
+    const counts: number[] = [];
+    const gpuLists: Uint32Array[] = [];
+    for (let band = 0; band < LOD_COUNT; band += 1) {
+      const args = new Uint32Array(
+        await renderer.getArrayBufferAsync(
+          pipeline.indirectAttrs[band] as Parameters<Renderer["getArrayBufferAsync"]>[0],
+        ),
+      );
+      counts.push(args[1]!);
+      const list = await readBackUint32(renderer, pipeline.lodLists[band]);
+      gpuLists.push(list.subarray(0, args[1]!));
+    }
+
+    const planes = extractFrustumPlanes(projScreen);
+    const cpu = cullCPU(posBytes, MAX_RESIDENT, shipPos, planes);
+
+    // Epsilon (scene units) for boundary-flip tolerance between GPU f32 and CPU f64.
+    const EPS = 1e-2;
+    const nearBoundary = (slot: number): boolean => {
+      const o = slot * 4;
+      const x = (posBytes[o]! - shipPos.x) / METERS_PER_SCENE_UNIT;
+      const y = (posBytes[o + 1]! - shipPos.y) / METERS_PER_SCENE_UNIT;
+      const z = (posBytes[o + 2]! - shipPos.z) / METERS_PER_SCENE_UNIT;
+      const radiusScene = posBytes[o + 3]! / METERS_PER_SCENE_UNIT;
+      const nearest = Math.hypot(x, y, z) - radiusScene;
+      if (Math.abs(nearest - MAX_DRAW_SCENE) < EPS) return true;
+      for (const edge of LOD_BANDS_SCENE) {
+        if (Math.abs(nearest - edge) < EPS) return true;
+      }
+      for (let p = 0; p < 6; p += 1) {
+        const d =
+          planes[p * 4]! * x + planes[p * 4 + 1]! * y + planes[p * 4 + 2]! * z + planes[p * 4 + 3]!;
+        if (Math.abs(d + radiusScene) < EPS) return true;
+      }
+      return false;
+    };
+
+    const cpuBand = new Int8Array(MAX_RESIDENT).fill(-1);
+    let cpuVisible = 0;
+    for (let band = 0; band < LOD_COUNT; band += 1) {
+      for (const slot of cpu.lists[band]!) {
+        cpuBand[slot] = band;
+        cpuVisible += 1;
+      }
+    }
+    const gpuBand = new Int8Array(MAX_RESIDENT).fill(-1);
+    let dupes = 0;
+    let gpuVisible = 0;
+    for (let band = 0; band < LOD_COUNT; band += 1) {
+      for (const slot of gpuLists[band]!) {
+        if (gpuBand[slot] !== -1) dupes += 1;
+        gpuBand[slot] = band;
+        gpuVisible += 1;
+      }
+    }
+    let hardMismatches = 0;
+    let boundaryFlips = 0;
+    let firstBad = -1;
+    for (let slot = 0; slot < MAX_RESIDENT; slot += 1) {
+      if (cpuBand[slot] === gpuBand[slot]) continue;
+      if (nearBoundary(slot)) {
+        boundaryFlips += 1;
+      } else {
+        hardMismatches += 1;
+        if (firstBad < 0) firstBad = slot;
+      }
+    }
+    const pass = dupes === 0 && hardMismatches === 0 && cpuVisible > 1000;
+    return {
+      name: `cull/LOD GPU-vs-CPU (§7 step 4): ${MAX_RESIDENT} slots, 4 bands, frustum+distance`,
+      pass,
+      detail: pass
+        ? `bands match (gpu=[${counts.join(",")}] visible=${gpuVisible} cpu=${cpuVisible}; ${boundaryFlips} eps-boundary flips)`
+        : `dupes=${dupes} hardMismatches=${hardMismatches} (first slot ${firstBad}: cpu band ${firstBad >= 0 ? cpuBand[firstBad] : "?"} gpu band ${firstBad >= 0 ? gpuBand[firstBad] : "?"}) cpuVisible=${cpuVisible}`,
+    };
+  } catch (err) {
+    return {
+      name: "cull/LOD GPU-vs-CPU (§7 step 4)",
+      pass: false,
+      detail: `threw: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
 export async function runGpuVerification(renderer: Renderer): Promise<GateResult[]> {
   const results: GateResult[] = [];
   results.push(await verifyBaseRoundTrip(renderer));
   results.push(await verifyBinnerScan(renderer));
   results.push(await verifyBinnerScatter(renderer));
+  results.push(await verifyCullLod(renderer));
   return results;
 }

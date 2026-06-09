@@ -9,6 +9,7 @@
 
 import type { Asteroid, FieldSummary, Vector3 } from "../../../shared/types";
 import { deriveVirtualField } from "../field-core";
+import { sunlitForId } from "../sun-occlusion";
 import { backingArrayOf, backingU32Of, MAX_RESIDENT } from "./buffers";
 import type { instancedArray } from "three/tsl";
 
@@ -61,6 +62,9 @@ function packFromRocks(
     base[o + 3] = r.radius;
     packAttr[o + 1] = r.mineralRichness;
     packAttr[o + 2] = phaseSeed(i);
+    // w = aSunlit: per-instance sun occlusion (sun-occlusion.ts march, cached per id) for
+    // the TSL two-tier shadow (step 4). Cosmetic, not parity-gated (client-only Math.sin).
+    packAttr[o + 3] = sunlitForId(r.id);
     const parts = r.id.split("-");
     slotMeta[o] = Number(parts[1]);
     slotMeta[o + 1] = Number(parts[2]);

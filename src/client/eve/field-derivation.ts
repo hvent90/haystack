@@ -1,5 +1,6 @@
 import type { Asteroid, FieldSummary, Vector3, WorldSnapshot } from "../../shared/types";
 import { renderStats } from "./render-stats";
+import { primeSunlitCells } from "./sun-occlusion";
 import { cellCoords, deriveVirtualField, indexByCell, unpackField } from "./field-core";
 import type { FieldDeriveRequest, FieldDeriveResponse } from "./field-worker";
 
@@ -139,6 +140,9 @@ export class FieldDeriver {
     this.acceptedReqId = response.reqId;
     this.inFlight = false;
     const start = performance.now();
+    // Prime the sun-occlusion cache from the worker's off-thread march BEFORE anything
+    // (the GPU ring streamer) asks for these rocks' aSunlit.
+    primeSunlitCells(response.packed.cells, response.sunlit, response.packed.count);
     const unpacked = unpackField(response.packed, this.virtualByCell);
     this.virtual = unpacked.asteroids;
     this.virtualByCell = unpacked.byCell;

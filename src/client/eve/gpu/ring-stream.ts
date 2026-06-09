@@ -15,6 +15,7 @@
 // stable for as long as it stays resident — and slots are never re-keyed while occupied.
 
 import type { Asteroid } from "../../../shared/types";
+import { sunlitForId } from "../sun-occlusion";
 import { phaseSeed } from "./base-derive";
 
 export type RingTarget = {
@@ -133,7 +134,8 @@ export class FieldRingStream {
       target.packAttr[o] = 0;
       target.packAttr[o + 1] = rock.mineralRichness;
       target.packAttr[o + 2] = phaseSeed(slot);
-      target.packAttr[o + 3] = 0;
+      // Identical to packFromRocks: w = aSunlit (cached sun-occlusion march per id).
+      target.packAttr[o + 3] = sunlitForId(rock.id);
       const parts = rock.id.split("-");
       target.slotMeta[o] = Number(parts[1]);
       target.slotMeta[o + 1] = Number(parts[2]);
