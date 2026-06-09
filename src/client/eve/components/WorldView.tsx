@@ -35,6 +35,7 @@ import { ShipFlashlight, SunDisc, SunLight } from "./SceneLighting";
 // WebGPURenderer via this gl factory; the field is GPU-resident (base uploaded from the CPU
 // derive, pos = base + overlay, zero-copy positionNode). There is no WebGL fallback (§1.1/§5).
 import { makeWebGPUFactory } from "../gpu/renderer-factory";
+import { ScenePostProcessing } from "./ScenePostProcessing";
 import { makeAsteroidMaterial, originMeters } from "../gpu/kernels/render-node";
 import { frameCounter, genFieldOverlay } from "../gpu/kernels/overlay";
 import {
@@ -183,9 +184,7 @@ export function WorldView({
               ))}
           </group>
         </ConditionalListenerRig>
-        {/* TODO(step 2): three-native TSL PostProcessing (ScanPulse re-derived basis + bloom +
-            ACES). The WebGL EffectComposer cannot run under WebGPURenderer, so the post stack is
-            temporarily absent (scanNonce={scanNonce} will drive the ported TSL ScanPulse node). */}
+        <ScenePostProcessing scanNonce={scanNonce} />
       </Canvas>
       <div
         className="reticle"

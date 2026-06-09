@@ -53,6 +53,8 @@ const TRACE_DIR = resolve(REPO, "trace-analysis");
 mkdirSync(SHOTS_DIR, { recursive: true });
 mkdirSync(TRACE_DIR, { recursive: true });
 const screenshotPath = resolve(SHOTS_DIR, `gpu-live-${stamp}.png`);
+const scanShotPath = resolve(SHOTS_DIR, `gpu-live-${stamp}.scan.png`);
+const fieldShotPath = resolve(SHOTS_DIR, `gpu-live-${stamp}.field.png`);
 const consolePath = resolve(TRACE_DIR, `gpu-live-${stamp}.console.log`);
 const tracePath = resolve(TRACE_DIR, `gpu-live-${stamp}.trace.json`);
 const framesPath = resolve(TRACE_DIR, `gpu-live-${stamp}.frames.json`);
@@ -321,9 +323,59 @@ try {
   const frameDeltas = await page.evaluate(() => window.__GPU_LIVE_FRAMES__ ?? []);
   const statsEnd = await page.evaluate(() => window.__HAYSTACK_RENDER_STATS__ ?? null);
 
-  // --- Screenshot of the live field at >= 2K actual pixels ---
+  // --- Screenshot of the live game (HUD on) at >= 2K actual pixels ---
   summary.stage = "screenshot";
   await page.screenshot({ path: screenshotPath, scale: "device", fullPage: false });
+
+  // --- HUD-off field captures ---
+  // The default-open HUD windows occlude ~70% of the field, so the field/scan shots hide
+  // the DOM HUD (the canvas stays visible through hidden ancestors via the visibility
+  // override; GPU_LIVE_HUD=1 keeps the HUD in these too). The idle field is genuinely
+  // near-black (the intentional dark/dim look), so the HUD-on shot above remains the one
+  // the basic pixel checks run on — the SCAN gate below is the real "geometry actually
+  // renders" check (the pulse can only light real depth+normals).
+  if (process.env.GPU_LIVE_HUD !== "1") {
+    await page.addStyleTag({
+      content:
+        "body * { visibility: hidden !important; } canvas { visibility: visible !important; }",
+    });
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  await page.screenshot({ path: fieldShotPath, scale: "device", fullPage: false });
+
+  // --- ScanPulse visual gate (step 2): trigger the V-key scan and capture mid-pulse ---
+  // The pulse runs 1.6 s; ~0.6 s in, the shell sits ~8.5 scene units out with envelope
+  // ~0.92, lighting camera-facing facets in the scan teal (#7de5d8). The gate compares
+  // teal-dominant sample counts mid-pulse vs idle, so HUD/base-render colors cancel out.
+  summary.stage = "scan-pulse";
+  const countTeal = (png) => {
+    const decoded = PNG.sync.read(png);
+    let teal = 0;
+    const step = 8;
+    for (let y = 0; y < decoded.height; y += step) {
+      for (let x = 0; x < decoded.width; x += step) {
+        const o = (y * decoded.width + x) * 4;
+        const r = decoded.data[o],
+          g = decoded.data[o + 1],
+          b = decoded.data[o + 2];
+        if (g > 60 && b > 55 && g > r * 1.35 && b > r * 1.2) teal += 1;
+      }
+    }
+    return teal;
+  };
+  await page.keyboard.press("v");
+  await new Promise((r) => setTimeout(r, 600));
+  const scanShot = await page.screenshot({ scale: "device", fullPage: false });
+  writeFileSync(scanShotPath, scanShot);
+  let scanGate = { idleTeal: -1, pulseTeal: -1, pass: false };
+  try {
+    const idleTeal = countTeal(readFileSync(fieldShotPath));
+    const pulseTeal = countTeal(scanShot);
+    scanGate = { idleTeal, pulseTeal, pass: pulseTeal > idleTeal * 2 + 20 };
+  } catch (e) {
+    record(`[scan-gate] PNG decode failed: ${e?.message ?? e}`);
+  }
+  summary.scanGate = scanGate;
 
   // --- Write all artifacts ---
   writeFileSync(consolePath, consoleLines.join("\n") + "\n", "utf8");
@@ -387,7 +439,8 @@ try {
     statsEnd.drawCalls > 0 &&
     statsEnd.renderedTriangles > 0 &&
     uniqueColors >= 4 &&
-    nonBackgroundSamples > 0;
+    nonBackgroundSamples > 0 &&
+    scanGate.pass;
   summary.pilotId = pilotId;
   summary.screenshot = { path: screenshotPath, width: shotW, height: shotH };
   summary.console = { path: consolePath, lines: consoleLines.length };
@@ -402,6 +455,9 @@ try {
   console.log(`TRACE ${traceChunks.length} events (${traceBytes} bytes) -> ${tracePath}`);
   console.log(
     `FRAMES p95=${frameSummary.p95Ms}ms max=${frameSummary.maxMs}ms fps~${frameSummary.approxFps} -> ${framesPath}`,
+  );
+  console.log(
+    `SCAN idleTeal=${scanGate.idleTeal} pulseTeal=${scanGate.pulseTeal} ${scanGate.pass ? "PASS" : "FAIL"} -> ${scanShotPath}`,
   );
   console.log(summary.ok ? "GPU_LIVE_RESULT=PASS" : "GPU_LIVE_RESULT=FAIL");
   exitCode = summary.ok ? 0 : 1;
