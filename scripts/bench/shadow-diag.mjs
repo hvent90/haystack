@@ -247,6 +247,39 @@ try {
   shots.on = await capture("downsun-on", downSun, true, true); // production blend
   shots.side = await capture("side-on", side, true, true); // perpendicular eyeball view
 
+  // Close-up vantages: deterministic sun-aligned rock pairs near the fixed stationSpawn
+  // (found offline by scripts/bench/shadow-vantage.ts) — a receiver rock 1.6–3.3 km out
+  // with an occluder a few hundred meters up-sun, so the frame is GUARANTEED to contain a
+  // real near-field inter-asteroid shadow. Captured shadow-map-on vs off for the crisp
+  // per-pixel evidence (edge quality, acne, partial coverage).
+  const closeup1 = { x: -0.4174468790062057, y: -0.8091640732317085, z: -0.41351131278242986 }; // v-43-48-49 (r=345, 1.6 km), occluder v-43-49-49 921 m up-sun
+  const closeup2 = { x: -0.11903488673599938, y: 0.946064198066002, z: 0.30131914787726344 }; // v-43-52-51 (r=337, 3.3 km), occluder v-43-52-50 484 m up-sun
+  shots.closeup1on = await capture("closeup1-on", closeup1, true, true);
+  shots.closeup1off = await capture("closeup1-off", closeup1, false, false);
+  shots.closeup2on = await capture("closeup2-on", closeup2, true, true);
+  shots.closeup2off = await capture("closeup2-off", closeup2, false, false);
+
+  // SHADOW_DIAG_FLIGHT=1: fly forward (+x drift) with both tiers on and capture a frame
+  // sequence — eyeball evidence for the near/far handoff (rocks crossing the 5–8 km
+  // crossfade must brighten/darken smoothly, never pop) and for shadow-edge stability in
+  // motion (the texel-snapped shadow camera).
+  if (process.env.SHADOW_DIAG_FLIGHT === "1") {
+    const ahead = { x: 1, y: 0, z: 0 };
+    await page.evaluate((d) => {
+      const dbg = window.__HAYSTACK_RENDER_DEBUG__;
+      dbg.lookDir(d);
+      dbg.shadowTiers(true, true);
+      dbg.drift(6); // ~360 m/s at 60 fps
+    }, ahead);
+    await new Promise((r) => setTimeout(r, 600));
+    for (let i = 0; i < 8; i += 1) {
+      const bytes = await page.screenshot({ scale: "device", fullPage: false });
+      writeFileSync(resolve(SHOTS_DIR, `shadow-diag-${stamp}-flight${i}.png`), bytes);
+      await new Promise((r) => setTimeout(r, 350));
+    }
+    await page.evaluate(() => window.__HAYSTACK_RENDER_DEBUG__.drift(0));
+  }
+
   const report = {
     adapter: executablePath ? "system-chrome" : "bundled-chromium",
     prod: PROD,

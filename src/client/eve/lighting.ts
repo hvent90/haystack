@@ -39,14 +39,14 @@ export const bloomLuminanceSmoothing = 0.18;
 // each frame. The shadow-casting light is placed just up-sun of the camera (a directional
 // light's direction is distance-independent), so the ortho depth range stays tight; the
 // visible SunDisc stays far away at sunDistance, untouched.
-export const shadowMapSize = 2048;
+export const shadowMapSize = 4096; // 3.9 m/texel over the 16 km bubble — crisp edges
 export const shadowBubbleHalf = 8; // ortho half-width in scene units (km)
 export const shadowLightDistance = 12; // units up-sun to place the shadow-casting light
 export const shadowCameraNear = 1;
 export const shadowCameraFar = 24;
 export const shadowBias = 0.0001;
-export const shadowNormalBias = 0.05;
-export const shadowSoftRadius = 2;
+export const shadowNormalBias = 0.03; // ~30 m push — above one texel, below small-rock scale
+export const shadowSoftRadius = 1;
 
 // Crossfade from the near per-pixel shadow map to the far per-instance occlusion scalar,
 // keyed on view-space depth (km). Fully shadow-map at <= near, fully per-instance at >= far.

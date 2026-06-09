@@ -381,6 +381,82 @@ try {
   }
   summary.scanGate = scanGate;
 
+  // --- Inter-asteroid shadow gate (two-tier, screenshot A/B) ---
+  // Both shadow tiers can silently die (an indirect-draw depth pass that renders nothing,
+  // a dead packAttr.w) while every numeric gate stays green. Point the camera DOWN-SUN
+  // (every visible face is sun-facing, so brightness variation isolates the shadow terms)
+  // and toggle each tier via the debug controls: a tier is alive iff it darkens pixels
+  // that the fully-lit baseline shows lit. "Darkened" = strongly lit (>90) in the baseline
+  // and near-black (<18) in the shot — shadowing in the zero-ambient look drives pixels to
+  // true black, while the cosmetic tumble between two captures mostly lands on partial
+  // facet lums, so this cut separates them. Sampled every 8th pixel; measured healthy on
+  // Metal: tier1 ≈ 8000, tier2 ≈ 2100, identical-state noise ≈ 350.
+  summary.stage = "shadow-gate";
+  const lumGrid = (png) => {
+    const decoded = PNG.sync.read(png);
+    const lums = [];
+    const step = 8;
+    for (let y = 0; y < decoded.height; y += step) {
+      for (let x = 0; x < decoded.width; x += step) {
+        const o = (y * decoded.width + x) * 4;
+        lums.push(
+          0.2126 * decoded.data[o] + 0.7152 * decoded.data[o + 1] + 0.0722 * decoded.data[o + 2],
+        );
+      }
+    }
+    return lums;
+  };
+  const darkened = (base, shot) => {
+    let n = 0;
+    for (let i = 0; i < Math.min(base.length, shot.length); i += 1) {
+      if (base[i] > 90 && shot[i] < 18) n += 1;
+    }
+    return n;
+  };
+  // Down-sun = -sunDirection (lighting.ts: normalize(0.55, 0.62, -0.56)).
+  const sunLen = Math.hypot(0.55, 0.62, -0.56);
+  const downSun = { x: -0.55 / sunLen, y: -0.62 / sunLen, z: 0.56 / sunLen };
+  const shadowShot = async (tier1, tier2, name) => {
+    await page.evaluate(
+      ([d, t1, t2]) => {
+        const dbg = window.__HAYSTACK_RENDER_DEBUG__;
+        dbg.lookDir(d);
+        dbg.shadowTiers(t1, t2);
+      },
+      [downSun, tier1, tier2],
+    );
+    await new Promise((r) => setTimeout(r, 400));
+    const bytes = await page.screenshot({ scale: "device", fullPage: false });
+    writeFileSync(resolve(SHOTS_DIR, `gpu-live-${stamp}.shadow-${name}.png`), bytes);
+    return lumGrid(bytes);
+  };
+  let shadowGate = { noise: -1, tier1Darkened: -1, tier2Darkened: -1, pass: false };
+  try {
+    const litA = await shadowShot(false, false, "off");
+    const litB = await shadowShot(false, false, "off2"); // noise floor: identical state
+    const t2 = await shadowShot(false, true, "tier2");
+    const t1 = await shadowShot(true, false, "tier1");
+    shadowGate = {
+      noise: darkened(litA, litB),
+      tier2Darkened: darkened(litA, t2),
+      tier1Darkened: darkened(litA, t1),
+      pass: false,
+    };
+    shadowGate.pass =
+      shadowGate.noise < 600 &&
+      shadowGate.tier1Darkened > Math.max(2000, 3 * shadowGate.noise) &&
+      shadowGate.tier2Darkened > Math.max(1000, 3 * shadowGate.noise);
+  } catch (e) {
+    record(`[shadow-gate] failed: ${e?.message ?? e}`);
+  }
+  summary.shadowGate = shadowGate;
+  // Restore normal play state for anything after.
+  await page.evaluate(() => {
+    const dbg = window.__HAYSTACK_RENDER_DEBUG__;
+    dbg.lookDir(null);
+    dbg.shadowTiers(true, true);
+  });
+
   // --- Write all artifacts ---
   writeFileSync(consolePath, consoleLines.join("\n") + "\n", "utf8");
   writeFileSync(tracePath, JSON.stringify({ traceEvents: traceChunks }), "utf8");
@@ -444,7 +520,8 @@ try {
     statsEnd.renderedTriangles > 0 &&
     uniqueColors >= 4 &&
     nonBackgroundSamples > 0 &&
-    scanGate.pass;
+    scanGate.pass &&
+    shadowGate.pass;
   summary.pilotId = pilotId;
   summary.screenshot = { path: screenshotPath, width: shotW, height: shotH };
   summary.console = { path: consolePath, lines: consoleLines.length };
@@ -462,6 +539,9 @@ try {
   );
   console.log(
     `SCAN idleTeal=${scanGate.idleTeal} pulseTeal=${scanGate.pulseTeal} ${scanGate.pass ? "PASS" : "FAIL"} -> ${scanShotPath}`,
+  );
+  console.log(
+    `SHADOW tier1=${shadowGate.tier1Darkened} tier2=${shadowGate.tier2Darkened} noise=${shadowGate.noise} ${shadowGate.pass ? "PASS" : "FAIL"}`,
   );
   console.log(summary.ok ? "GPU_LIVE_RESULT=PASS" : "GPU_LIVE_RESULT=FAIL");
   exitCode = summary.ok ? 0 : 1;
