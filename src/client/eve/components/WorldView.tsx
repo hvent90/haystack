@@ -1,4 +1,4 @@
-import { Canvas, useFrame } from "@react-three/fiber";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode, RefObject } from "react";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
@@ -31,7 +31,16 @@ import { CHUNK_METERS, reconcileChunks, type AsteroidChunkData } from "../field-
 import { getRenderDebugControls, renderStats } from "../render-stats";
 import { AudioListenerRig, RemoteShipAudio } from "./SpatialAudio";
 import { ShipFlashlight, SunDisc, SunLight } from "./SceneLighting";
-import { ScenePostProcessing } from "./ScenePostProcessing";
+// WebGPU-resident asteroid field (docs/gpu-asteroids-architecture.md §8). The game boots on
+// WebGPURenderer via this gl factory; the field is GPU-resident (base uploaded from the CPU
+// derive, pos = base + overlay, zero-copy positionNode). There is no WebGL fallback (§1.1/§5).
+import { makeWebGPUFactory } from "../gpu/renderer-factory";
+import { makeAsteroidMaterial, originMeters } from "../gpu/kernels/render-node";
+import { frameCounter, genFieldOverlay } from "../gpu/kernels/overlay";
+import { base, MAX_RESIDENT, packAttr, slotMeta } from "../gpu/buffers";
+import { packBaseFromAsteroids, seedBaseFromCPU, seedU32FromCPU } from "../gpu/base-derive";
+// NOTE: the WebGL @react-three/postprocessing stack (ScanPulse + Bloom + ACES) cannot run under
+// WebGPURenderer; it is removed here and ported to the three-native TSL PostProcessing in step 2.
 
 // Live owned-ship origin used to position every world object relative to the
 // camera. Read from the render store (smoothed, 60fps) when seeded, otherwise
@@ -122,6 +131,7 @@ export function WorldView({
     >
       <Canvas
         data-testid="world-canvas"
+        gl={makeWebGPUFactory()}
         shadows
         camera={{ position: [0, 0.12, 0], fov: 68, near: 0.01, far: 20000 }}
         dpr={[1, 1.5]}
@@ -165,7 +175,9 @@ export function WorldView({
               ))}
           </group>
         </ConditionalListenerRig>
-        <ScenePostProcessing scanNonce={scanNonce} />
+        {/* TODO(step 2): three-native TSL PostProcessing (ScanPulse re-derived basis + bloom +
+            ACES). The WebGL EffectComposer cannot run under WebGPURenderer, so the post stack is
+            temporarily absent (scanNonce={scanNonce} will drive the ported TSL ScanPulse node). */}
       </Canvas>
       <div
         className="reticle"
@@ -1172,6 +1184,14 @@ function createAsteroidMaterial(): MeshStandardMaterial {
 // stream (a saturated render loop was starving the un-gated WebSocket onmessage).
 // Baked positions stay within ±~57 scene units (the field half-extent), so the
 // float32 instance matrices keep sub-pixel (~mm at the far edge) precision.
+// The GPU-resident asteroid field (docs/gpu-asteroids-architecture.md §8). The static field is
+// uploaded ONCE per visible-set change into the CPU-authored `base` buffer (bit-exact with the
+// server derive, §3.2 — NOT a GPU frac(sin) kernel); per frame the overlay compute writes
+// `pos = base + bounded wobble` and the material's positionNode draws `pos` zero-copy under the
+// floating origin. ONE InstancedMesh of MAX_RESIDENT slots — no per-chunk meshes, no setMatrixAt.
+// (The legacy per-chunk WebGL path below — AsteroidChunk / patchAsteroidShader /
+// createAsteroidMaterial — is now dead code, superseded here; it is removed in step 4. The
+// aSunlit two-tier shadow and per-LOD indirect cull also return in steps 2/4 as TSL.)
 function InstancedAsteroids({
   asteroids,
   fallbackOrigin,
@@ -1179,45 +1199,40 @@ function InstancedAsteroids({
   asteroids: Asteroid[];
   fallbackOrigin: Vector3;
 }): ReactNode {
-  const groupRef = useRef<Object3D>(null);
-  // ONE shared material across every chunk: the shadow patch compiles once and the
-  // onAfterRender submitted-count gate keys on this exact material identity, so it
-  // sums correctly across all visible chunk meshes. dispose={null} on the chunks
-  // keeps three/r3f from disposing this shared material when a chunk unmounts.
-  const material = useMemo(() => createAsteroidMaterial(), []);
-  useEffect(() => () => material.dispose(), [material]);
-  // Per-rock deterministic rotation seed, derived once per id (shared across chunks).
-  const seedCache = useRef(new Map<string, number>());
+  // The R3F renderer is the WebGPURenderer the gl factory produced; we only need compute().
+  const gl = useThree((state) => state.gl) as unknown as {
+    compute(node: typeof genFieldOverlay): void;
+  };
+  const material = useMemo(() => makeAsteroidMaterial(), []);
+  const geometry = useMemo(() => new IcosahedronGeometry(1, 1), []);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  const meshRef = useRef<InstancedMesh>(null);
 
-  // Partition the derived field into cubic spatial chunks (once per visible-set change),
-  // reusing unchanged chunks from the previous set by reference so only boundary chunks
-  // that changed on the cell cross rebuild their matrices (C4 — no full 100k rebuild per
-  // cross). Each chunk renders as its own bounding-sphere'd InstancedMesh so three
-  // frustum-culls them individually. Timed as cell-cross field work.
-  const prevChunksRef = useRef<Map<number, AsteroidChunkData>>(new Map());
-  const chunks = useMemo(() => {
+  // Upload base/packAttr/slotMeta from the app's already-derived field (the worker + reconcile
+  // output) on each visible-set change — a CPU derive + buffer write, never a GPU kernel (§3.2).
+  // packBaseFromAsteroids produces identical bytes to deriveBase (gpu-base-parity.test.ts).
+  // useLayoutEffect so the upload + draw-count land before the first paint of the new set.
+  useLayoutEffect(() => {
     const start = performance.now();
-    const reconciled = reconcileChunks(prevChunksRef.current, asteroids);
-    prevChunksRef.current = reconciled;
+    const derived = packBaseFromAsteroids(asteroids, MAX_RESIDENT);
+    seedBaseFromCPU(base, derived.base);
+    seedBaseFromCPU(packAttr, derived.packAttr);
+    seedU32FromCPU(slotMeta, derived.slotMeta);
+    const mesh = meshRef.current;
+    if (mesh !== null) {
+      mesh.count = derived.count;
+    }
     renderStats.noteFieldWork(performance.now() - start);
-    return Array.from(reconciled.values());
   }, [asteroids]);
 
-  // Floating-origin rebase: shift the whole field once per frame (O(1)). Each chunk
-  // bakes ABSOLUTE field positions into its instance matrices; this group translation
-  // carries them all to camera-relative space, and three transforms every chunk's
-  // bounding sphere by it before the per-chunk frustum test.
+  // Per frame: recentre the floating origin, advance the cosmetic ticker, and run the overlay
+  // compute in ONE submission (§3.3 — never computeAsync-awaited in the hot loop). The material
+  // positionNode reads `pos` and rebases by originMeters, so there is no per-frame group write.
   useFrame(() => {
-    const group = groupRef.current;
-    if (group === null) {
-      return;
-    }
     const origin = renderOrigin(fallbackOrigin);
-    group.position.set(
-      -origin.x / metersPerSceneUnit,
-      -origin.y / metersPerSceneUnit,
-      -origin.z / metersPerSceneUnit,
-    );
+    originMeters.value.set(origin.x, origin.y, origin.z);
+    frameCounter.value += 1;
+    gl.compute(genFieldOverlay);
   });
 
   if (asteroids.length === 0) {
@@ -1225,16 +1240,13 @@ function InstancedAsteroids({
   }
 
   return (
-    <group ref={groupRef}>
-      {chunks.map((chunk) => (
-        <AsteroidChunk
-          key={chunk.key}
-          chunk={chunk}
-          material={material}
-          seedCache={seedCache.current}
-        />
-      ))}
-    </group>
+    <instancedMesh
+      ref={meshRef}
+      args={[geometry, material, MAX_RESIDENT]}
+      frustumCulled={false}
+      castShadow
+      receiveShadow
+    />
   );
 }
 

@@ -7,7 +7,7 @@
 // not reproduce the server's field. This module is that single CPU authority; the parity
 // gate (tests/integration/gpu-base-parity.test.ts) pins it bit-for-bit.
 
-import type { FieldSummary, Vector3 } from "../../../shared/types";
+import type { Asteroid, FieldSummary, Vector3 } from "../../../shared/types";
 import { deriveVirtualField } from "../field-core";
 import { backingArrayOf, backingU32Of, MAX_RESIDENT } from "./buffers";
 import type { instancedArray } from "three/tsl";
@@ -36,13 +36,11 @@ function phaseSeed(index: number): number {
 // `base` xyz/radius are the f32 image of `deriveVirtualField` IN ITS RETURNED ORDER
 // (distance-sorted). This is the upload source; the bytes here are exactly what the GPU
 // buffer holds after `seedBaseFromCPU`.
-export function deriveBase(
-  position: Vector3,
-  field: FieldSummary,
-  capacity: number = MAX_RESIDENT,
-  residencyEpoch = 0,
-): DerivedBase {
-  const rocks = deriveVirtualField(position, field);
+// Pack an ALREADY-DERIVED rock array (deriveVirtualField output, in order) into the GPU buffer
+// images. Shared by deriveBase (which derives first) and packBaseFromAsteroids (which reuses the
+// app's worker-derived, reconciled field — no main-thread re-derive). Cells are parsed from the
+// `v-cx-cy-cz` id, the same source packField uses, so the bytes are identical to deriveBase.
+function packFromRocks(rocks: readonly Asteroid[], capacity: number, residencyEpoch: number): DerivedBase {
   const count = Math.min(rocks.length, capacity);
   const base = new Float32Array(capacity * 4);
   const packAttr = new Float32Array(capacity * 4);
@@ -57,8 +55,6 @@ export function deriveBase(
     base[o + 3] = r.radius;
     packAttr[o + 1] = r.mineralRichness;
     packAttr[o + 2] = phaseSeed(i);
-    // Cell coords come straight from the id `v-cx-cy-cz` (the same source packField uses), so
-    // slotMeta -> id is exact and string-table-free.
     const parts = r.id.split("-");
     slotMeta[o] = Number(parts[1]);
     slotMeta[o + 1] = Number(parts[2]);
@@ -66,6 +62,26 @@ export function deriveBase(
     slotMeta[o + 3] = residencyEpoch;
   }
   return { base, packAttr, slotMeta, count };
+}
+
+export function deriveBase(
+  position: Vector3,
+  field: FieldSummary,
+  capacity: number = MAX_RESIDENT,
+  residencyEpoch = 0,
+): DerivedBase {
+  return packFromRocks(deriveVirtualField(position, field), capacity, residencyEpoch);
+}
+
+// Pack the buffer images from the app's existing derived field (the `asteroids` prop WorldView
+// already holds, produced by the field-derivation worker + reconcile). Identical bytes to
+// deriveBase for the same field, but avoids a redundant main-thread derive.
+export function packBaseFromAsteroids(
+  asteroids: readonly Asteroid[],
+  capacity: number = MAX_RESIDENT,
+  residencyEpoch = 0,
+): DerivedBase {
+  return packFromRocks(asteroids, capacity, residencyEpoch);
 }
 
 // The id↔slot bridge (§2.2): reconstruct the EXACT rock id `v-cx-cy-cz` from a slot's slotMeta
