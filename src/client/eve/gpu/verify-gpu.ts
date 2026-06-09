@@ -16,6 +16,7 @@ import { base as baseBuffer, MAX_RESIDENT } from "./buffers";
 import { deriveBase, seedBaseFromCPU } from "./base-derive";
 import { binCPU, ELEMENTS_PER_BLOCK } from "./binner-cpu";
 import { makeBinnerKernels } from "./kernels/binner";
+import { genFieldOverlay } from "./kernels/overlay";
 import { uint } from "three/tsl";
 
 type Renderer = InstanceType<typeof THREE.WebGPURenderer>;
@@ -59,6 +60,11 @@ export async function verifyBaseRoundTrip(
   try {
     const { base: cpuBytes, count } = deriveBase(shipPos, FIELD, MAX_RESIDENT);
     seedBaseFromCPU(baseBuffer, cpuBytes);
+    // getArrayBufferAsync on a storage node that was never used in a pass throws
+    // ("'size' of undefined") — the GPU buffer isn't created until something touches it. The
+    // overlay kernel READS base (writing pos), so this uploads the seeded bytes; base itself is
+    // unchanged, so the round-trip still proves the upload path is bit-exact.
+    renderer.compute(genFieldOverlay);
     const gpuBytes = await readBackFloat32(renderer, baseBuffer);
     let mismatches = 0;
     let firstBad = -1;
@@ -135,9 +141,71 @@ export async function verifyBinnerScan(renderer: Renderer): Promise<GateResult> 
   }
 }
 
+// END-STATE step-5 scatter gate: run the full GPU binner (scan + initCursor + scatter) and verify
+// sortedItems is a VALID grouping. Within-cell order is a non-deterministic atomic race, so we do
+// NOT compare to binCPU byte-for-byte; instead we assert the invariants binner-cpu's test checks:
+// every item appears exactly once (permutation) and lands inside its cell's [start, start+count).
+export async function verifyBinnerScatter(renderer: Renderer): Promise<GateResult> {
+  try {
+    const G = 64 * 64 * 64;
+    const numItems = 500_000;
+    const kernels = makeBinnerKernels(G, numItems, (i) => i.mod(uint(G)));
+    renderer.compute(kernels.clearCounts);
+    renderer.compute(kernels.count);
+    renderer.compute(kernels.scanPerBlock);
+    renderer.compute(kernels.scanBlockSums);
+    renderer.compute(kernels.addBlockOffsets);
+    renderer.compute(kernels.initCursor);
+    renderer.compute(kernels.scatter);
+
+    const cellStart = await readBackUint32(renderer, kernels.buffers.cellStart);
+    const cellCount = await readBackUint32(renderer, kernels.buffers.cellCount);
+    const sortedItems = await readBackUint32(renderer, kernels.buffers.sortedItems);
+
+    const seen = new Uint8Array(numItems);
+    let dupes = 0;
+    let outOfRange = 0;
+    let firstBad = -1;
+    for (let s = 0; s < numItems; s += 1) {
+      const item = sortedItems[s]!;
+      if (item >= numItems) {
+        outOfRange += 1;
+        if (firstBad < 0) firstBad = s;
+        continue;
+      }
+      if (seen[item]) dupes += 1;
+      seen[item] = 1;
+      const c = item % G;
+      const lo = cellStart[c]!;
+      const hi = lo + cellCount[c]!;
+      if (s < lo || s >= hi) {
+        outOfRange += 1;
+        if (firstBad < 0) firstBad = s;
+      }
+    }
+    let missing = 0;
+    for (let i = 0; i < numItems; i += 1) if (!seen[i]) missing += 1;
+    const pass = dupes === 0 && outOfRange === 0 && missing === 0;
+    return {
+      name: `binner scatter GPU (§2.3): permutation + in-cell-range over ${numItems} items, G=${G}`,
+      pass,
+      detail: pass
+        ? `valid grouping: every item once, each inside its cell range`
+        : `dupes=${dupes} missing=${missing} outOfRange=${outOfRange} (first bad slot ${firstBad})`,
+    };
+  } catch (err) {
+    return {
+      name: "binner scatter GPU (§2.3)",
+      pass: false,
+      detail: `threw: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
 export async function runGpuVerification(renderer: Renderer): Promise<GateResult[]> {
   const results: GateResult[] = [];
   results.push(await verifyBaseRoundTrip(renderer));
   results.push(await verifyBinnerScan(renderer));
+  results.push(await verifyBinnerScatter(renderer));
   return results;
 }

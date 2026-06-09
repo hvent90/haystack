@@ -28,6 +28,8 @@
 
 import {
   atomicAdd,
+  atomicLoad,
+  atomicStore,
   compute,
   Fn,
   If,
@@ -56,8 +58,13 @@ export type CellIndexOf = (itemIndex: ReturnType<typeof uint>) => ReturnType<typ
 export type BinnerBuffers = {
   // per-cell occupancy histogram (atomic uint), length G. Zeroed by clearCounts.
   cellCount: ReturnType<typeof instancedArray>;
-  // exclusive prefix-sum of cellCount (uint), length G. Doubles as the atomic scatter cursor.
+  // exclusive prefix-sum of cellCount (uint), length G. The SCAN result callers read.
   cellStart: ReturnType<typeof instancedArray>;
+  // atomic scatter write-cursor (uint), length G. Initialized from cellStart by initCursor, then
+  // atomicAdd'd per item in scatter. A separate buffer (not cellStart) keeps the scan result
+  // intact — mirrors binCPU's `cursor = copy(cellStart)`. (§2.3 "cellStart doubles as the cursor"
+  // is one logical role; a real WebGPU atomic op needs its own atomic binding.)
+  cellCursor: ReturnType<typeof instancedArray>;
   // item ids grouped by cell (uint), length maxItems.
   sortedItems: ReturnType<typeof instancedArray>;
   // per-block partial sums for the two-level scan (uint), length numBlocks.
@@ -73,6 +80,8 @@ export type BinnerKernels = {
   clearCounts: ComputeKernel;
   // dispatch 9: atomicAdd(cellCount[cellIndexOf(i)], 1) (one lane per item).
   count: ComputeKernel;
+  // pre-scatter: copy cellStart -> cellCursor (one lane per cell). Run before scatter.
+  initCursor: ComputeKernel;
   // dispatch 10: per-block exclusive scan; write block total into blockSums (one block/group).
   scanPerBlock: ComputeKernel;
   // dispatch 11: exclusive-scan blockSums in a single block.
@@ -101,23 +110,32 @@ export function makeBinnerKernels(
     );
   }
 
-  // --- buffers (§2.3). cellCount is atomic; the rest are plain uint. ---
+  // --- buffers (§2.3). cellCount + cellCursor are atomic; cellStart/sortedItems/blockSums plain. ---
   const cellCount = instancedArray(G, "uint").toAtomic();
   const cellStart = instancedArray(G, "uint");
+  const cellCursor = instancedArray(G, "uint").toAtomic();
   const sortedItems = instancedArray(Math.max(numItems, 1), "uint");
   const blockSums = instancedArray(numBlocks, "uint");
 
-  const buffers: BinnerBuffers = { cellCount, cellStart, sortedItems, blockSums };
+  const buffers: BinnerBuffers = { cellCount, cellStart, cellCursor, sortedItems, blockSums };
 
-  // dispatch 8 — clearCounts: zero every cell (one lane per cell).
+  // dispatch 8 — clearCounts: zero every cell (one lane per cell). cellCount is atomic, so use
+  // atomicStore (a plain .assign mis-types as 'u32' to 'atomic<u32>'). Bounds-guarded because the
+  // dispatch rounds the lane count up to a multiple of the workgroup size.
   const clearCounts = Fn(() => {
-    cellCount.element(instanceIndex).assign(uint(0));
+    If(instanceIndex.lessThan(uint(G)), () => {
+      atomicStore(cellCount.element(instanceIndex), uint(0));
+    });
   })().compute(G, [WORKGROUP]);
 
-  // dispatch 9 — count: atomicAdd(cellCount[cellIndexOf(i)], 1) (one lane per item).
+  // dispatch 9 — count: atomicAdd(cellCount[cellIndexOf(i)], 1) (one lane per item). BOUNDS-GUARD
+  // is mandatory: the dispatch rounds numItems up to a workgroup multiple, and the extra lanes
+  // would otherwise over-count cells (shifting the whole prefix sum by the overflow).
   const count = Fn(() => {
-    const c = cellIndexOf(instanceIndex);
-    atomicAdd(cellCount.element(c), uint(1));
+    If(instanceIndex.lessThan(uint(numItems)), () => {
+      const c = cellIndexOf(instanceIndex);
+      atomicAdd(cellCount.element(c), uint(1));
+    });
   })().compute(numItems, [WORKGROUP]);
 
   // Shared workgroup scratchpad for the Blelloch in-block sweep (ELEMENTS_PER_BLOCK cells).
@@ -136,7 +154,9 @@ export function makeBinnerKernels(
       const local = lid.add(uint(i).mul(uint(WORKGROUP)));
       const gidx = blockBase.add(local);
       If(gidx.lessThan(uint(G)), () => {
-        scratch.element(local).assign(cellCount.element(gidx));
+        // cellCount is atomic -> read via atomicLoad (a plain element read mis-types as
+        // 'atomic<u32>' to 'u32'). Past-G cells load 0 (the additive identity).
+        scratch.element(local).assign(atomicLoad(cellCount.element(gidx)));
       }).Else(() => {
         scratch.element(local).assign(uint(0));
       });
@@ -243,23 +263,31 @@ export function makeBinnerKernels(
     });
   })().compute(G, [WORKGROUP]);
 
-  // dispatch 13 — scatter: cellStart doubles as the atomic write cursor (§2.3). Each item bumps
-  // its cell's cursor with atomicAdd and writes its id into sortedItems at the returned slot.
-  // NOTE: this consumes cellStart; a caller that needs the scan offsets afterward must keep a
-  // copy from before scatter (the CPU mirror returns the pre-scatter scan; see binCPU). For this
-  // to compile, cellStart is atomically incremented — under WebGPU a separate atomic view of the
-  // same buffer is used; here the same node is incremented to express the cursor semantics.
+  // pre-scatter — initCursor: copy the (plain) scan result cellStart into the atomic cellCursor,
+  // so scatter can atomicAdd it while cellStart stays the usable scan. Mirrors binCPU's
+  // `cursor = new Uint32Array(cellStart)`. Bounds-guarded (dispatch rounds up to a wg multiple).
+  const initCursor = Fn(() => {
+    If(instanceIndex.lessThan(uint(G)), () => {
+      atomicStore(cellCursor.element(instanceIndex), cellStart.element(instanceIndex));
+    });
+  })().compute(G, [WORKGROUP]);
+
+  // dispatch 13 — scatter: each item atomicAdd's its cell's cursor (the atomic cellCursor, NOT the
+  // plain cellStart) and writes its id into sortedItems at the returned slot. Bounds-guarded.
+  // Within-cell ORDER is non-deterministic (atomic race) — a valid permutation, not binCPU's order.
   const scatter = Fn(() => {
-    const i = instanceIndex;
-    const c = cellIndexOf(i);
-    const slot = atomicAdd(cellStart.element(c), uint(1));
-    sortedItems.element(slot).assign(i);
+    If(instanceIndex.lessThan(uint(numItems)), () => {
+      const c = cellIndexOf(instanceIndex);
+      const slot = atomicAdd(cellCursor.element(c), uint(1));
+      sortedItems.element(slot).assign(instanceIndex);
+    });
   })().compute(numItems, [WORKGROUP]);
 
   return {
     buffers,
     clearCounts,
     count,
+    initCursor,
     scanPerBlock,
     scanBlockSums,
     addBlockOffsets,

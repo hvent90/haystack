@@ -3,14 +3,44 @@
 **Run date:** 2026-06-09 (overnight, unattended). **Branch:** `gpu-asteroids/impl` (off `ralph/client-render-100k`).
 **Orchestrator:** Claude Opus 4.8. **Source of truth:** `docs/gpu-asteroids-architecture.md`.
 
-> **READ THIS FIRST — the one fact that shaped the whole run:** there is **NO executable WebGPU in this
-> environment.** `navigator.gpu` is absent in node, in Playwright's bundled Chromium, and in system Chrome
-> (`channel:"chrome"`) — **headless AND headed** (the automation context has no GPU-backed display session).
-> Probes: `scripts/bench/probe-webgpu.mjs`, `probe-webgpu-chrome.mjs`, `probe-webgpu-headed.mjs` — all report
-> `{"gpu":false}`. Therefore **no live-GPU gate could be run tonight** (boot, `getArrayBufferAsync`, kernel
-> dispatch, screenshots). I built to the gates that ARE runnable headless and flagged the rest. No fake green.
+> **WebGPU IS executable here (correction to the original run).** The initial "no WebGPU" conclusion was an
+> artifact of probing on `about:blank` — **WebGPU requires a SECURE CONTEXT.** Served from `localhost`/
+> `127.0.0.1`, the bundled Playwright Chromium exposes a SwiftShader WebGPU device **headless, zero installs**
+> (system Chrome via `CHROME_PATH` gives real Apple Metal). The runner `scripts/bench/gpu-verify-run.mjs`
+> (`bun run verify:gpu`) executes the committed gates on a live device. **All three END-STATE GPU gates PASS on
+> both SwiftShader and real Metal** (see "DONE & VERIFIED — ON GPU"). Running the real harness also caught +
+> fixed 4 real kernel bugs CPU tests could not. No fake green — every claim here was actually run.
+>
+> _The original probes (`scripts/bench/probe-webgpu*.mjs`) reported `{"gpu":false}` only because they used
+> `about:blank` (non-secure → no `navigator.gpu`). Lesson: always serve the page from localhost/https._
 
 ---
+
+## DONE & VERIFIED — ON GPU (live device, both SwiftShader headless + real Apple Metal)
+
+Run: `bun run verify:gpu` (bundled Chromium/SwiftShader) or
+`CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" bun run verify:gpu` (real Metal).
+It serves the repo from `127.0.0.1`, boots `THREE.WebGPURenderer` via the repo's own `gpu-verify.html`
+harness, and runs the END-STATE gates on a live device. **Result on BOTH adapters: `GPU asteroid
+verification — ALL PASS`:**
+
+- **base round-trip (§8.6 #3):** `getArrayBufferAsync(base) === deriveBase` — **bit-identical over 50,000
+  rocks (200,000 floats).** Closes step 3 end-to-end: CPU derive → GPU upload → readback, on Metal + SwiftShader.
+- **binner scan (§2.3):** GPU exclusive scan === `binCPU` — **bit-identical over all 262,144 cells.**
+- **binner scatter (§2.3):** valid grouping — every item exactly once, each inside its cell's
+  `[cellStart, cellStart+cellCount)` range (within-cell order is a non-deterministic atomic race, so verified
+  by invariant, not byte-equality).
+
+**4 real kernel bugs caught by the live device + fixed** (CPU tests could not see these):
+1. `verify-gpu.ts` base round-trip threw `'size' of undefined` — `getArrayBufferAsync` on a storage node never
+   used in a pass. Fix: run `genFieldOverlay` (reads `base`) to materialize it before readback.
+2. `kernels/binner.ts` `cellCount` is atomic but was cleared/read as plain `u32` (Dawn:
+   `cannot assign 'atomic<u32>' to 'u32'`). Fix: `atomicStore`/`atomicLoad`.
+3. `count`/`scatter`/`clearCounts` missing a bounds guard → the workgroup-rounded extra lanes over-counted.
+   Fix: `If(instanceIndex < numItems/G)`.
+4. Scan off-by-one at cell 237857 — a *symptom* of #3 (tail over-count shifts the prefix sum). Fixed by #3.
+   Also: `scatter` atomicAdd'd the non-atomic `cellStart`; fixed with a dedicated atomic `cellCursor` +
+   `initCursor` (mirrors `binCPU`'s `cursor = copy(cellStart)`).
 
 ## DONE & VERIFIED (real, runnable gates — pasted output below)
 
@@ -80,21 +110,21 @@ working WebGL `WorldView.tsx`/`App` — the existing app still boots unchanged.*
 
 ---
 
-## HOW TO VERIFY THE GPU HALF IN THE MORNING (on a real GPU)
+## HOW TO RE-RUN THE GPU GATES (now automated, headless, zero installs)
 
-The CPU halves are green. To close the GPU-unverified gaps, run on a machine where Chrome has WebGPU
-(`chrome://gpu` shows "WebGPU: Hardware accelerated"):
+The GPU gates are now push-button and already PASS (see "DONE & VERIFIED — ON GPU"):
 
-1. **Start the client dev server:** `bun run dev:client` (vite).
-2. **Open the verification harness** in your real Chrome (NOT Playwright): `http://localhost:5173/gpu-verify.html`.
-   It boots `WebGPURenderer`, seeds `base` via `deriveBase`+`seedBaseFromCPU`, reads it back with
-   `getArrayBufferAsync(base)` and compares to the CPU bytes (the END-STATE step-3 gate), then dispatches the
-   binner kernels and compares `cellStart`/`sortedItems` to `binCPU` (the END-STATE step-5 gate). It prints
-   PASS/FAIL per gate to the page and console. *(Status: harness is code-complete and typechecks; it was
-   authored but NOT run — no device here.)*
-3. **Smoke-test the beachhead:** temporarily render `<WorldViewGPU />` from `App.tsx` (or a scratch entry) and
-   confirm: console shows the WebGPU adapter; ~50k rocks draw from one InstancedMesh (no `setMatrixAt`); a
-   non-WebGPU browser shows the unsupported message. Revert the App edit after.
+```bash
+bun run verify:gpu                  # bundled Chromium / SwiftShader (deterministic, CI-grade)
+CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" bun run verify:gpu   # real Metal
+```
+
+The runner (`scripts/bench/gpu-verify-run.mjs`) serves the repo from `127.0.0.1` (required — WebGPU needs a
+secure context) and drives the repo's own `gpu-verify.html` harness headless. Exit 0 iff every gate PASSes.
+
+**Still needing a real-GPU human smoke test (visual, not automatable as a gate):** load the actual game
+(`bun run dev:client`, open `http://localhost:5173/`) and confirm the field renders on WebGPU. The post stack
+(scan VFX/bloom/ACES) is intentionally absent until step 2 (TSL PostProcessing).
 
 ---
 
@@ -144,22 +174,30 @@ designed before collisions can be made authoritative.
 
 ## NEXT STEP (exactly where to resume)
 
-1. On a real GPU: run the morning verification (section above). If `gpu-verify.html` confirms the base
-   round-trip and binner GPU-vs-CPU gates, steps 3 and 5 are FULLY closed.
-2. Fix the known binner GPU gap (atomic view for the `scatter` cursor on `cellStart`) and re-run the GPU
-   binner gate.
-3. Proceed to **Step 2** (TSL post stack + ScanPulse) — the next linear step; needs a device for its
-   screenshot gate. Then step 4, 6, 7 in order. Steps 1/3/5 foundations are committed.
+1. ✅ DONE: GPU verification path established (`bun run verify:gpu`); steps 3 (base round-trip) and 5 (binner
+   scan + scatter) are FULLY closed on a live device (SwiftShader + real Metal). The known binner atomic
+   `scatter`/`cellStart` gap is fixed (dedicated atomic `cellCursor` + `initCursor`).
+2. **Human visual smoke test:** load the actual game on WebGPU (`bun run dev:client` → `http://localhost:5173/`)
+   and confirm the GPU-resident field renders. (Automatable gates pass; pixels need an eyeball.)
+3. Proceed to **Step 2** (TSL post stack + ScanPulse, re-derived player-distance basis) — restores the scan
+   VFX/bloom/ACES removed when switching off the WebGL EffectComposer. Its screenshot gate can now run via the
+   same headless-Chromium-from-localhost path. Then step 4 (ring re-seed + GPU cull/LOD indirect), 6, 7.
+4. Cleanup: remove the dead legacy WebGL asteroid path in `WorldView.tsx` (AsteroidChunk / patchAsteroidShader
+   / createAsteroidMaterial) once step 4's TSL shadow/LOD lands.
 
 ---
 
-## HONESTY CHECK — gates I could NOT run, and why
+## HONESTY CHECK — what is verified vs not
 
-- **Every live-WebGPU gate** (boot, `getArrayBufferAsync(base)` round-trip, any kernel dispatch, ScanPulse/
-  bloom screenshots, ring/cull indirect, 100k collision validation): UNVERIFIED — no `navigator.gpu` anywhere
-  in this environment (proven by three probe scripts, headless and headed). Nothing GPU was claimed to pass.
-- **What IS genuinely verified:** the determinism contract (base == CPU derive, bit-exact f32, non-circular);
-  the Blelloch tiled-scan + scatter algorithm (CPU mirror == naive reference at real grid sizes); capability
-  detection; the bounded-overlay invariant; project typecheck (strict) and production build with all GPU
-  modules bundled; no regression to the existing app (working WebGL path untouched; tracked tree was clean
-  before commits).
+- **VERIFIED ON A LIVE GPU** (SwiftShader headless + real Apple Metal, `bun run verify:gpu`): base round-trip
+  (`getArrayBufferAsync(base) === deriveBase`, bit-identical 50k rocks); binner GPU scan === `binCPU`
+  (bit-identical 262144 cells); binner scatter valid grouping. These were FAILING until the 4 device-caught
+  bugs were fixed — they are real passes, re-run on demand.
+- **VERIFIED ON CPU** (bun tests): determinism contract (base == derive, non-circular); Blelloch tiled-scan +
+  scatter algorithm vs naive reference; slotMeta id-bridge; capability detection; bounded-overlay invariant;
+  strict typecheck; production build bundling three/webgpu into the main app.
+- **NOT YET VERIFIED (needs a human eyeball or later steps):** the actual game rendering correctly on WebGPU
+  (visual smoke test — the automatable gates pass, but no screenshot-diff of the live game yet); the post
+  stack (removed, returns in step 2); ring/cull indirect + collisions (steps 4/7, not built). The e2e
+  screenshot suite (`verify:e2e`) will fail under Playwright's bundled Chromium when it hits the game page
+  unless served from localhost with WebGPU — adapt those to the secure-context runner pattern when needed.
