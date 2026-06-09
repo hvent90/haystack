@@ -105,6 +105,22 @@ multiply vs idle (HUD-off captures; idle 0 → pulse ~6000+ on Metal). 60 fps he
 - NOTE: with indirect draws, `renderer.info` instance/triangle counts are NOMINAL (CPU-side
   capacity), not actual — the live gate only requires them nonzero.
 
+### Step 6 — cosmetic motion: tumble + gravity wells (commit after step 4's)
+
+- **Spin:** slow per-rock tumble in `makeLodAsteroidMaterial` — Rodrigues rotation about a
+  phase-derived axis, angle = rate(phase)·time, applied to local position AND normal
+  (`normalNode = transformNormalToView(rotated normalGeometry)`) so facet lighting follows.
+  Pure function of (slot phase, time): stateless, eviction-lossless, position-bound-neutral.
+- **Gravity wells (§4.3):** `wells.ts` — K=6 deterministic field-seed wells (≤ MAX_WELLS 8), pull
+  = per-well Gaussian falloff toward the center, per-well 0.9·distance clamp (no overshoot),
+  TOTAL clamped to `WELL_PULL_CAP_METERS = 320` — a pure bounded function of `base` (no
+  integrator), keeping worst displacement √3·40 + 320 ≈ 389 m, far inside the 1400 m mine slack
+  (a rock near a well can show a small bearing-arrow skew — the documented §4.5 #1 trade-off that
+  buys clumping). CPU mirror pinned by `tests/integration/gpu-wells.test.ts`.
+- **On-device gate (in `verify:gpu`):** run the overlay with a max-strength well planted 2 km from
+  a known rock; read back pos/base over 50k rocks; assert every |pos-base| ≤ √3·wobble+cap, radii
+  carried, probe rock pulled > 100 m. PASS on Metal: `max 350.9 m ≤ 390 m; probe pulled 210.7 m`.
+
 ---
 
 ## DONE & VERIFIED — ON GPU (live device, both SwiftShader headless + real Apple Metal)

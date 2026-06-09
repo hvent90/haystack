@@ -16,7 +16,8 @@ import { base as baseBuffer, MAX_RESIDENT, pos as posBuffer } from "./buffers";
 import { deriveBase, seedBaseFromCPU } from "./base-derive";
 import { binCPU, ELEMENTS_PER_BLOCK } from "./binner-cpu";
 import { makeBinnerKernels } from "./kernels/binner";
-import { genFieldOverlay } from "./kernels/overlay";
+import { genFieldOverlay, setGravityWells, WOBBLE_AMPLITUDE_METERS } from "./kernels/overlay";
+import { deriveGravityWells, WELL_PULL_CAP_METERS } from "./wells";
 import { makeCullPipeline } from "./kernels/cull";
 import { originMeters } from "./kernels/render-node";
 import {
@@ -328,11 +329,71 @@ export async function verifyCullLod(renderer: Renderer): Promise<GateResult> {
   }
 }
 
+// END-STATE step-6 gate: run the overlay (wobble + gravity-well pull) on the device and
+// verify the §4.5 #1 safety bound on REAL GPU output: |pos - base| ≤ √3·wobble + pullCap
+// for every slot, radii carried, and the wells actually displace rocks (a well planted
+// next to a derived rock must pull it well past the wobble bound).
+export async function verifyOverlayBound(renderer: Renderer): Promise<GateResult> {
+  try {
+    const shipPos: Vector3 = { x: 0, y: 0, z: 0 };
+    const { base: cpuBytes, count } = deriveBase(shipPos, FIELD, MAX_RESIDENT);
+    seedBaseFromCPU(baseBuffer, cpuBytes);
+    // Plant a max-strength test well 2 km from a known rock (plus the deterministic field
+    // wells), so the pull is exercised hard at a known site.
+    const probeSlot = 100;
+    const wells = deriveGravityWells();
+    setGravityWells([
+      {
+        x: cpuBytes[probeSlot * 4]! + 2000,
+        y: cpuBytes[probeSlot * 4 + 1]!,
+        z: cpuBytes[probeSlot * 4 + 2]!,
+        strength: 1,
+      },
+      ...wells.slice(0, 5),
+    ]);
+    renderer.compute(genFieldOverlay);
+    const posBytes = await readBackFloat32(renderer, posBuffer);
+    setGravityWells(wells); // restore the live config
+
+    const bound = Math.sqrt(3) * WOBBLE_AMPLITUDE_METERS + WELL_PULL_CAP_METERS + 1;
+    let maxDisp = 0;
+    let overBound = 0;
+    let radiusMismatches = 0;
+    let probeDisp = 0;
+    for (let slot = 0; slot < count; slot += 1) {
+      const o = slot * 4;
+      const dx = posBytes[o]! - cpuBytes[o]!;
+      const dy = posBytes[o + 1]! - cpuBytes[o + 1]!;
+      const dz = posBytes[o + 2]! - cpuBytes[o + 2]!;
+      const disp = Math.hypot(dx, dy, dz);
+      if (disp > bound) overBound += 1;
+      if (posBytes[o + 3] !== cpuBytes[o + 3]) radiusMismatches += 1;
+      if (disp > maxDisp) maxDisp = disp;
+      if (slot === probeSlot) probeDisp = disp;
+    }
+    const pass = overBound === 0 && radiusMismatches === 0 && probeDisp > 100;
+    return {
+      name: `overlay bound (§4.5 #1, step 6): wobble + well pull over ${count} rocks`,
+      pass,
+      detail: pass
+        ? `max |pos-base| = ${maxDisp.toFixed(1)} m ≤ ${bound.toFixed(0)} m; probe rock pulled ${probeDisp.toFixed(1)} m`
+        : `overBound=${overBound} radiusMismatches=${radiusMismatches} probeDisp=${probeDisp.toFixed(1)} m (max ${maxDisp.toFixed(1)})`,
+    };
+  } catch (err) {
+    return {
+      name: "overlay bound (§4.5 #1, step 6)",
+      pass: false,
+      detail: `threw: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
 export async function runGpuVerification(renderer: Renderer): Promise<GateResult[]> {
   const results: GateResult[] = [];
   results.push(await verifyBaseRoundTrip(renderer));
   results.push(await verifyBinnerScan(renderer));
   results.push(await verifyBinnerScatter(renderer));
   results.push(await verifyCullLod(renderer));
+  results.push(await verifyOverlayBound(renderer));
   return results;
 }

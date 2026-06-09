@@ -11,13 +11,37 @@
 // hashCell argument (~5e11) whose f32 sine is non-bit-portable. So this overlay's f32
 // non-portability is genuinely cosmetic.
 //
-// SAFETY (§4.5 #1, §8.6 #4): the wobble is BOUNDED to ±WOBBLE_AMPLITUDE_METERS. That keeps the
-// rendered rock inside the radius+1400 m mine slack AND gameplay-invisible vs the 3-decimal
-// (~50 m) scan-bearing granularity. Gameplay reads `base`; only the renderer reads `pos`.
+// SAFETY (§4.5 #1, §8.6 #4): the wobble is BOUNDED to ±WOBBLE_AMPLITUDE_METERS and the well
+// pull (step 6, §4.3) is hard-capped at WELL_PULL_CAP_METERS — both pure functions of
+// (base, phase, frame), so the total displacement keeps the rendered rock inside the
+// radius+1400 m mine slack. Gameplay reads `base`; only the renderer reads `pos`.
 
-import { Fn, fract, instanceIndex, sin, uniform, vec3 } from "three/tsl";
+import {
+  exp,
+  float,
+  Fn,
+  fract,
+  If,
+  instanceIndex,
+  Loop,
+  min,
+  normalize,
+  sin,
+  uint,
+  uniform,
+  uniformArray,
+  vec3,
+} from "three/tsl";
+import * as THREE from "three/webgpu";
 
 import { base, MAX_RESIDENT, packAttr, pos } from "../buffers";
+import {
+  deriveGravityWells,
+  MAX_WELLS,
+  WELL_PULL_CAP_METERS,
+  WELL_SIGMA_METERS,
+  type GravityWell,
+} from "../wells";
 
 // Per-axis wobble half-extent in meters. Each axis term is `(fract(sin(...)) - 0.5)` ∈ [-0.5,
 // 0.5], scaled by 2*amplitude, so |component| ≤ amplitude (= 40 m) on every axis. Exported so
@@ -28,9 +52,26 @@ export const WOBBLE_AMPLITUDE_METERS = 40;
 // host component. Exported so the per-frame loop can advance it (`frameCounter.value += 1`).
 export const frameCounter = uniform(0);
 
-// genFieldOverlay: pos = base + bounded wobble(phase, frameCounter). One thread per resident
-// slot. Submitted via `renderer.compute(genFieldOverlay)` (single submission, NOT
-// computeAsync-awaited per pass — §3.3).
+// Gravity wells (§4.3, step 6): K ≤ 8 attractors as a uniform vec4 array (xyz meters,
+// w strength) + an active count. Defaults to the deterministic field wells; tests/harness
+// can reconfigure via setGravityWells.
+const wellVectors = Array.from({ length: MAX_WELLS }, () => new THREE.Vector4());
+const wellsUniform = uniformArray(wellVectors);
+const wellCount = uniform(0);
+
+export function setGravityWells(wells: readonly GravityWell[]): void {
+  const count = Math.min(wells.length, MAX_WELLS);
+  for (let i = 0; i < count; i += 1) {
+    const well = wells[i]!;
+    wellVectors[i]!.set(well.x, well.y, well.z, well.strength);
+  }
+  wellCount.value = count;
+}
+setGravityWells(deriveGravityWells());
+
+// genFieldOverlay: pos = base + bounded wobble(phase, frameCounter) + capped well pull(base).
+// One thread per resident slot. Submitted via `renderer.compute(genFieldOverlay)` (single
+// submission, NOT computeAsync-awaited per pass — §3.3).
 export const genFieldOverlay = Fn(() => {
   const i = instanceIndex;
   const b = base.element(i);
@@ -42,8 +83,29 @@ export const genFieldOverlay = Fn(() => {
     fract(sin(ph.add(t).add(1.7)).mul(43758.5453)).sub(0.5),
     fract(sin(ph.add(t).add(3.1)).mul(43758.5453)).sub(0.5),
   ).mul(WOBBLE_AMPLITUDE_METERS * 2);
+
+  // Well pull — mirrors wells.wellPullMeters exactly: per-well Gaussian falloff toward the
+  // center, per-well clamp to 0.9·distance (no overshoot), total clamped to the hard cap.
+  const pull = vec3(0).toVar();
+  Loop({ start: uint(0), end: uint(MAX_WELLS), type: "uint", condition: "<" }, ({ i: w }) => {
+    If(float(uint(w)).lessThan(wellCount), () => {
+      const well = wellsUniform.element(uint(w));
+      const delta = well.xyz.sub(b.xyz).toVar();
+      const dist = delta.length().toVar();
+      If(dist.greaterThan(float(1e-6)), () => {
+        const falloff = exp(dist.div(float(WELL_SIGMA_METERS)).pow(2).negate());
+        const amount = min(float(WELL_PULL_CAP_METERS).mul(well.w).mul(falloff), dist.mul(0.9));
+        pull.addAssign(delta.div(dist).mul(amount));
+      });
+    });
+  });
+  const pullMag = pull.length();
+  If(pullMag.greaterThan(float(WELL_PULL_CAP_METERS)), () => {
+    pull.assign(normalize(pull).mul(float(WELL_PULL_CAP_METERS)));
+  });
+
   const p = pos.element(i);
-  p.xyz.assign(b.xyz.add(wob));
+  p.xyz.assign(b.xyz.add(wob).add(pull));
   p.w.assign(b.w); // carry the radius into pos (§2.1)
 })().compute(MAX_RESIDENT);
 
