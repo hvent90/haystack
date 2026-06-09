@@ -66,6 +66,12 @@ export class AudioEngine {
     for (const [id, entry] of Object.entries(ONE_SHOTS) as [OneShotId, OneShotEntry][]) {
       this.bank.set(id, await renderOneShot(entry.spec));
     }
+    // Teardown race (e.g. StrictMode double-mount): dispose() can close the context while
+    // the awaits above are in flight. Building the voices on a closed context does nothing
+    // but spam "Construction of <Node> is not useful when context is closed" warnings.
+    if (this.ctx !== ctx || ctx.state === "closed") {
+      return;
+    }
     this.drone = new EngineDrone(ctx, graph.buses.engine);
     this.nozzle = new RcsNozzle(ctx, graph.buses.engine);
     this.mining = new MiningVoice(ctx, graph.buses.sfx);
@@ -138,6 +144,10 @@ export class AudioEngine {
     void this.ctx?.close();
     this.ctx = null;
     this.graph = null;
+    this.drone = null;
+    this.nozzle = null;
+    this.mining = null;
+    this.alarm = null;
     this.ready = false;
     this.bank.clear();
   }

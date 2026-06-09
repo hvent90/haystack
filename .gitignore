@@ -8,3 +8,4 @@ screenshots/*.png
 .claude/scheduled_tasks.lock
 .DS_Store
 samples/
+trace-analysis/

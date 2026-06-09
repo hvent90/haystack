@@ -198,6 +198,10 @@ try {
   page.on("requestfailed", (r) =>
     record(`[requestfailed] ${r.url()} ${r.failure()?.errorText ?? ""}`),
   );
+  // Console "Failed to load resource" lines don't carry the URL; log error responses with it.
+  page.on("response", (r) => {
+    if (r.status() >= 400) record(`[http ${r.status()}] ${r.url()}`);
+  });
 
   summary.stage = "navigating";
   const url = new URL(CLIENT_URL);
