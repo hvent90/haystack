@@ -16,6 +16,60 @@
 
 ---
 
+## SESSION 2 (2026-06-09, continuation) — step-4 ring streaming + the cell-cross hitch, root-caused
+
+> Orchestrator: Claude Fable 5. Each claim below was actually run; numbers are from real Metal
+> (`CHROME_PATH` system Chrome) unless noted.
+
+### The handoff's "158 ms hitch on every cell-crossing" was misattributed — root cause found
+
+Measured with a new movement harness (`bun run bench:gpu-cross`, drives the ship across field cells via the
+`__HAYSTACK_RENDER_DEBUG__.drift` control and samples per-cross stats + rAF deltas + optional CDP trace/CPU
+profile):
+
+1. **The ~158 ms `fieldDeriveMs` was the one-time FIRST-PAINT synchronous derive**, not a per-cross cost.
+   `FieldDeriver.asteroidsFor` deliberately bypassed the worker when there was no prior field; with a
+   stationary ship (the old `verify:gpu-live` run) `cellCrossCount=1` — that one "cross" WAS boot. The true
+   recurring per-cross main-thread cost was ~15–22 ms (worker reconstruct ~5 ms + full 50k GPU repack ~10–15 ms).
+2. **The real movement stalls in the live gate were 1.0–1.8 s rAF gaps** — and they are a DEV-MODE artifact:
+   react-dom development's performance-track props diffing (`addValueToProperties`/`addObjectDiffToProperties`,
+   present TWICE: react-dom + r3f's bundled reconciler) walks the 50k-asteroid array on commits and triggers a
+   GC storm. A V8 CPU profile over a 12 s drift window attributed ~3.6 s to that diffing + 1.3 s GC.
+   **The production build has none of it: 721/721 frames at 16.7 ms, p99=16.8 ms, 0 frames > 33 ms, across 13
+   cell crossings.** The perf harnesses now take `GPU_LIVE_PROD=1` (`verify:gpu-live:prod`,
+   `bench:gpu-cross:prod`) to measure `vite build` + `vite preview` — perf claims should cite prod numbers.
+
+### Fixes landed (both TDD'd, gates re-run)
+
+- **Step-4 ring streaming for real** (`src/client/eve/gpu/ring-stream.ts` + `mergeDirtyToRanges` +
+  `markRangesForUpload` in `base-derive.ts`; wired in `WorldView.tsx` `InstancedAsteroids`): incremental
+  id→slot reconcile straight into the buffer backing stores — kept rocks' slots/bytes untouched, entering
+  rocks fill freed slots low-first, evicted slots zero-radius; only dirty element ranges upload
+  (`BufferAttribute.addUpdateRange`, confirmed consumed + cleared by three 0.177's WebGPU backend).
+  Per-slot bytes are pinned byte-identical to `packBaseFromAsteroids` (a first fill of an empty ring is
+  byte-identical to the full pack) by `tests/integration/gpu-ring-stream.test.ts` (incl. 20-round churn fuzz).
+- **Boot derive routed through the worker** (`field-derivation.ts`): the first derive now posts to the worker
+  like every later cross (seeded-only field for the round-trip frames); synchronous path remains as the
+  no-Worker fallback. `tests/integration/field-derivation-boot.test.ts`.
+
+### Verified results (the handoff's stated gate: "worstCellCrossFrameMs drops")
+
+| Metric                                                    | Before                          | After           |
+| --------------------------------------------------------- | ------------------------------- | --------------- |
+| `fieldDeriveMs` (boot, live gate)                         | 164.8                           | **9.4**         |
+| `worstCellCrossFrameMs` (live gate)                       | 174.1                           | **20.0**        |
+| per-cross main-thread field work (prod, moving)           | 11–16 ms                        | **6.6–10.6 ms** |
+| frames > 33 ms during 12 s of cell-crossing flight (prod) | n/a (dev-only stalls 1.0–1.8 s) | **0**           |
+
+`bun run verify` (96 pass + the pre-existing server.test.ts:921 failure), `verify:gpu` (Metal: ALL PASS),
+`verify:gpu-live` (PASS, 60 fps, max frame 16.8 ms) all re-run after the change.
+
+This also closes the handoff's Open Work #2 (the "42.9 ms React-scheduler task"): it was the same dev-mode
+performance-track diffing on a coalesced 30 Hz snapshot commit. Production commits are sub-frame
+(`reactCommitCount` ≈ 6/s while streaming; 0 dropped frames).
+
+---
+
 ## DONE & VERIFIED — ON GPU (live device, both SwiftShader headless + real Apple Metal)
 
 Run: `bun run verify:gpu` (bundled Chromium/SwiftShader) or

@@ -37,8 +37,16 @@ import { ShipFlashlight, SunDisc, SunLight } from "./SceneLighting";
 import { makeWebGPUFactory } from "../gpu/renderer-factory";
 import { makeAsteroidMaterial, originMeters } from "../gpu/kernels/render-node";
 import { frameCounter, genFieldOverlay } from "../gpu/kernels/overlay";
-import { base, MAX_RESIDENT, packAttr, slotMeta } from "../gpu/buffers";
-import { packBaseFromAsteroids, seedBaseFromCPU, seedU32FromCPU } from "../gpu/base-derive";
+import {
+  backingArrayOf,
+  backingU32Of,
+  base,
+  MAX_RESIDENT,
+  packAttr,
+  slotMeta,
+} from "../gpu/buffers";
+import { markRangesForUpload } from "../gpu/base-derive";
+import { FieldRingStream, mergeDirtyToRanges } from "../gpu/ring-stream";
 // NOTE: the WebGL @react-three/postprocessing stack (ScanPulse + Bloom + ACES) cannot run under
 // WebGPURenderer; it is removed here and ported to the three-native TSL PostProcessing in step 2.
 
@@ -1208,19 +1216,31 @@ function InstancedAsteroids({
   useEffect(() => () => geometry.dispose(), [geometry]);
   const meshRef = useRef<InstancedMesh>(null);
 
-  // Upload base/packAttr/slotMeta from the app's already-derived field (the worker + reconcile
-  // output) on each visible-set change — a CPU derive + buffer write, never a GPU kernel (§3.2).
-  // packBaseFromAsteroids produces identical bytes to deriveBase (gpu-base-parity.test.ts).
-  // useLayoutEffect so the upload + draw-count land before the first paint of the new set.
+  // Ring-stream base/packAttr/slotMeta from the app's already-derived field (the worker +
+  // reconcile output) on each visible-set change — a CPU derive + buffer SUB-RANGE write,
+  // never a GPU kernel (§3.2, §7 step 4). The ring reconciles incrementally: kept rocks'
+  // slots (and bytes) are untouched, entering rocks fill freed slots, evicted slots go
+  // zero-radius; only the dirty ranges are uploaded. Per-slot bytes are identical to the
+  // full packBaseFromAsteroids pack (gpu-ring-stream.test.ts pins this against the parity
+  // gate's pack). useLayoutEffect so upload + draw-count land before the new set's paint.
+  const ringRef = useRef<FieldRingStream | null>(null);
   useLayoutEffect(() => {
     const start = performance.now();
-    const derived = packBaseFromAsteroids(asteroids, MAX_RESIDENT);
-    seedBaseFromCPU(base, derived.base);
-    seedBaseFromCPU(packAttr, derived.packAttr);
-    seedU32FromCPU(slotMeta, derived.slotMeta);
+    const ring = (ringRef.current ??= new FieldRingStream(MAX_RESIDENT));
+    const result = ring.reconcile(asteroids, {
+      base: backingArrayOf(base),
+      packAttr: backingArrayOf(packAttr),
+      slotMeta: backingU32Of(slotMeta),
+    });
+    // Merge near-adjacent dirty slots (uploading a small gap beats another writeBuffer
+    // call) and cap the per-frame range count; beyond the cap one spanning write wins.
+    const ranges = mergeDirtyToRanges(result.dirty, 64, 64);
+    markRangesForUpload(base, ranges);
+    markRangesForUpload(packAttr, ranges);
+    markRangesForUpload(slotMeta, ranges);
     const mesh = meshRef.current;
     if (mesh !== null) {
-      mesh.count = derived.count;
+      mesh.count = result.drawCount;
     }
     renderStats.noteFieldWork(performance.now() - start);
   }, [asteroids]);

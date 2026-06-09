@@ -27,7 +27,9 @@ export type DerivedBase = {
 
 // Stable per-body wobble phase in [0, 2π), decorrelated per slot. This drives ONLY the
 // cosmetic overlay (bounded wobble); it is NOT gameplay state and not parity-gated.
-function phaseSeed(index: number): number {
+// Exported for the ring streamer (ring-stream.ts), which must write the identical phase
+// for a slot it fills incrementally.
+export function phaseSeed(index: number): number {
   const v = Math.sin(index * 0.1) * 43758.5453;
   return (v - Math.floor(v)) * Math.PI * 2;
 }
@@ -109,6 +111,34 @@ export function seedU32FromCPU(
   dst.set(derived);
   const attr = (node as unknown as { value?: { needsUpdate?: boolean } }).value;
   if (attr) attr.needsUpdate = true;
+}
+
+// Flag SUB-RANGES of a storage node's backing store for upload (ring streaming, §3.2 "CPU
+// derive + buffer sub-range write"). The backing bytes must already be written (the ring
+// reconciles straight into backingArrayOf/backingU32Of); this only records the dirty
+// element ranges so three's WebGPU backend issues per-range writeBuffer calls instead of a
+// full-buffer write. three clears the ranges after consuming them.
+export function markRangesForUpload(
+  node: ReturnType<typeof instancedArray>,
+  ranges: ReadonlyArray<{ start: number; count: number }>,
+): void {
+  if (ranges.length === 0) {
+    return;
+  }
+  const attr = (
+    node as unknown as {
+      value?: { addUpdateRange?(start: number, count: number): void; needsUpdate?: boolean };
+    }
+  ).value;
+  if (!attr) {
+    return;
+  }
+  if (typeof attr.addUpdateRange === "function") {
+    for (const range of ranges) {
+      attr.addUpdateRange(range.start, range.count);
+    }
+  }
+  attr.needsUpdate = true;
 }
 
 // Upload source -> GPU buffer backing store. The actual device upload is lazy (three marks

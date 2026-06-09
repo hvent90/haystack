@@ -169,10 +169,12 @@ export class FieldDeriver {
       return this.merged;
     }
 
-    // Cell changed. With no prior field (first paint) or no Worker support, derive
-    // synchronously — there is nothing to show otherwise. Otherwise offload to the worker
-    // and keep showing the previous (stale-by-≤1-cell) field until it returns.
-    const worker = this.virtual.length === 0 ? null : this.ensureWorker();
+    // Cell changed. Offload to the worker and keep showing the previous field until it
+    // returns — on the FIRST derive that means a seeded-only field for a few frames (the
+    // worker round-trip), which beats blocking first paint ~160ms on the synchronous
+    // 50k scan/sort (the boot stall the gpu-live gate caught). Environments without
+    // Worker fall back to the synchronous derive.
+    const worker = this.ensureWorker();
     if (worker === null) {
       const start = performance.now();
       this.virtual = deriveVirtualField(position, field);

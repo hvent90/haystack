@@ -110,12 +110,32 @@ const server = spawnLogged(
   },
   "server",
 );
-const client = spawnLogged(
-  "./node_modules/.bin/vite",
-  ["--host", "127.0.0.1", "--port", String(CLIENT_PORT), "--strictPort"],
-  { VITE_API_URL: SERVER_URL },
-  "vite",
-);
+
+// GPU_LIVE_PROD=1: serve the PRODUCTION build (`vite build` + `vite preview`) instead of
+// the dev server. Dev-mode react-dom's performance-track props diffing over the 50k
+// asteroid array costs whole seconds per commit during movement and completely distorts
+// frame stats; production numbers are the real game's numbers. apiBase falls back to a
+// relative /api in prod, which preview proxies to the server via VITE_API_PROXY.
+const PROD = process.env.GPU_LIVE_PROD === "1";
+if (PROD) {
+  const build = spawnLogged("./node_modules/.bin/vite", ["build"], {}, "vite-build");
+  await new Promise((res, rej) =>
+    build.on("exit", (c) => (c === 0 ? res() : rej(new Error(`vite build exited ${c}`)))),
+  );
+}
+const client = PROD
+  ? spawnLogged(
+      "./node_modules/.bin/vite",
+      ["preview", "--host", "127.0.0.1", "--port", String(CLIENT_PORT), "--strictPort"],
+      { VITE_API_PROXY: SERVER_URL },
+      "vite-preview",
+    )
+  : spawnLogged(
+      "./node_modules/.bin/vite",
+      ["--host", "127.0.0.1", "--port", String(CLIENT_PORT), "--strictPort"],
+      { VITE_API_URL: SERVER_URL },
+      "vite",
+    );
 
 let exitCode = 1;
 let browser = null;
