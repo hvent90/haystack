@@ -40,6 +40,28 @@ describe("overlay wobble is bounded (§8.6 #4)", () => {
     expect(maxAbs).toBeGreaterThan(WOBBLE_AMPLITUDE_METERS * 0.9);
   });
 
+  test("the wobble is temporally SMOOTH: per-frame motion stays under 1 m/axis", () => {
+    // Regression: the original formula hashed the phase with fract(sin(x)*43758.5453) —
+    // white noise re-rolled every frame (±40 m jumps = visibly vibrating rocks). A cosmetic
+    // drift must move a rock by a tiny fraction of the amplitude per frame.
+    const axisOffsets = [0, 1.7, 3.1];
+    let maxDelta = 0;
+    for (let phaseStep = 0; phaseStep < 50; phaseStep += 1) {
+      const phase = (phaseStep / 50) * Math.PI * 2;
+      for (const off of axisOffsets) {
+        let prev = wobbleAxisMeters(phase, 0, off);
+        for (let frame = 1; frame < 1000; frame += 1) {
+          const w = wobbleAxisMeters(phase, frame, off);
+          maxDelta = Math.max(maxDelta, Math.abs(w - prev));
+          prev = w;
+        }
+      }
+    }
+    expect(maxDelta).toBeLessThan(1);
+    // And it actually MOVES (not frozen): some frame-to-frame change exists.
+    expect(maxDelta).toBeGreaterThan(0.01);
+  });
+
   test("the 3D displacement magnitude stays under the 1400 m mine slack by a wide margin", () => {
     // Worst case all three axes at full amplitude: sqrt(3)*40 ≈ 69.3 m << 1400 m.
     const worstCaseMagnitude = Math.sqrt(3) * WOBBLE_AMPLITUDE_METERS;

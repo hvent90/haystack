@@ -20,7 +20,6 @@ import {
   exp,
   float,
   Fn,
-  fract,
   If,
   instanceIndex,
   Loop,
@@ -44,9 +43,9 @@ import {
   type GravityWell,
 } from "../wells";
 
-// Per-axis wobble half-extent in meters. Each axis term is `(fract(sin(...)) - 0.5)` ∈ [-0.5,
-// 0.5], scaled by 2*amplitude, so |component| ≤ amplitude (= 40 m) on every axis. Exported so
-// the invariant is unit-testable; MUST stay ≤ 40 m (the §8.6 #4 bound).
+// Per-axis wobble half-extent in meters. Each axis term is `sin(...)` ∈ [-1, 1], scaled by
+// the amplitude, so |component| ≤ amplitude (= 40 m) on every axis. Exported so the
+// invariant is unit-testable; MUST stay ≤ 40 m (the §8.6 #4 bound).
 export const WOBBLE_AMPLITUDE_METERS = 40;
 
 // Cosmetic frame ticker driving the wobble animation; bumped once per rendered frame by the
@@ -78,12 +77,16 @@ export const genFieldOverlay = Fn(() => {
   const b = base.element(i);
   const ph = packAttr.element(i).z;
   const t = frameCounter.mul(0.01);
-  // Each (fract(sin(...)) - 0.5) ∈ [-0.5, 0.5]; ×(2*amplitude) ⇒ |component| ≤ amplitude.
+  // Each sin(...) ∈ [-1, 1]; ×amplitude ⇒ |component| ≤ amplitude. The per-rock phase seed
+  // (packAttr.z ∈ [0, 2π)) decorrelates rocks; the 0, 1.7, 3.1 offsets decorrelate axes.
+  // SMOOTHNESS: this MUST stay a plain sinusoid of t — hashing it (fract(sin(x)*43758.5453))
+  // re-rolls white noise every frame, which reads as the whole field vibrating (the original
+  // step-6 bug; pinned by gpu-overlay-bound.test.ts "temporally SMOOTH").
   const wob = vec3(
-    fract(sin(ph.add(t)).mul(43758.5453)).sub(0.5),
-    fract(sin(ph.add(t).add(1.7)).mul(43758.5453)).sub(0.5),
-    fract(sin(ph.add(t).add(3.1)).mul(43758.5453)).sub(0.5),
-  ).mul(WOBBLE_AMPLITUDE_METERS * 2);
+    sin(ph.add(t)),
+    sin(ph.add(t).add(1.7)),
+    sin(ph.add(t).add(3.1)),
+  ).mul(WOBBLE_AMPLITUDE_METERS);
 
   // Well pull — mirrors wells.wellPullMeters exactly: per-well Gaussian falloff toward the
   // center, per-well clamp to 0.9·distance (no overshoot), total clamped to the hard cap.
@@ -111,13 +114,11 @@ export const genFieldOverlay = Fn(() => {
   p.w.assign(b.w); // carry the radius into pos (§2.1)
 })().compute(MAX_RESIDENT);
 
-// Pure-JS mirror of ONE axis of the kernel wobble, for the bounded-amplitude invariant test.
-// Mirrors `(fract(sin(arg)*43758.5453) - 0.5) * (2*amplitude)`; |result| ≤ amplitude for any
-// finite input. Kept here so the test exercises the EXACT formula the kernel uses.
+// Pure-JS mirror of ONE axis of the kernel wobble, for the bounded-amplitude + smoothness
+// invariant tests. Mirrors `sin(phase + t + axisOffset) * amplitude`; |result| ≤ amplitude
+// for any finite input, and |Δ per frame| ≤ amplitude * 0.01. Kept here so the tests
+// exercise the EXACT formula the kernel uses.
 export function wobbleAxisMeters(phase: number, frame: number, axisOffset: number): number {
   const t = frame * 0.01;
-  const arg = phase + t + axisOffset;
-  const s = Math.sin(arg) * 43758.5453;
-  const frac = s - Math.floor(s);
-  return (frac - 0.5) * (WOBBLE_AMPLITUDE_METERS * 2);
+  return Math.sin(phase + t + axisOffset) * WOBBLE_AMPLITUDE_METERS;
 }

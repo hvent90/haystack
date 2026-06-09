@@ -16,7 +16,12 @@ import { base as baseBuffer, MAX_RESIDENT, pos as posBuffer } from "./buffers";
 import { deriveBase, seedBaseFromCPU } from "./base-derive";
 import { binCPU, ELEMENTS_PER_BLOCK } from "./binner-cpu";
 import { makeBinnerKernels } from "./kernels/binner";
-import { genFieldOverlay, setGravityWells, WOBBLE_AMPLITUDE_METERS } from "./kernels/overlay";
+import {
+  frameCounter,
+  genFieldOverlay,
+  setGravityWells,
+  WOBBLE_AMPLITUDE_METERS,
+} from "./kernels/overlay";
 import { deriveGravityWells, WELL_PULL_CAP_METERS } from "./wells";
 import { makeCullPipeline } from "./kernels/cull";
 import { collVel, gridOrigin, makeCollisionPipeline, snapGridOrigin } from "./kernels/collide";
@@ -390,6 +395,57 @@ export async function verifyOverlayBound(renderer: Renderer): Promise<GateResult
   }
 }
 
+// END-STATE step-6 regression gate: the wobble must be temporally SMOOTH on REAL GPU output.
+// Run the overlay at frame N and N+1 and verify every rock moved, but only a little: the
+// per-axis wobble is sin(phase + frame*0.01 + off) * A, so one frame moves a rock at most
+// √3·A·0.01 ≈ 0.7 m. The original formula hashed the phase (fract(sin(x)*43758.5453)) — white
+// noise re-rolled per frame, i.e. ±tens-of-meters jumps that read as the whole field
+// vibrating. The well pull is frame-independent, so the frame-to-frame delta isolates wobble.
+export async function verifyOverlaySmoothness(renderer: Renderer): Promise<GateResult> {
+  try {
+    const shipPos: Vector3 = { x: 0, y: 0, z: 0 };
+    const { base: cpuBytes, count } = deriveBase(shipPos, FIELD, MAX_RESIDENT);
+    seedBaseFromCPU(baseBuffer, cpuBytes);
+    const savedFrame = frameCounter.value;
+    frameCounter.value = 1000;
+    renderer.compute(genFieldOverlay);
+    const frameA = await readBackFloat32(renderer, posBuffer);
+    frameCounter.value = 1001;
+    renderer.compute(genFieldOverlay);
+    const frameB = await readBackFloat32(renderer, posBuffer);
+    frameCounter.value = savedFrame;
+
+    // d/dframe of sin(ph + 0.01f + off)·A is ≤ 0.01·A per axis; √3× in 3D, plus f32 slack.
+    const bound = Math.sqrt(3) * WOBBLE_AMPLITUDE_METERS * 0.01 + 0.1;
+    let maxDelta = 0;
+    let moved = 0;
+    for (let slot = 0; slot < count; slot += 1) {
+      const o = slot * 4;
+      const delta = Math.hypot(
+        frameB[o]! - frameA[o]!,
+        frameB[o + 1]! - frameA[o + 1]!,
+        frameB[o + 2]! - frameA[o + 2]!,
+      );
+      if (delta > maxDelta) maxDelta = delta;
+      if (delta > 0.001) moved += 1;
+    }
+    const pass = maxDelta <= bound && moved > count * 0.9;
+    return {
+      name: `overlay smoothness (step-6 regression): per-frame wobble delta over ${count} rocks`,
+      pass,
+      detail: pass
+        ? `max per-frame |Δpos| = ${maxDelta.toFixed(3)} m ≤ ${bound.toFixed(2)} m; ${moved} rocks moving`
+        : `max per-frame |Δpos| = ${maxDelta.toFixed(3)} m (bound ${bound.toFixed(2)}), moved=${moved}/${count}`,
+    };
+  } catch (err) {
+    return {
+      name: "overlay smoothness (step-6 regression)",
+      pass: false,
+      detail: `threw: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
 // END-STATE step-7 gate: run the full GPU collision pipeline (shared binner broad phase +
 // 27-cell deferred narrow phase) against an AUTHORED DENSE BELT — a jittered grid of fat,
 // heavily-overlapping rocks (occupancy ≈ 1/cell, §4.3's validation target) — and compare
@@ -500,6 +556,7 @@ export async function runGpuVerification(renderer: Renderer): Promise<GateResult
   results.push(await verifyBinnerScatter(renderer));
   results.push(await verifyCullLod(renderer));
   results.push(await verifyOverlayBound(renderer));
+  results.push(await verifyOverlaySmoothness(renderer));
   results.push(await verifyCollisions(renderer));
   return results;
 }
