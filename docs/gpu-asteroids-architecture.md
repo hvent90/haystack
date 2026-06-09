@@ -509,7 +509,10 @@ single architecture.
    sub-range upload); a cull pass + per-LOD `IndirectStorageBufferAttribute` + `setIndirect`; the aSunlit
    two-tier shadow in TSL; instrumentation from `renderer.info`. _(Risks: clear/cull/draw ordering races; the
    compacted slot is NOT a stable id — key temporal state on `slotMeta`; FIELD 100³ vs collision 64³
-   off-by-one.)_
+   off-by-one.)_ NOTE: the cull is frustum OR shadow-caster-bubble — rocks within
+   `SHADOW_CASTER_SCENE` (the sphere circumscribing the camera-following ortho shadow box) survive
+   off-frustum, because the shadow depth pass draws the SAME compacted lists; a strict camera-frustum
+   cull starves the shadow map of off-screen up-sun casters and near shadows pop with view direction.
 
 5. **Shared binning primitive** (lands early — serves BOTH collisions and the future froxel binner). A
    tested, reusable `count→scan→scatter` binner (`cellCount/cellStart/sortedItems/blockSums`) behind an

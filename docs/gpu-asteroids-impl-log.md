@@ -155,6 +155,80 @@ multiply vs idle (HUD-off captures; idle 0 → pulse ~6000+ on Metal). 60 fps he
 
 ---
 
+## SESSION 3 (2026-06-09) — inter-asteroid shadowing: diagnosed, fixed, gated
+
+> Orchestrator: Claude Fable 5. Task: take the two-tier inter-asteroid sun shadowing
+> (2026-06-07 design) to done-and-visually-verified. Every claim below was run this session.
+
+### What diagnosis found (screenshot A/B, real Metal)
+
+Built `scripts/bench/shadow-diag.mjs`: boots the live game, points the camera DOWN-SUN via a
+new `lookDir` debug control (every visible face is sun-facing, so brightness variation
+isolates the shadow terms), and toggles each tier via new `shadowTier{1,2}Enable` uniforms in
+the `receivedShadowNode` blend. Verdict on the existing implementation — **both tiers were
+already alive** (contrary to the task's suspicion that the indirect-draw depth pass silently
+renders nothing: three r177's shadow override material copies the object material's
+`positionNode` — Renderer.js:2866 — and the depth pass shares the geometry, so the indirect
+draws carry into the shadow map). Offline distribution check (`sunlit-hist.ts`): aSunlit at
+spawn is bimodal — 44.7% < 0.1, 50.7% > 0.9, 3.6 µs/rock — i.e. the deep field is varied,
+not a black wall; one aligned rock fully blocks the ~1° sun, so mid values are rare.
+
+### The real bug: camera-frustum cull starved the shadow map
+
+The cull compacts by MAIN-camera frustum, and the shadow depth pass draws the same compacted
+lists — so off-screen up-sun casters didn't exist in the shadow map and near shadows popped
+with view direction (the down-sun diagnostic view was the lucky case where occluders sit
+between camera and rock, hence on-screen). Fix: rocks whose nearest point is within
+`SHADOW_CASTER_SCENE` (≈16.5 scene units — the sphere circumscribing the ortho shadow box)
+survive the cull off-frustum (`cull-cpu.ts` + `kernels/cull.ts`, mirrored; the verify:gpu
+cull gate re-passed on Metal, visible set 2577 → 14073 at the gate camera). Off-frustum
+keeps cost vertex work only (rasterizer clips them). Measured effect: tier-1 darkened-pixel
+count in the down-sun A/B went 14935 → 59041. Prod movement bench unchanged: 721/721 frames
+@ 16.7 ms, over33=0.
+
+### Shadow quality + stability
+
+- `shadowMapSize` 2048 → 4096 (3.9 m/texel over the 16 km bubble), `normalBias` 0.05 → 0.03,
+  `shadowSoftRadius` 2 → 1 (note: R3F `shadows` = PCFSoft, which ignores radius).
+- Texel-snapped the camera-following ortho window on the light's fixed image-plane basis
+  (`SceneLighting.tsx`) so shadow edges don't shimmer during flight.
+- Staged close-up evidence: `shadow-vantage.ts` finds deterministic sun-aligned rock pairs
+  near the fixed `stationSpawn`; the diag harness captures them shadow-on vs shadow-off. The
+  receiver (`v-43-48-49`, 345 m at 1.6 km, occluder 921 m up-sun) shows a real per-pixel cast
+  shadow crossing its lit face, no acne. Handoff: the 5→8 km smoothstep crossfade means a
+  rock transitions over ~3 km of travel (~8 s at 360 m/s) — structurally incapable of
+  popping; a `SHADOW_DIAG_FLIGHT=1` drift sequence eyeballed clean.
+- Known accepted asymmetry: the map's effective up-sun occluder column (~11–19 km depending
+  on receiver depth) is longer than Tier 2's K=5 march (5.65 km), so the near bubble is
+  statistically darker than the far field (~25% vs ~51% lit). This is the physical look
+  (a 200 m rock fully covers the 1° sun out to ~23 km); K=5 deliberately brightens the deep
+  field per the design's density coupling. The transition is a smooth radial gradient, not
+  a per-rock artifact.
+
+### The repeatable gate (so it can't silently regress)
+
+`verify:gpu-live[:prod]` now includes a SHADOW gate: down-sun camera, four HUD-off captures
+(off / off-again / tier2-only / tier1-only). "Darkened" = baseline-lit (>90 lum) pixel driven
+near-black (<18) — shadowing in the zero-ambient look goes to true black while the cosmetic
+tumble between captures lands on partial lums, so the cut separates signal from noise.
+PASS requires tier1 > max(2000, 3·noise), tier2 > max(1000, 3·noise), noise < 600 (noise =
+the identical-state capture pair). Healthy Metal run: `SHADOW tier1=8182 tier2=2314 noise=419
+PASS`. A silently-dead tier measures ≈ noise and fails. The gate counts toward
+`GPU_LIVE_RESULT`.
+
+### Full verification (this session, real Metal unless noted)
+
+- `bun run verify`: 116 pass + the pre-existing server.test.ts:921 failure (honest baseline).
+- `verify:gpu` (Metal): ALL PASS (7 gates, incl. the updated cull gate).
+- parity-check / parity-edge / parity-sphere: 0 divergence (no derive-path change; insurance).
+- `verify:screenshot`, `verify:ui`: ok.
+- `verify:gpu-live:prod`: GPU_LIVE_RESULT=PASS — 60 fps (p95 16.8 ms, framesOver50ms=0),
+  scan gate PASS, shadow gate PASS, console free of Dawn errors.
+- `bench:gpu-cross:prod`: 721/721 @ 16.7 ms, over33=0, worst cross 14.3 ms — the 4096 map
+  and the bigger kept set cost nothing measurable.
+
+---
+
 ## DONE & VERIFIED — ON GPU (live device, both SwiftShader headless + real Apple Metal)
 
 Run: `bun run verify:gpu` (bundled Chromium/SwiftShader) or
