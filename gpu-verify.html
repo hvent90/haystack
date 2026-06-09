@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GPU Asteroid Verification</title>
+    <!--
+      On-GPU verification harness. Dev-only; not part of the production app build.
+      Run: `bun run dev:client`, then open this page (http://localhost:5173/gpu-verify.html)
+      in a real Chrome with WebGPU enabled (chrome://gpu → "WebGPU: Hardware accelerated").
+      It runs the END-STATE base round-trip (§8.6 #3) and binner scan (§2.3) gates.
+    -->
+  </head>
+  <body style="margin: 0; background: #111">
+    <div id="root" style="font: 14px monospace; color: #ddd; padding: 16px">
+      Booting WebGPU…
+    </div>
+    <script type="module" src="/src/client/eve/gpu/verify-entry.ts"></script>
+  </body>
+</html>
