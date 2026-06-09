@@ -2,11 +2,13 @@ import { websocket } from "hono/bun";
 
 import { createApp } from "./app";
 import { openDatabase } from "./db";
+import { startMetrics } from "./metrics";
 import { WorldStream } from "./realtime";
 import { getServerWorld } from "./world";
 
 const port = Number(process.env["PORT"] ?? "8787");
 const hostname = process.env["HOST"] ?? "127.0.0.1";
+startMetrics();
 const db = openDatabase();
 const world = getServerWorld(db);
 world.start();

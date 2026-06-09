@@ -10,6 +10,7 @@ import {
   type HeldFlightInput,
 } from "../shared/ship-motion";
 import type { HaystackDb } from "./db";
+import { metrics } from "./metrics";
 
 export enum ActorRole {
   Authoritative = "authoritative",
@@ -298,7 +299,11 @@ export class ServerWorld {
   }
 
   advanceToNow(nowMs = Date.now()): void {
-    this.syncShipsFromDatabase();
+    // Counts every advanceToNow invocation. During one publishAll this fires at least twice
+    // (the explicit call + the one nested inside buildSharedWorld) — that is the confirmed
+    // double-advance the metrics make visible.
+    metrics.noteAdvance();
+    metrics.time("sim.syncShips", () => this.syncShipsFromDatabase());
     const elapsed = Math.min(30, Math.max(0, (nowMs - this.lastWallMs) / 1000));
     this.lastWallMs = nowMs;
     if (elapsed <= 0) {
@@ -306,13 +311,18 @@ export class ServerWorld {
     }
 
     this.accumulator += elapsed;
-    while (this.accumulator >= this.fixedDt) {
-      this.tick();
-      this.accumulator -= this.fixedDt;
-    }
+    let steps = 0;
+    metrics.time("sim.step", () => {
+      while (this.accumulator >= this.fixedDt) {
+        this.tick();
+        this.accumulator -= this.fixedDt;
+        steps += 1;
+      }
+    });
+    metrics.gauge("sim.stepsPerAdvance", steps);
 
-    this.persistShips();
-    this.persistLastTick(nowMs);
+    metrics.time("sim.persistShips", () => this.persistShips());
+    metrics.time("sim.persistMeta", () => this.persistLastTick(nowMs));
   }
 
   applyThrust(pilotId: string, command: ThrustCommand): Ship {

@@ -13,6 +13,7 @@ import type {
   UpgradeRequest,
 } from "../shared/types";
 import { openDatabase, type HaystackDb } from "./db";
+import { registerMetricsRoutes } from "./metrics-routes";
 import { WorldStream } from "./realtime";
 import { getServerWorld, type ServerWorld } from "./world";
 import {
@@ -220,6 +221,8 @@ export function createApp(dependencies: AppDependencies = {}): Hono {
     const limit = Number(context.req.query("limit") ?? "50");
     return context.json({ messages: listChat(db, pilotId, channel, limit) });
   });
+
+  registerMetricsRoutes(app);
 
   return app;
 }
