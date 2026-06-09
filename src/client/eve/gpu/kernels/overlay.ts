@@ -35,6 +35,7 @@ import {
 import * as THREE from "three/webgpu";
 
 import { base, MAX_RESIDENT, packAttr, pos } from "../buffers";
+import { collOffset } from "./collide";
 import {
   deriveGravityWells,
   MAX_WELLS,
@@ -105,7 +106,8 @@ export const genFieldOverlay = Fn(() => {
   });
 
   const p = pos.element(i);
-  p.xyz.assign(b.xyz.add(wob).add(pull));
+  // collOffset is the step-7 collision displacement (hard-capped, last frame's apply).
+  p.xyz.assign(b.xyz.add(wob).add(pull).add(collOffset.element(i).xyz));
   p.w.assign(b.w); // carry the radius into pos (§2.1)
 })().compute(MAX_RESIDENT);
 

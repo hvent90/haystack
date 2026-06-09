@@ -19,6 +19,8 @@ import { makeBinnerKernels } from "./kernels/binner";
 import { genFieldOverlay, setGravityWells, WOBBLE_AMPLITUDE_METERS } from "./kernels/overlay";
 import { deriveGravityWells, WELL_PULL_CAP_METERS } from "./wells";
 import { makeCullPipeline } from "./kernels/cull";
+import { collVel, gridOrigin, makeCollisionPipeline, snapGridOrigin } from "./kernels/collide";
+import { COLLISION_WINDOW_METERS, narrowPhaseCPU } from "./collide-cpu";
 import { originMeters } from "./kernels/render-node";
 import {
   cullCPU,
@@ -388,6 +390,109 @@ export async function verifyOverlayBound(renderer: Renderer): Promise<GateResult
   }
 }
 
+// END-STATE step-7 gate: run the full GPU collision pipeline (shared binner broad phase +
+// 27-cell deferred narrow phase) against an AUTHORED DENSE BELT — a jittered grid of fat,
+// heavily-overlapping rocks (occupancy ≈ 1/cell, §4.3's validation target) — and compare
+// dp/dv per slot against the CPU spec (collide-cpu.narrowPhaseCPU, brute force) on the
+// SAME f32 inputs. Tolerance covers float-summation order (the grid walk vs brute force).
+export async function verifyCollisions(renderer: Renderer): Promise<GateResult> {
+  try {
+    const BELT = 512;
+    // Belt center inside the collision window; window snapped around it.
+    const origin = snapGridOrigin({ x: 0, y: 0, z: 0 });
+    gridOrigin.value.set(origin.x, origin.y, origin.z);
+    const center = {
+      x: origin.x + COLLISION_WINDOW_METERS / 2,
+      y: origin.y + COLLISION_WINDOW_METERS / 2,
+      z: origin.z + COLLISION_WINDOW_METERS / 2,
+    };
+    let seed = 987654321;
+    const rand = (): number => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    };
+    const posBytes = new Float32Array(MAX_RESIDENT * 4);
+    const velBytes = new Float32Array(MAX_RESIDENT * 4);
+    const side = 8; // 8x8x8 grid, 400 m pitch, radii 150..330 -> dense overlaps
+    for (let i = 0; i < BELT; i += 1) {
+      const gx = i % side;
+      const gy = Math.floor(i / side) % side;
+      const gz = Math.floor(i / (side * side));
+      const o = i * 4;
+      posBytes[o] = center.x + (gx - side / 2) * 400 + (rand() - 0.5) * 160;
+      posBytes[o + 1] = center.y + (gy - side / 2) * 400 + (rand() - 0.5) * 160;
+      posBytes[o + 2] = center.z + (gz - side / 2) * 400 + (rand() - 0.5) * 160;
+      posBytes[o + 3] = 150 + rand() * 180;
+      velBytes[o] = (rand() - 0.5) * 20;
+      velBytes[o + 1] = (rand() - 0.5) * 20;
+      velBytes[o + 2] = (rand() - 0.5) * 20;
+    }
+    // Write the belt STRAIGHT into pos (the overlay is intentionally NOT run — the narrow
+    // phase must see exactly these bytes) and the velocities into the persistent vel state.
+    seedBaseFromCPU(posBuffer, posBytes);
+    seedBaseFromCPU(collVel, velBytes);
+
+    const pipeline = makeCollisionPipeline();
+    renderer.compute(pipeline.binner.clearCounts);
+    renderer.compute(pipeline.binner.count);
+    renderer.compute(pipeline.binner.scanPerBlock);
+    renderer.compute(pipeline.binner.scanBlockSums);
+    renderer.compute(pipeline.binner.addBlockOffsets);
+    renderer.compute(pipeline.binner.initCursor);
+    renderer.compute(pipeline.binner.scatter);
+    renderer.compute(pipeline.narrow);
+
+    const gpuDp = await readBackFloat32(renderer, pipeline.dp);
+    const gpuDv = await readBackFloat32(renderer, pipeline.dv);
+    // Sanity probe: the narrow phase must have seen EXACTLY the seeded bytes.
+    const gpuPos = await readBackFloat32(renderer, posBuffer);
+    const gpuVel = await readBackFloat32(renderer, collVel);
+    let posDrift = 0;
+    let velDrift = 0;
+    for (let i = 0; i < BELT * 4; i += 1) {
+      if (gpuPos[i] !== posBytes[i]) posDrift += 1;
+      if (gpuVel[i] !== velBytes[i]) velDrift += 1;
+    }
+    const cpu = narrowPhaseCPU(posBytes, velBytes, BELT);
+
+    const TOL = 1e-2; // meters / m-per-s; float-order slack
+    let dpMismatches = 0;
+    let dvMismatches = 0;
+    let firstBad = -1;
+    let contacts = 0;
+    for (let i = 0; i < BELT; i += 1) {
+      const o = i * 4;
+      const cpuMag = Math.hypot(cpu.dp[o]!, cpu.dp[o + 1]!, cpu.dp[o + 2]!);
+      if (cpuMag > 0) contacts += 1;
+      for (let k = 0; k < 3; k += 1) {
+        if (Math.abs(gpuDp[o + k]! - cpu.dp[o + k]!) > TOL) {
+          dpMismatches += 1;
+          if (firstBad < 0) firstBad = o + k;
+        }
+        if (Math.abs(gpuDv[o + k]! - cpu.dv[o + k]!) > TOL) {
+          dvMismatches += 1;
+          if (firstBad < 0) firstBad = o + k;
+        }
+      }
+    }
+    // The belt must actually exercise the narrow phase hard.
+    const pass = dpMismatches === 0 && dvMismatches === 0 && contacts > BELT / 4;
+    return {
+      name: `collisions GPU-vs-CPU (§4.2, step 7): dense belt of ${BELT}, 27-cell deferred dp/dv`,
+      pass,
+      detail: pass
+        ? `dp/dv match over ${BELT} bodies (${contacts} in contact) within ${TOL}`
+        : `dpMismatches=${dpMismatches} dvMismatches=${dvMismatches} contacts=${contacts} posDrift=${posDrift} velDrift=${velDrift} (first bad float ${firstBad}: gpu=${firstBad >= 0 ? gpuDp[firstBad] : "?"} cpu=${firstBad >= 0 ? cpu.dp[firstBad] : "?"})`,
+    };
+  } catch (err) {
+    return {
+      name: "collisions GPU-vs-CPU (§4.2, step 7)",
+      pass: false,
+      detail: `threw: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
 export async function runGpuVerification(renderer: Renderer): Promise<GateResult[]> {
   const results: GateResult[] = [];
   results.push(await verifyBaseRoundTrip(renderer));
@@ -395,5 +500,6 @@ export async function runGpuVerification(renderer: Renderer): Promise<GateResult
   results.push(await verifyBinnerScatter(renderer));
   results.push(await verifyCullLod(renderer));
   results.push(await verifyOverlayBound(renderer));
+  results.push(await verifyCollisions(renderer));
   return results;
 }

@@ -92,12 +92,18 @@ export type BinnerKernels = {
   scatter: ComputeKernel;
 };
 
+// A builder that emits an inlined liveness predicate for the item at `itemIndex` (a TSL bool
+// node). Inactive items are skipped by count AND scatter, so they never appear in any cell
+// (e.g. dead ring slots / out-of-window bodies in the collision instance). Omitted = all live.
+export type ItemActive = (itemIndex: ReturnType<typeof uint>) => Parameters<typeof If>[0];
+
 // Build a fully-instantiated set of binner kernels for grid size `G`, `numItems` items, and an
 // inlined `cellIndexOf`. Mirrors binner-cpu.binCPU structure exactly.
 export function makeBinnerKernels(
   G: number,
   numItems: number,
   cellIndexOf: CellIndexOf,
+  itemActive?: ItemActive,
 ): BinnerKernels {
   if (G <= 0 || G > MAX_GRID) {
     throw new Error(`makeBinnerKernels: G=${G} must be in (0, ${MAX_GRID}].`);
@@ -133,8 +139,15 @@ export function makeBinnerKernels(
   // would otherwise over-count cells (shifting the whole prefix sum by the overflow).
   const count = Fn(() => {
     If(instanceIndex.lessThan(uint(numItems)), () => {
-      const c = cellIndexOf(instanceIndex);
-      atomicAdd(cellCount.element(c), uint(1));
+      const body = (): void => {
+        const c = cellIndexOf(instanceIndex);
+        atomicAdd(cellCount.element(c), uint(1));
+      };
+      if (itemActive) {
+        If(itemActive(instanceIndex), body);
+      } else {
+        body();
+      }
     });
   })().compute(numItems, [WORKGROUP]);
 
@@ -277,9 +290,16 @@ export function makeBinnerKernels(
   // Within-cell ORDER is non-deterministic (atomic race) — a valid permutation, not binCPU's order.
   const scatter = Fn(() => {
     If(instanceIndex.lessThan(uint(numItems)), () => {
-      const c = cellIndexOf(instanceIndex);
-      const slot = atomicAdd(cellCursor.element(c), uint(1));
-      sortedItems.element(slot).assign(instanceIndex);
+      const body = (): void => {
+        const c = cellIndexOf(instanceIndex);
+        const slot = atomicAdd(cellCursor.element(c), uint(1));
+        sortedItems.element(slot).assign(instanceIndex);
+      };
+      if (itemActive) {
+        If(itemActive(instanceIndex), body);
+      } else {
+        body();
+      }
     });
   })().compute(numItems, [WORKGROUP]);
 

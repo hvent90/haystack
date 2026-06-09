@@ -121,6 +121,38 @@ multiply vs idle (HUD-off captures; idle 0 → pulse ~6000+ on Metal). 60 fps he
   a known rock; read back pos/base over 50k rocks; assert every |pos-base| ≤ √3·wobble+cap, radii
   carried, probe rock pulled > 100 m. PASS on Metal: `max 350.9 m ≤ 390 m; probe pulled 210.7 m`.
 
+### Step 7 — inter-asteroid collisions, first-class (final un-gated step)
+
+- **Pipeline (§4):** the step-5 binner instantiated for the collision world grid (64³ × 768 m,
+  ship-cell-snapped window; inlined `cellIndexOf`; new `itemActive` predicate so dead ring slots /
+  out-of-window bodies never enter a cell) → `narrow` (27-cell deferred-apply: each lane
+  accumulates ONLY its own dp/dv; sphere-sphere half-penetration pushout + restitution 0.15
+  impulse on approach) → `apply`. 9 dispatches, all pipelined via `renderer.compute` (§3.3).
+- **The cosmetic-tier bound (§4.5 #1 reconciliation):** no free-running integrator. Collisions
+  accumulate into `collOffset` hard-capped at 250 m with a damped (0.96/step), speed-capped
+  (30 m/s) velocity; `pos = base + wobble + wells + collOffset` ⇒ worst rendered displacement
+  ≈ 690 m, inside the radius+1400 m mine slack regardless of pile-up duration. Recycled ring
+  slots get their collision state zeroed via the dirty-range upload (all-zero CPU backing).
+- **Nc==0 gate (§3.4):** the WHOLE broad+narrow graph (incl. the fixed clearCounts/scan floor) is
+  skipped unless a gravity well's clump (3σ) can reach the near-window — the native field never
+  overlaps. 3 of the 6 deterministic wells are in range at spawn, so the live run exercises it.
+- **CPU executable spec:** `collide-cpu.ts` (`narrowPhaseCPU` brute force + `stepOffsetsCPU`),
+  pinned by `tests/integration/gpu-collide-parity.test.ts` (symmetric pushout, momentum-conserving
+  impulse, approach-only restitution, three-body accumulation, caps/damping).
+- **On-device gate (in `verify:gpu`):** full GPU pipeline vs CPU spec over an AUTHORED DENSE BELT
+  (8×8×8 jittered grid, radii 150–330 m, occupancy ≈ 1/cell — §4.3's validation target) on
+  identical f32 inputs. **PASS on Metal: dp/dv match over 512 bodies (511 in contact) within
+  1e-2.** Two more device-caught TSL bugs on the way: (#6) a storage/atomic read used directly as
+  a Loop `end` emits EMPTY WGSL (`i < ;` — pipeline rejected); (#7) NESTED TSL Loops reuse the
+  same WGSL loop-variable name and WGSL shadowing silently corrupts cross-scope references —
+  restructured to a flat 27-neighbor loop with every outer-derived value `.toVar()`'d before the
+  inner loop (this is why the binner's scan kernels avoid cross-scope loop vars).
+- **Live:** 60 fps held with the collision graph active (3 wells in range at spawn); prod movement
+  bench unchanged (721/721 frames @ 16.7 ms, worst cross bucket 13.9 ms).
+
+**With this, every un-gated architecture step (1–7) is built and device-verified. Steps 8
+(promotion netcode) and 9 (froxel volumetrics) remain correctly un-built per the hard gates.**
+
 ---
 
 ## DONE & VERIFIED — ON GPU (live device, both SwiftShader headless + real Apple Metal)

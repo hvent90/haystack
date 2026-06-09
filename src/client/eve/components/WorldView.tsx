@@ -35,6 +35,16 @@ import { makeLodAsteroidMaterial, originMeters } from "../gpu/kernels/render-nod
 import { frameCounter, genFieldOverlay } from "../gpu/kernels/overlay";
 import { makeCullPipeline } from "../gpu/kernels/cull";
 import {
+  collisionDt,
+  collOffset,
+  collVel,
+  gridOrigin,
+  makeCollisionPipeline,
+  snapGridOrigin,
+} from "../gpu/kernels/collide";
+import { COLLISION_WINDOW_METERS } from "../gpu/collide-cpu";
+import { deriveGravityWells, WELL_SIGMA_METERS } from "../gpu/wells";
+import {
   backingArrayOf,
   backingU32Of,
   base,
@@ -1127,6 +1137,9 @@ function InstancedAsteroids({
     [lod],
   );
   const projScreen = useMemo(() => new Matrix4(), []);
+  // Step 7: the collision pipeline + the deterministic wells that manufacture its density.
+  const collision = useMemo(() => makeCollisionPipeline(), []);
+  const wells = useMemo(() => deriveGravityWells(), []);
 
   // Ring-stream base/packAttr/slotMeta from the app's already-derived field (the worker +
   // reconcile output) on each visible-set change — a CPU derive + buffer SUB-RANGE write,
@@ -1150,6 +1163,11 @@ function InstancedAsteroids({
     markRangesForUpload(base, ranges);
     markRangesForUpload(packAttr, ranges);
     markRangesForUpload(slotMeta, ranges);
+    // A recycled slot must not inherit the previous occupant's collision state: the CPU
+    // backings of collOffset/collVel stay all-zero, so re-uploading the dirty ranges
+    // resets exactly those slots on the GPU.
+    markRangesForUpload(collOffset, ranges);
+    markRangesForUpload(collVel, ranges);
     renderStats.noteFieldWork(performance.now() - start);
   }, [asteroids]);
 
@@ -1158,7 +1176,7 @@ function InstancedAsteroids({
   // computeAsync-awaited in the hot loop). The camera transform was just written by
   // RenderDriver (mounted first, same priority -> runs first); updateMatrixWorld also
   // refreshes matrixWorldInverse, so the planes are THIS frame's.
-  useFrame(({ camera }) => {
+  useFrame(({ camera }, delta) => {
     const origin = renderOrigin(fallbackOrigin);
     originMeters.value.set(origin.x, origin.y, origin.z);
     frameCounter.value += 1;
@@ -1166,6 +1184,25 @@ function InstancedAsteroids({
     projScreen.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     lod.pipeline.updatePlanes(projScreen);
     gl.compute(genFieldOverlay);
+    // Collisions (§3.4 Nc==0 gate): only worth binning when a gravity well's clump can
+    // reach the near-window — the native field never overlaps. Skips the ENTIRE broad +
+    // narrow graph (and its fixed clear/scan floor) when no well is in range.
+    const half = COLLISION_WINDOW_METERS / 2;
+    const reach = half + WELL_SIGMA_METERS * 3;
+    const collisionActive = wells.some((well) => {
+      const dx = well.x - origin.x;
+      const dy = well.y - origin.y;
+      const dz = well.z - origin.z;
+      return dx * dx + dy * dy + dz * dz < reach * reach;
+    });
+    if (collisionActive) {
+      const snapped = snapGridOrigin(origin);
+      gridOrigin.value.set(snapped.x, snapped.y, snapped.z);
+      collisionDt.value = Math.min(delta, 1 / 30); // fixed-ish dt, refocus-clamped (§4.4)
+      for (const kernel of collision.dispatches) {
+        gl.compute(kernel);
+      }
+    }
     gl.compute(lod.pipeline.clearCull);
     gl.compute(lod.pipeline.cull);
     gl.compute(lod.pipeline.publishCounts);
