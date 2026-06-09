@@ -32,19 +32,21 @@ verification — ALL PASS`:**
   by invariant, not byte-equality).
 
 **4 real kernel bugs caught by the live device + fixed** (CPU tests could not see these):
+
 1. `verify-gpu.ts` base round-trip threw `'size' of undefined` — `getArrayBufferAsync` on a storage node never
    used in a pass. Fix: run `genFieldOverlay` (reads `base`) to materialize it before readback.
 2. `kernels/binner.ts` `cellCount` is atomic but was cleared/read as plain `u32` (Dawn:
    `cannot assign 'atomic<u32>' to 'u32'`). Fix: `atomicStore`/`atomicLoad`.
 3. `count`/`scatter`/`clearCounts` missing a bounds guard → the workgroup-rounded extra lanes over-counted.
    Fix: `If(instanceIndex < numItems/G)`.
-4. Scan off-by-one at cell 237857 — a *symptom* of #3 (tail over-count shifts the prefix sum). Fixed by #3.
+4. Scan off-by-one at cell 237857 — a _symptom_ of #3 (tail over-count shifts the prefix sum). Fixed by #3.
    Also: `scatter` atomicAdd'd the non-atomic `cellStart`; fixed with a dedicated atomic `cellCursor` +
    `initCursor` (mirrors `binCPU`'s `cursor = copy(cellStart)`).
 
 ## DONE & VERIFIED (real, runnable gates — pasted output below)
 
 ### Baseline (clean tree, before any edits)
+
 - `tsc --noEmit`: **exit 0, 0 errors.**
 - `bun test tests/integration`: **54 pass / 1 fail.** The 1 failure is **pre-existing and NOT mine**:
   `tests/integration/server.test.ts:921` "diagnoses million-scale virtual asteroid index without
@@ -53,8 +55,10 @@ verification — ALL PASS`:**
   suite is **84 pass / 1 fail** (+30 new GPU tests, all pass; same single pre-existing failure).
 
 ### Step 3 — determinism / base parity — commit `70c3956`
+
 The load-bearing half of step 3's gate. `base` is CPU-derived from the SAME `deriveVirtualField` the server
 uses and uploaded; the GPU never regenerates it (§3.2).
+
 - Files: `src/client/eve/gpu/buffers.ts`, `src/client/eve/gpu/base-derive.ts`,
   `tests/integration/gpu-base-parity.test.ts`.
 - **Gate: `bun test tests/integration/gpu-base-parity.test.ts` → `6 pass / 0 fail`, 96211 assertions.**
@@ -66,7 +70,9 @@ uses and uploaded; the GPU never regenerates it (§3.2).
   contract — the part that actually rules out a wrong GPU `frac(sin)` field — IS verified.
 
 ### Step 5 — Blelloch prefix-sum binner spike — commit `e149544`
+
 The doc's "research-grade TSL" risk, retired in isolation per §9.2 before anything depends on it.
+
 - Files: `src/client/eve/gpu/binner-cpu.ts` (executable spec), `src/client/eve/gpu/kernels/binner.ts` (TSL),
   `tests/integration/gpu-binner-parity.test.ts`.
 - **Gate: `bun test tests/integration/gpu-binner-parity.test.ts` → `12 pass / 0 fail`, ~1.98M assertions.**
@@ -80,8 +86,10 @@ The doc's "research-grade TSL" risk, retired in isolation per §9.2 before anyth
   buffer (the file documents this). A GPU-vs-CPU parity gate is mandatory before collisions depend on it.
 
 ### Step 4 (partial) — slotMeta id↔slot bridge — commit (see `git log`)
+
 The most-flagged step-4 trap, retired with a runnable CPU gate (the rest of step 4 — ring re-seed of crossed
 slabs + GPU cull/LOD indirect — is NOT built; see below).
+
 - Files: `slotMeta` buffer + `backingU32Of` in `buffers.ts`; `idFromSlotMeta` + `seedU32FromCPU` + slotMeta
   derivation in `base-derive.ts`; `tests/integration/gpu-slotmeta-bridge.test.ts`.
 - **Gate: `bun test tests/integration/gpu-slotmeta-bridge.test.ts` → `5 pass / 0 fail`, 106504 assertions.**
@@ -92,8 +100,10 @@ slabs + GPU cull/LOD indirect — is NOT built; see below).
   real buffer backing.
 
 ### Step 1 — WebGPU renderer beachhead — commit `f918023`
+
 Section 7 step 1 + §8 bring-up code, as an **isolated, non-destructive** module set. **Does NOT touch the
 working WebGL `WorldView.tsx`/`App` — the existing app still boots unchanged.**
+
 - Files: `capability.ts`, `renderer-factory.ts`, `kernels/overlay.ts`, `kernels/render-node.ts`,
   `components/WorldViewGPU.tsx`, `tests/integration/gpu-capability.test.ts`,
   `tests/integration/gpu-overlay-bound.test.ts`.
@@ -104,7 +114,7 @@ working WebGL `WorldView.tsx`/`App` — the existing app still boots unchanged.*
 - WebGPU-only, no fallback (capability check refuses non-WebGPU). StrictMode double-init guarded via a
   per-canvas `WeakMap` renderer-promise memo (I reviewed `renderer-factory.ts` — the guard is correct).
 - **UNVERIFIED (no device):** renderer boot/`init()`, overlay dispatch, zero-copy draw, floating-origin
-  render, the StrictMode double-mount path on a live device. Per its definition-of-done the *boot* itself is
+  render, the StrictMode double-mount path on a live device. Per its definition-of-done the _boot_ itself is
   the gate and it cannot be exercised here — step 1 is **code-complete + statically verified, boot pending a
   real GPU.**
 

@@ -10,29 +10,80 @@
   },
   "baselineAtHead": {
     "speedMps": 5000,
-    "p50ms": { "1x2000": 1.44, "16x2000": 317.44, "1x100000": 90.59, "4x100000": 359.16, "16x100000": 2166.93 },
+    "p50ms": {
+      "1x2000": 1.44,
+      "16x2000": 317.44,
+      "1x100000": 90.59,
+      "4x100000": 359.16,
+      "16x100000": 2166.93
+    },
     "p95ms": { "1x100000": 418.85, "16x100000": 3650.68 },
     "mbPerSecPerPeer": { "1x100000": 260.95, "16x100000": 94.33 },
     "interpretation": "Per-tick cost ~O(players x field). Dominant costs: per-peer getSnapshot + JSON.stringify-hash of every snapshot key incl. the 100k asteroid array; cubic cell scan on crossings; full-field re-serialization into deltas."
   },
   "items": [
-    { "id": "P0", "name": "Benchmark harness", "priority": 0, "passes": true,
-      "spec": "DONE. scripts/bench/world-stream.ts drives publishAll() in-process against N simulated peers at 5 km/s, prints JSON metrics (publishAll p50/p95/max, MB/s per peer, peak RSS, effective visible count) for a {players}x{renderedLimit} matrix. HAYSTACK_RENDERED_LIMIT made env-configurable. PASS: runs green for {players:[1,4,16], visibleAsteroids:[2000,100000]}." },
-    { "id": "P1", "name": "Baseline + profiled bottleneck", "priority": 1, "passes": true,
-      "spec": "DONE. Baseline captured (see baselineAtHead + progress.txt). Top costs identified: (a) per-peer per-tick getSnapshot rebuild + JSON.stringify change-detection over the full field, (b) cubic cell scan on cell crossings, (c) full 100k field re-serialized into deltas. PASS: baseline numbers + ranked bottleneck list recorded." },
-    { "id": "P2", "name": "Shared world computed once per tick (sub-linear in players)", "priority": 2, "passes": true,
-      "spec": "World state shared across players (field, structures, other ships, change-detection) is computed/serialized at most once per tick, not once per peer. PASS: in the benchmark, going 1 -> 16 players at a fixed field size increases publishAll per-tick time by far less than 16x; the per-player marginal cost is bounded by per-player view/delta work only. Record the scaling curve." },
-    { "id": "P3", "name": "Change-detection is not O(field)", "priority": 3, "passes": true,
-      "spec": "Per-peer per-tick change detection must not JSON.stringify (or otherwise touch) the whole field every tick. Use dirty/version tracking, structural sharing, or equivalent. PASS: at {players:1, visibleAsteroids:100000, 5 km/s}, publishAll p50 drops well below the baseline 90 ms and change-detection cost does not grow with visibleAsteroids when the field is unchanged." },
-    { "id": "P4", "name": "Field re-paging is incremental (bandwidth + cubic-scan)", "priority": 4, "passes": true,
-      "spec": "A 5 km/s player crossing cells must not re-send the full 100k field nor rerun an O(field) cubic scan per crossing. Send only added/removed rocks (or derive the field client-side), and make the field query incremental/indexed. PASS: at {players:1, visibleAsteroids:100000, 5 km/s}, MB/s per peer drops by >=1 order of magnitude vs baseline (261 MB/s) AND publishAll p95 (which baseline shows spiking to ~419 ms on crossings) drops well under the single-player threshold." },
-    { "id": "P5", "name": "Single player @ 100k @ 5 km/s under budget", "priority": 5, "passes": true,
-      "spec": "PASS: benchmark at {players:1, visibleAsteroids:100000, 5 km/s} shows effective client-visible count >=100000 AND publishAll p95 < 8 ms (knob)." },
-    { "id": "P6", "name": "Target concurrent players @ 100k @ 5 km/s under budget", "priority": 6, "passes": true,
-      "spec": "PASS: benchmark at {players: target.concurrentPlayers, visibleAsteroids:100000, 5 km/s} shows publishAll p95 < tickBudgetMs/2 (~16 ms, knob) AND no overrun ticks over the run." },
-    { "id": "P7", "name": "No functional/quality regression at scale", "priority": 7, "passes": true,
-      "spec": "PASS: `bun run verify` green (minus documented pre-existing fails); e2e screenshot/multiplayer/ui green; and a checked validation confirms at high density that mining, a surface/pocket scan, asteroid/deposit discovery, multiplayer remote-position sync, and chat all still work, and a focused client applies world-stream updates at ~30 Hz. Ship/cargo/credits/structures/discoveries still survive a server restart." },
-    { "id": "P8", "name": "Orders-of-magnitude summary", "priority": 8, "passes": true,
-      "spec": "PASS: progress.txt contains a before/after table (baseline vs final) and the achieved multiple — target: publishAll cost at {16 players, 100k, 5 km/s} reduced from ~2167 ms to under ~16 ms (>=100x), and MB/s per peer cut by >=1 order of magnitude. If the realized gain is less, state the measured number and the binding limit honestly." }
+    {
+      "id": "P0",
+      "name": "Benchmark harness",
+      "priority": 0,
+      "passes": true,
+      "spec": "DONE. scripts/bench/world-stream.ts drives publishAll() in-process against N simulated peers at 5 km/s, prints JSON metrics (publishAll p50/p95/max, MB/s per peer, peak RSS, effective visible count) for a {players}x{renderedLimit} matrix. HAYSTACK_RENDERED_LIMIT made env-configurable. PASS: runs green for {players:[1,4,16], visibleAsteroids:[2000,100000]}."
+    },
+    {
+      "id": "P1",
+      "name": "Baseline + profiled bottleneck",
+      "priority": 1,
+      "passes": true,
+      "spec": "DONE. Baseline captured (see baselineAtHead + progress.txt). Top costs identified: (a) per-peer per-tick getSnapshot rebuild + JSON.stringify change-detection over the full field, (b) cubic cell scan on cell crossings, (c) full 100k field re-serialized into deltas. PASS: baseline numbers + ranked bottleneck list recorded."
+    },
+    {
+      "id": "P2",
+      "name": "Shared world computed once per tick (sub-linear in players)",
+      "priority": 2,
+      "passes": true,
+      "spec": "World state shared across players (field, structures, other ships, change-detection) is computed/serialized at most once per tick, not once per peer. PASS: in the benchmark, going 1 -> 16 players at a fixed field size increases publishAll per-tick time by far less than 16x; the per-player marginal cost is bounded by per-player view/delta work only. Record the scaling curve."
+    },
+    {
+      "id": "P3",
+      "name": "Change-detection is not O(field)",
+      "priority": 3,
+      "passes": true,
+      "spec": "Per-peer per-tick change detection must not JSON.stringify (or otherwise touch) the whole field every tick. Use dirty/version tracking, structural sharing, or equivalent. PASS: at {players:1, visibleAsteroids:100000, 5 km/s}, publishAll p50 drops well below the baseline 90 ms and change-detection cost does not grow with visibleAsteroids when the field is unchanged."
+    },
+    {
+      "id": "P4",
+      "name": "Field re-paging is incremental (bandwidth + cubic-scan)",
+      "priority": 4,
+      "passes": true,
+      "spec": "A 5 km/s player crossing cells must not re-send the full 100k field nor rerun an O(field) cubic scan per crossing. Send only added/removed rocks (or derive the field client-side), and make the field query incremental/indexed. PASS: at {players:1, visibleAsteroids:100000, 5 km/s}, MB/s per peer drops by >=1 order of magnitude vs baseline (261 MB/s) AND publishAll p95 (which baseline shows spiking to ~419 ms on crossings) drops well under the single-player threshold."
+    },
+    {
+      "id": "P5",
+      "name": "Single player @ 100k @ 5 km/s under budget",
+      "priority": 5,
+      "passes": true,
+      "spec": "PASS: benchmark at {players:1, visibleAsteroids:100000, 5 km/s} shows effective client-visible count >=100000 AND publishAll p95 < 8 ms (knob)."
+    },
+    {
+      "id": "P6",
+      "name": "Target concurrent players @ 100k @ 5 km/s under budget",
+      "priority": 6,
+      "passes": true,
+      "spec": "PASS: benchmark at {players: target.concurrentPlayers, visibleAsteroids:100000, 5 km/s} shows publishAll p95 < tickBudgetMs/2 (~16 ms, knob) AND no overrun ticks over the run."
+    },
+    {
+      "id": "P7",
+      "name": "No functional/quality regression at scale",
+      "priority": 7,
+      "passes": true,
+      "spec": "PASS: `bun run verify` green (minus documented pre-existing fails); e2e screenshot/multiplayer/ui green; and a checked validation confirms at high density that mining, a surface/pocket scan, asteroid/deposit discovery, multiplayer remote-position sync, and chat all still work, and a focused client applies world-stream updates at ~30 Hz. Ship/cargo/credits/structures/discoveries still survive a server restart."
+    },
+    {
+      "id": "P8",
+      "name": "Orders-of-magnitude summary",
+      "priority": 8,
+      "passes": true,
+      "spec": "PASS: progress.txt contains a before/after table (baseline vs final) and the achieved multiple — target: publishAll cost at {16 players, 100k, 5 km/s} reduced from ~2167 ms to under ~16 ms (>=100x), and MB/s per peer cut by >=1 order of magnitude. If the realized gain is less, state the measured number and the binding limit honestly."
+    }
   ]
 }

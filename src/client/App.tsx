@@ -43,8 +43,8 @@ export function App(): ReactNode {
           background: "#03040a",
         }}
       >
-        This application requires WebGPU; your browser does not support it. Try the latest Chrome
-        or Edge with hardware acceleration enabled.
+        This application requires WebGPU; your browser does not support it. Try the latest Chrome or
+        Edge with hardware acceleration enabled.
       </div>
     );
   }

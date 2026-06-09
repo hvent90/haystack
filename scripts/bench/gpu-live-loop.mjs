@@ -61,7 +61,8 @@ const dbPath = resolve(tmpdir(), `haystack-gpu-live-${Date.now()}.sqlite`);
 
 function detectChrome() {
   if (process.env.GPU_LIVE_BUNDLED === "1") return undefined;
-  if (process.env.CHROME_PATH && existsSync(process.env.CHROME_PATH)) return process.env.CHROME_PATH;
+  if (process.env.CHROME_PATH && existsSync(process.env.CHROME_PATH))
+    return process.env.CHROME_PATH;
   const candidates = [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
@@ -83,16 +84,30 @@ async function waitForHttp(url, timeoutMs = 30000) {
 }
 
 function spawnLogged(cmd, args, env, label) {
-  const proc = spawn(cmd, args, { cwd: REPO, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
-  proc.stdout.on("data", (d) => process.env.GPU_LIVE_VERBOSE && process.stdout.write(`[${label}] ${d}`));
-  proc.stderr.on("data", (d) => process.env.GPU_LIVE_VERBOSE && process.stderr.write(`[${label}] ${d}`));
+  const proc = spawn(cmd, args, {
+    cwd: REPO,
+    env: { ...process.env, ...env },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  proc.stdout.on(
+    "data",
+    (d) => process.env.GPU_LIVE_VERBOSE && process.stdout.write(`[${label}] ${d}`),
+  );
+  proc.stderr.on(
+    "data",
+    (d) => process.env.GPU_LIVE_VERBOSE && process.stderr.write(`[${label}] ${d}`),
+  );
   return proc;
 }
 
 const server = spawnLogged(
   "bun",
   ["src/server/main.ts"],
-  { PORT: String(SERVER_PORT), HAYSTACK_DB: dbPath, HAYSTACK_RENDERED_LIMIT: String(RENDERED_LIMIT) },
+  {
+    PORT: String(SERVER_PORT),
+    HAYSTACK_DB: dbPath,
+    HAYSTACK_RENDERED_LIMIT: String(RENDERED_LIMIT),
+  },
   "server",
 );
 const client = spawnLogged(
@@ -124,7 +139,9 @@ try {
   const { pilot } = await joinRes.json();
   const pilotId = pilot.id;
   // Confirm the server is actually running the requested field size, device-independent.
-  const world = await (await fetch(`${SERVER_URL}/api/world?pilotId=${encodeURIComponent(pilotId)}`)).json();
+  const world = await (
+    await fetch(`${SERVER_URL}/api/world?pilotId=${encodeURIComponent(pilotId)}`)
+  ).json();
   summary.serverRenderedLimit = world?.field?.renderedLimit ?? null;
 
   summary.stage = "launching-browser";
@@ -156,7 +173,9 @@ try {
   const record = (s) => consoleLines.push(s);
   page.on("console", (m) => record(`[${m.type()}] ${m.text()}`));
   page.on("pageerror", (e) => record(`[pageerror] ${e.message}`));
-  page.on("requestfailed", (r) => record(`[requestfailed] ${r.url()} ${r.failure()?.errorText ?? ""}`));
+  page.on("requestfailed", (r) =>
+    record(`[requestfailed] ${r.url()} ${r.failure()?.errorText ?? ""}`),
+  );
 
   summary.stage = "navigating";
   const url = new URL(CLIENT_URL);
@@ -198,7 +217,13 @@ try {
     .waitForFunction(
       () => {
         const s = window.__HAYSTACK_RENDER_STATS__;
-        return s && s.derivedAsteroidCount > 1000 && s.drawCalls > 0 && s.renderedTriangles > 0 && s.frame > 5;
+        return (
+          s &&
+          s.derivedAsteroidCount > 1000 &&
+          s.drawCalls > 0 &&
+          s.renderedTriangles > 0 &&
+          s.frame > 5
+        );
       },
       { timeout: 90000, polling: 250 },
     )
@@ -213,9 +238,15 @@ try {
   // Verify the canvas has real, non-uniform content (not a blank/cleared buffer).
   summary.stage = "canvas-content-check";
   const canvasStats = await page.evaluate(() => {
-    const canvas = document.querySelector("[data-testid='world-canvas']") || document.querySelector("canvas");
+    const canvas =
+      document.querySelector("[data-testid='world-canvas']") || document.querySelector("canvas");
     if (!canvas) return { error: "no canvas" };
-    return { width: canvas.width, height: canvas.height, clientW: canvas.clientWidth, clientH: canvas.clientHeight };
+    return {
+      width: canvas.width,
+      height: canvas.height,
+      clientW: canvas.clientWidth,
+      clientH: canvas.clientHeight,
+    };
   });
   summary.canvas = canvasStats;
 
@@ -279,7 +310,8 @@ try {
   writeFileSync(tracePath, JSON.stringify({ traceEvents: traceChunks }), "utf8");
 
   const sorted = [...frameDeltas].filter((d) => d > 0).sort((a, b) => a - b);
-  const pct = (p) => (sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))] : 0);
+  const pct = (p) =>
+    sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))] : 0;
   const mean = sorted.length ? sorted.reduce((a, b) => a + b, 0) / sorted.length : 0;
   const longTasks = sorted.filter((d) => d > 50).length;
   const frameSummary = {
@@ -310,7 +342,9 @@ try {
     for (let y = 0; y < decoded.height; y += step) {
       for (let x = 0; x < decoded.width; x += step) {
         const o = (y * decoded.width + x) * 4;
-        const r = decoded.data[o], g = decoded.data[o + 1], b = decoded.data[o + 2];
+        const r = decoded.data[o],
+          g = decoded.data[o + 1],
+          b = decoded.data[o + 2];
         colors.add(`${r >> 3},${g >> 3},${b >> 3}`);
         // Background clear is #03040a; count pixels brighter than that as field content.
         if (r > 12 || g > 12 || b > 18) nonBackgroundSamples += 1;
@@ -346,7 +380,9 @@ try {
   console.log(`SCREENSHOT ${shotW}x${shotH} -> ${screenshotPath}`);
   console.log(`CONSOLE ${consoleLines.length} lines -> ${consolePath}`);
   console.log(`TRACE ${traceChunks.length} events (${traceBytes} bytes) -> ${tracePath}`);
-  console.log(`FRAMES p95=${frameSummary.p95Ms}ms max=${frameSummary.maxMs}ms fps~${frameSummary.approxFps} -> ${framesPath}`);
+  console.log(
+    `FRAMES p95=${frameSummary.p95Ms}ms max=${frameSummary.maxMs}ms fps~${frameSummary.approxFps} -> ${framesPath}`,
+  );
   console.log(summary.ok ? "GPU_LIVE_RESULT=PASS" : "GPU_LIVE_RESULT=FAIL");
   exitCode = summary.ok ? 0 : 1;
 } catch (e) {

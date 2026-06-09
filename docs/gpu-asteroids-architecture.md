@@ -25,14 +25,14 @@ Three end-state properties define the architecture:
 
 1. **GPU-resident field.** A fixed-capacity ring of `MAX_RESIDENT` slots (default **50k**, headroom 256k)
    holds the bodies near the camera. The "1M" is a **global id-space** (`cellsPerAxis³ = 100³ = 1,000,000`,
-   server-hard at `field.ts`) streamed *through* the ring as the camera moves — never co-resident. Per-body
+   server-hard at `field.ts`) streamed _through_ the ring as the camera moves — never co-resident. Per-body
    state is struct-of-arrays `vec4` storage buffers; each binding stays ≤16MB at 256k, legal under
    `maxStorageBufferBindingSize = 128MiB`.
 
 2. **Inter-asteroid collisions are first-class.** A GPU broad phase (world-space uniform grid via atomic
    count → prefix-sum → scatter) plus a narrow phase (sphere pushout + restitution impulse, deferred-apply,
-   substepped). They are *cosmetic-only* by construction (Section 4), which bounds how much they can "matter"
-   without crossing into server-authoritative netcode. What *makes* collisions happen at the field's native
+   substepped). They are _cosmetic-only_ by construction (Section 4), which bounds how much they can "matter"
+   without crossing into server-authoritative netcode. What _makes_ collisions happen at the field's native
    ~1-rock-per-1130 m density (where rocks essentially never overlap) is **manufactured local density**:
    sparse gravity wells (Section 4.3) and authored dense belts.
 
@@ -46,14 +46,14 @@ Three end-state properties define the architecture:
 
 - **Gameplay is id-keyed, not position-on-wire.** Scan targets and mine requests carry only the
   `v-cx-cy-cz` string id (`MineRequest = {asteroidId, depositId}`, `shared/types.ts`). The server
-  *independently re-derives the STATIC noise base position* from that id (`field.ts` `virtualAsteroidAt`,
+  _independently re-derives the STATIC noise base position_ from that id (`field.ts` `virtualAsteroidAt`,
   `virtualScanHits`; `sim.ts` `mineDeposit`) and validates against its own DB row (slack `radius + 1400`).
   **Client GPU motion physically cannot desync gameplay STATE** — gameplay reads `base`; only the renderer
   reads `pos`. This is enforced by the data path, not by convention.
 
 - **The static field streams at ~0 wire bytes/tick** via the cell-stable `ASTEROIDS_FINGERPRINT`
-  (`sim.ts`). The cosmetic GPU motion of the bulk adds **nothing** to the wire. This free-ride exists *only
-  because the authoritative field is static*; it is a property of the (gated) promotion tier (Section 4.5)
+  (`sim.ts`). The cosmetic GPU motion of the bulk adds **nothing** to the wire. This free-ride exists _only
+  because the authoritative field is static_; it is a property of the (gated) promotion tier (Section 4.5)
   that promoting moving rocks collapses it back to per-tick serialization.
 
 ### 1.3 Per-frame data flow
@@ -76,7 +76,7 @@ mutate uniforms (dt, originMeters, viewProj, gridOrigin, frameCounter)
          → renderOutput() / ACES tonemap
 ```
 
-The collision world grid is built **every frame before** the (future) froxel pass; froxels *read* the world
+The collision world grid is built **every frame before** the (future) froxel pass; froxels _read_ the world
 grid for volumetric rock shadows. Reading the grid does not reshape the collision grid to a frustum — the
 two stay separate instances (Section 6).
 
@@ -88,15 +88,15 @@ All buffers are struct-of-arrays. `std430` `vec4` stride = 16B, no padding; `uve
 
 ### 2.1 Per-body buffers (SoA)
 
-| Buffer | Type | Contents | Notes |
-|---|---|---|---|
-| `base` | `instancedArray(MAX_RESIDENT,'vec4')` | xyz = **ABSOLUTE static-noise world meters** (AUTHORITATIVE, server-matched `field.ts`), w = radius (45..355) | **IMMUTABLE** after seed. `.setPBO(true)` marks it CPU-authored and draw-readable. Written by CPU upload, NOT a GPU `frac(sin)` kernel — see §3.2. |
-| `pos` | `instancedArray(MAX_RESIDENT,'vec4')` ping-pong pair `pos_a/pos_b` | xyz = rendered world meters = `base + bounded overlay`, w = radius copy | What `material.positionNode` reads. The pair is always allocated; it is *actively swapped* only once integration exists (Section 4.2). At render `pos = base + wobble(phase, frame)`. |
-| `velMass` | `instancedArray(MAX_RESIDENT,'vec4')` ping-pong pair | xyz = velocity m/s, w = inverse-mass (0 = immovable) | Meaningful only for collidable/promoted slots; the bulk leaves 0. |
-| `orient` | `instancedArray(MAX_RESIDENT,'vec4')` quaternion (xyzw, normalized) | per-body orientation | Spin has no neighbor coupling → **single-buffered**, integrated in place. |
-| `angSig` | `instancedArray(MAX_RESIDENT,'vec4')` | xyz = angular velocity rad/s, w = **signature (0.08..0.78)** | `w` carries the signature the field generator produces (`field.ts`), needed for scan-strength parity. The mineral payload lives in `packAttr`. |
-| `packAttr` | `instancedArray(MAX_RESIDENT,'vec4')` | x = bit-packed(mineralIdx 0..5 \| pocketId 0..2 \| LOD/flags), y = mineralRichness (0.18..1.0), z = overlay phase seed, w = reserved | Mineral payload lives here. |
-| `slotMeta` | `instancedArray(MAX_RESIDENT,'uvec4')` | (globalCellX, globalCellY, globalCellZ, residencyEpoch) | Reconstructs the EXACT id `v-${cx}-${cy}-${cz}` for picking/promotion without a string table. Bridge: `getArrayBufferAsync(slotMeta)` or a GPU pick pass. |
+| Buffer     | Type                                                                | Contents                                                                                                                             | Notes                                                                                                                                                                                 |
+| ---------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `base`     | `instancedArray(MAX_RESIDENT,'vec4')`                               | xyz = **ABSOLUTE static-noise world meters** (AUTHORITATIVE, server-matched `field.ts`), w = radius (45..355)                        | **IMMUTABLE** after seed. `.setPBO(true)` marks it CPU-authored and draw-readable. Written by CPU upload, NOT a GPU `frac(sin)` kernel — see §3.2.                                    |
+| `pos`      | `instancedArray(MAX_RESIDENT,'vec4')` ping-pong pair `pos_a/pos_b`  | xyz = rendered world meters = `base + bounded overlay`, w = radius copy                                                              | What `material.positionNode` reads. The pair is always allocated; it is _actively swapped_ only once integration exists (Section 4.2). At render `pos = base + wobble(phase, frame)`. |
+| `velMass`  | `instancedArray(MAX_RESIDENT,'vec4')` ping-pong pair                | xyz = velocity m/s, w = inverse-mass (0 = immovable)                                                                                 | Meaningful only for collidable/promoted slots; the bulk leaves 0.                                                                                                                     |
+| `orient`   | `instancedArray(MAX_RESIDENT,'vec4')` quaternion (xyzw, normalized) | per-body orientation                                                                                                                 | Spin has no neighbor coupling → **single-buffered**, integrated in place.                                                                                                             |
+| `angSig`   | `instancedArray(MAX_RESIDENT,'vec4')`                               | xyz = angular velocity rad/s, w = **signature (0.08..0.78)**                                                                         | `w` carries the signature the field generator produces (`field.ts`), needed for scan-strength parity. The mineral payload lives in `packAttr`.                                        |
+| `packAttr` | `instancedArray(MAX_RESIDENT,'vec4')`                               | x = bit-packed(mineralIdx 0..5 \| pocketId 0..2 \| LOD/flags), y = mineralRichness (0.18..1.0), z = overlay phase seed, w = reserved | Mineral payload lives here.                                                                                                                                                           |
+| `slotMeta` | `instancedArray(MAX_RESIDENT,'uvec4')`                              | (globalCellX, globalCellY, globalCellZ, residencyEpoch)                                                                              | Reconstructs the EXACT id `v-${cx}-${cy}-${cz}` for picking/promotion without a string table. Bridge: `getArrayBufferAsync(slotMeta)` or a GPU pick pass.                             |
 
 **VRAM.** The bulk-render subset (`base + pos + orient + packAttr` = 64B) = 3.2MB@50k / 16MB@256k. Full sim
 (132B incl. ping-pong + slotMeta) = 6.6MB@50k / ~34.6MB@256k / 132MB@1M. Each binding stays under the 128MiB
@@ -114,12 +114,12 @@ buffer; the CPU reconstructs the id string client-side.
 
 The grid is one primitive:
 
-| Buffer | Type | Contents |
-|---|---|---|
-| `cellCount` | `instancedArray(G,'uint')` (atomic) | per-cell occupancy histogram, zeroed each rebuild by `clearCounts`. |
-| `cellStart` | `instancedArray(G,'uint')` | exclusive prefix-sum of `cellCount`. **Doubles as the atomic write cursor during scatter** (one binding, not two). |
-| `sortedItems` | `instancedArray(maxItems,'uint')` | item ids grouped by cell. Consumers loop `[cellStart .. cellStart+cellCount)`. |
-| `blockSums` | `instancedArray(ceil(G/256),'uint')` | per-workgroup partial sums for the two-level scan. |
+| Buffer        | Type                                 | Contents                                                                                                           |
+| ------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `cellCount`   | `instancedArray(G,'uint')` (atomic)  | per-cell occupancy histogram, zeroed each rebuild by `clearCounts`.                                                |
+| `cellStart`   | `instancedArray(G,'uint')`           | exclusive prefix-sum of `cellCount`. **Doubles as the atomic write cursor during scatter** (one binding, not two). |
+| `sortedItems` | `instancedArray(maxItems,'uint')`    | item ids grouped by cell. Consumers loop `[cellStart .. cellStart+cellCount)`.                                     |
+| `blockSums`   | `instancedArray(ceil(G/256),'uint')` | per-workgroup partial sums for the two-level scan.                                                                 |
 
 `G` is parameterized: world cells for collisions (Section 4.1), `160·90·64` for the future froxel grid. The
 per-body `gridCell` is a value recomputed inline inside `count`/`scatter`, not a stored buffer (one fewer
@@ -132,15 +132,15 @@ tax the collision narrow-phase hot path (which wants the cell index recomputed i
 
 ### 2.4 Collision-only deferred buffers (sized at `MAX_COLLIDERS = Nc`, the subset — NOT full N)
 
-| Buffer | Type | Contents |
-|---|---|---|
-| `dp` | `instancedArray(Nc,'vec4')` | positional correction xyz + contact count w. **Each lane writes ONLY its own `dp[i]`** (no atomics). |
-| `dv` | `instancedArray(Nc,'vec4')` | velocity impulse, same single-owner rule. |
+| Buffer | Type                        | Contents                                                                                             |
+| ------ | --------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `dp`   | `instancedArray(Nc,'vec4')` | positional correction xyz + contact count w. **Each lane writes ONLY its own `dp[i]`** (no atomics). |
+| `dv`   | `instancedArray(Nc,'vec4')` | velocity impulse, same single-owner rule.                                                            |
 
 ### 2.5 Froxel-ready buffer (future; schema committed now)
 
-| Buffer | Type | Contents |
-|---|---|---|
+| Buffer        | Type                                                       | Contents                        |
+| ------------- | ---------------------------------------------------------- | ------------------------------- |
 | `froxelAccum` | `instancedArray(160*90*64,'vec4')` index `z*W*H + y*W + x` | inScatter.rgb + transmittance.a |
 
 `vec4`-SoA is the project-wide convention, chosen so it survives a `Storage3DTexture`-unavailable path and
@@ -278,18 +278,18 @@ budget tables (Section 4.6) note the ×2.
 
 Per contact: sphere-sphere positional pushout (half-penetration weighted by inverse mass) + restitution
 impulse (`restitution ≈ 0.15`) into `dp`/`dv`. The apply pass (dispatch 15) folds `dp`/`dv` into
-`pos`/`velMass`; the ping-pong pair is *actively swapped* here, and only here (Section 2.1).
+`pos`/`velMass`; the ping-pong pair is _actively swapped_ here, and only here (Section 2.1).
 
 The ship is injected as immovable pushing spheres (`velMass.w = 0`) from `shipPos` uniforms. Because
 `integrateShipTick` (`src/shared/ship-motion.ts:96`) has ZERO asteroid awareness, the ship flies through the
-authoritative static field; the GPU plough is cosmetic on the *ship* side too and differs per client. A
+authoritative static field; the GPU plough is cosmetic on the _ship_ side too and differs per client. A
 server-stopped/bounced ship requires separate server ship-vs-static/promoted collision and is out of scope
 (rule (d) / Decision 3).
 
 ### 4.3 Density / clustering — what MAKES collisions happen
 
 At native density (1 rock / 1130 m cube; radius 45..355 m → max pair-overlap 710 m < 1130 m spacing) rocks
-**essentially never overlap** — a 768 m collision cell averages <<1 occupant. Collisions are *manufactured*:
+**essentially never overlap** — a 768 m collision cell averages <<1 occupant. Collisions are _manufactured_:
 
 - **Sparse K-well gravity:** a `gravityWells[K ≤ 8]` attractor loop (O(N·K)) pulls rocks into local knots,
   deliberately raising occupancy to where the 27-cell loop and pushout matter.
@@ -319,7 +319,7 @@ static noise) is what gameplay reads; `pos = base + overlay` is what only the re
 **TIER 2 — collisions:** the GPU narrow phase resolves `pos`/`velMass` for visual pile-ups and ship-plough.
 It CANNOT feed any gameplay output.
 
-**TIER 3 — promoted hot set:** anything a ship *touches* (mine/impact/displacement) is INSERT-if-absent into
+**TIER 3 — promoted hot set:** anything a ship _touches_ (mine/impact/displacement) is INSERT-if-absent into
 the SQLite `asteroids` table on its deterministic `v-cx-cy-cz` id and becomes server-authoritative at the
 30Hz tick (this fixes the `mineDeposit` "Asteroid not found" gap for `v-` ids). This is real netcode, gated.
 
@@ -383,10 +383,10 @@ frame budget = collision + render + (future) froxel  ≤ 16.6 ms (60 fps)
 
 **60 fps line (collidable subset `Nc`, pipelined dispatch, render-adjusted):**
 
-| Platform | `Nc` @ 60 fps | Notes |
-|---|---|---|
+| Platform                 | `Nc` @ 60 fps       | Notes                                                                                                                                                                                 |
+| ------------------------ | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | M-series Max (~400 GB/s) | **~100k colliders** | ~40 MB/substep@100k, ~80 MB at 2 substeps; comfortable under the render-adjusted budget. Degrades fast above ~250k (151 MB/substep, occ ≈ 0.95/cell, narrow phase ~115 MB) → ~30 fps. |
-| base M4 (~120 GB/s) | **~50k colliders** | ~half after render. |
+| base M4 (~120 GB/s)      | **~50k colliders**  | ~half after render.                                                                                                                                                                   |
 
 Memory budget: SoA keeps each `vec4` at 16MB@1M (128MiB only at ~8M); full-sim 132B/body = 6.6MB@50k /
 ~34.6MB@256k / 132MB@1M. `maxComputeWorkgroupsPerDimension = 65535` is non-binding (256k/256 = 1024 groups).
@@ -451,7 +451,7 @@ separate instances:
 
 - **Topology differs:** world cubic `64³ = 262144` vs view-space `160·90·64 = 921600` frustum-warped
   log-depth cells. Different `cellIndexOf` functions.
-- **Invalidation differs:** collisions rebuild on camera *translation*; froxels rebuild on *rotation* too.
+- **Invalidation differs:** collisions rebuild on camera _translation_; froxels rebuild on _rotation_ too.
 - **Buffers are additive, not shared:** running both means two `cellCount/cellStart/blockSums` sets at
   different `G` plus the ~14MB `froxelAccum` — ~2× grid storage. Cheap on unified-memory Apple silicon, but
   stated.
@@ -491,51 +491,51 @@ This is the order in which the one WebGPU system is brought up. Each step is an 
 single architecture.
 
 1. **WebGPU renderer beachhead.** The game boots on `WebGPURenderer`; materials are authored as
-   NodeMaterials; the capability check refuses non-WebGPU browsers. *(Risk: R3F async-gl factory +
-   StrictMode double-init guard.)*
+   NodeMaterials; the capability check refuses non-WebGPU browsers. _(Risk: R3F async-gl factory +
+   StrictMode double-init guard.)_
 
 2. **TSL post stack + ScanPulse.** Scan VFX + bloom + ACES via three-native `PostProcessing`;
    `mrt({output, normal})`; ScanPulse re-derives the player-distance basis (not `-getViewZ`). A
-   screenshot/visual-correctness gate confirms the VFX. *(Risk: floating origin breaks `-getViewZ` —
-   re-derive the basis.)*
+   screenshot/visual-correctness gate confirms the VFX. _(Risk: floating origin breaks `-getViewZ` —
+   re-derive the basis.)_
 
 3. **GPU-resident base + zero-copy render.** 50k–256k static rocks GPU-resident; `base` uploaded from the CPU
    derive (NOT a GPU `frac(sin)` kernel); `pos = base + overlay`; `material.positionNode` with `originMeters`.
    The CPU-derive worker is what this replaces. Parity gate = `getArrayBufferAsync(base)` vs
-   `deriveVirtualField` **EXACT / bit-identical** (same CPU source), not "sub-meter after a GPU port". *(Risk:
-   keeping `base` strictly CPU-authored.)*
+   `deriveVirtualField` **EXACT / bit-identical** (same CPU source), not "sub-meter after a GPU port". _(Risk:
+   keeping `base` strictly CPU-authored.)_
 
 4. **Ring streaming + GPU cull/LOD indirect.** A CPU ring bookkeeper re-seeds crossed slabs (CPU derive +
    sub-range upload); a cull pass + per-LOD `IndirectStorageBufferAttribute` + `setIndirect`; the aSunlit
-   two-tier shadow in TSL; instrumentation from `renderer.info`. *(Risks: clear/cull/draw ordering races; the
+   two-tier shadow in TSL; instrumentation from `renderer.info`. _(Risks: clear/cull/draw ordering races; the
    compacted slot is NOT a stable id — key temporal state on `slotMeta`; FIELD 100³ vs collision 64³
-   off-by-one.)*
+   off-by-one.)_
 
 5. **Shared binning primitive** (lands early — serves BOTH collisions and the future froxel binner). A
    tested, reusable `count→scan→scatter` binner (`cellCount/cellStart/sortedItems/blockSums`) behind an
-   inlined `cellIndexOf`; a world-space instance + a debug occupancy heatmap. *(Risk: Blelloch prefix-sum
+   inlined `cellIndexOf`; a world-space instance + a debug occupancy heatmap. _(Risk: Blelloch prefix-sum
    over `G = 262144` with `workgroupArray`/`storageBarrier` is research-grade in TSL; keep `cellIndexOf`
-   inlined per instance.)*
+   inlined per instance.)_
 
 6. **T1/T2 cosmetic motion.** A moving field that stays gameplay-safe: bounded wobble
    `f(phase, frameCounter)` (re-derivable, eviction-lossless) + quaternion spin + `gravityWells[K≤8]` to
-   manufacture clumping. *(Risk: keep the overlay BOUNDED under the radius+1400 m mine slack AND
-   gameplay-invisible vs the 3-decimal bearing.)*
+   manufacture clumping. _(Risk: keep the overlay BOUNDED under the radius+1400 m mine slack AND
+   gameplay-invisible vs the 3-decimal bearing.)_
 
 7. **T3 inter-asteroid collisions (first-class).** 27-cell deferred-apply pushout + restitution into
    `dp`/`dv` (each lane writes only its own slot), apply, fixed dt 1–2 substeps, ship as immovable pushing
-   spheres. Validate at 100k against an authored dense belt. *(Risks: deferred-apply correctness; pipelined
+   spheres. Validate at 100k against an authored dense belt. _(Risks: deferred-apply correctness; pipelined
    dispatch mandatory (Section 3.3); fixed broad-phase floor / gate when Nc==0; atomic contention in the
-   dense belt.)*
+   dense belt.)_
 
 8. **Promotion authority netcode** (GATED behind a product decision). INSERT-if-absent on `v-cx-cy-cz`;
    deterministic deposit synthesis; nullable velocity/orientation cols; fingerprint-collapse mitigation;
-   eviction/demotion handling bodies still in contact; the client snaps hot instances from the delta. *(Risks:
+   eviction/demotion handling bodies still in contact; the client snaps hot instances from the delta. _(Risks:
    fingerprint free-ride loss; deposit synthesis; two-body cascade; non-determinism → shared-authority
-   touch-race.)*
+   touch-race.)_
 
 9. **Froxel volumetric lighting** (explicitly future / additive). `froxelScatter → froxelIntegrate →
-   froxelApply` before bloom. *(Risk: competes for the same bandwidth (Section 4.6).)*
+froxelApply` before bloom. _(Risk: competes for the same bandwidth (Section 4.6).)_
 
 ---
 
@@ -563,8 +563,8 @@ src/client/eve/components/
 
 ```ts
 // renderer-factory.ts
-import * as THREE from 'three/webgpu';
-import { extend } from '@react-three/fiber';
+import * as THREE from "three/webgpu";
+import { extend } from "@react-three/fiber";
 extend(THREE as any); // register three/webgpu node objects with the R3F reconciler
 
 export function makeWebGPUFactory() {
@@ -573,7 +573,7 @@ export function makeWebGPUFactory() {
       canvas: props.canvas,
       antialias: true,
     });
-    await renderer.init();          // MUST await before first render (StrictMode double-init guard below)
+    await renderer.init(); // MUST await before first render (StrictMode double-init guard below)
     return renderer;
   };
 }
@@ -588,7 +588,7 @@ export async function hasWebGPU(): Promise<boolean> {
 
 export async function assertWebGPU(): Promise<void> {
   if (!(await hasWebGPU())) {
-    throw new Error('This application requires WebGPU; your browser does not support it.');
+    throw new Error("This application requires WebGPU; your browser does not support it.");
   }
 }
 ```
@@ -601,19 +601,22 @@ awaited renderer is the live one.
 
 ```ts
 // kernels/overlay.ts
-import * as THREE from 'three/webgpu';
-import { Fn, instancedArray, instanceIndex, uniform, vec3, fract, sin } from 'three/tsl';
+import * as THREE from "three/webgpu";
+import { Fn, instancedArray, instanceIndex, uniform, vec3, fract, sin } from "three/tsl";
 
 export const MAX_RESIDENT = 50_000;
 
 // base: CPU-authored, IMMUTABLE, draw-readable. (§3.2 — do NOT regenerate on GPU.)
-export const base     = instancedArray(MAX_RESIDENT, 'vec4').setPBO(true); // xyz=meters, w=radius
-export const pos      = instancedArray(MAX_RESIDENT, 'vec4').setPBO(true); // xyz=base+overlay, w=radius
-export const packAttr = instancedArray(MAX_RESIDENT, 'vec4');              // z = wobble phase seed
+export const base = instancedArray(MAX_RESIDENT, "vec4").setPBO(true); // xyz=meters, w=radius
+export const pos = instancedArray(MAX_RESIDENT, "vec4").setPBO(true); // xyz=base+overlay, w=radius
+export const packAttr = instancedArray(MAX_RESIDENT, "vec4"); // z = wobble phase seed
 
 // Upload base from the EXISTING CPU derive (field-core.ts deriveVirtualField / worker).
 // This is the single source of truth shared with sun-occlusion (§3.2).
-export function seedBaseFromCPU(renderer: THREE.WebGPURenderer, derived: Float32Array /* xyzr*N */) {
+export function seedBaseFromCPU(
+  renderer: THREE.WebGPURenderer,
+  derived: Float32Array /* xyzr*N */,
+) {
   // write `derived` into base's backing store, then renderer marks it for upload.
   // (use the storage-buffer write API.)
 }
@@ -623,10 +626,10 @@ const frameCounter = uniform(0);
 // OVERLAY kernel: frac(sin) here is on a SMALL bounded phase (cosmetic), NOT the hashCell argument,
 // so f32 non-portability is genuinely harmless. pos = base + bounded wobble.
 export const genFieldOverlay = Fn(() => {
-  const i  = instanceIndex;
-  const b  = base.element(i);
+  const i = instanceIndex;
+  const b = base.element(i);
   const ph = packAttr.element(i).z;
-  const t  = frameCounter.mul(0.01);
+  const t = frameCounter.mul(0.01);
   const wob = vec3(
     fract(sin(ph.add(t)).mul(43758.5453)).sub(0.5),
     fract(sin(ph.add(t).add(1.7)).mul(43758.5453)).sub(0.5),
@@ -642,18 +645,18 @@ export const genFieldOverlay = Fn(() => {
 
 ```ts
 // kernels/render-node.ts
-import * as THREE from 'three/webgpu';
-import { Fn, instanceIndex, uniform, attribute } from 'three/tsl';
-import { pos } from './overlay';
+import * as THREE from "three/webgpu";
+import { Fn, instanceIndex, uniform, attribute } from "three/tsl";
+import { pos } from "./overlay";
 
 export const originMeters = uniform(new THREE.Vector3());
 
 export function makeAsteroidMaterial() {
-  const mat = new THREE.MeshStandardNodeMaterial({ color: '#6f6a60', roughness: 0.96 });
+  const mat = new THREE.MeshStandardNodeMaterial({ color: "#6f6a60", roughness: 0.96 });
   mat.positionNode = Fn(() => {
-    const p   = pos.element(instanceIndex);
-    const rel = p.xyz.sub(originMeters).div(1000);          // metersPerSceneUnit = 1000
-    return attribute('position').mul(p.w.div(1000)).add(rel);
+    const p = pos.element(instanceIndex);
+    const rel = p.xyz.sub(originMeters).div(1000); // metersPerSceneUnit = 1000
+    return attribute("position").mul(p.w.div(1000)).add(rel);
   })();
   return mat;
 }
@@ -665,7 +668,7 @@ export function makeAsteroidMaterial() {
 // inside WorldView useFrame / setAnimationLoop
 originMeters.value.copy(ownShipMeters);
 frameCounter.value += 1;
-renderer.compute(genFieldOverlay);   // pipelined, NOT computeAsync-awaited (§3.3)
+renderer.compute(genFieldOverlay); // pipelined, NOT computeAsync-awaited (§3.3)
 renderer.render(scene, camera);
 ```
 

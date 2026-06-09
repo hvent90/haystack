@@ -40,7 +40,11 @@ function phaseSeed(index: number): number {
 // images. Shared by deriveBase (which derives first) and packBaseFromAsteroids (which reuses the
 // app's worker-derived, reconciled field — no main-thread re-derive). Cells are parsed from the
 // `v-cx-cy-cz` id, the same source packField uses, so the bytes are identical to deriveBase.
-function packFromRocks(rocks: readonly Asteroid[], capacity: number, residencyEpoch: number): DerivedBase {
+function packFromRocks(
+  rocks: readonly Asteroid[],
+  capacity: number,
+  residencyEpoch: number,
+): DerivedBase {
   const count = Math.min(rocks.length, capacity);
   const base = new Float32Array(capacity * 4);
   const packAttr = new Float32Array(capacity * 4);

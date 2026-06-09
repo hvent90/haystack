@@ -25,8 +25,8 @@ the two ~400 ms synchronous blocks. The `renderedLimit 2000→50000` default com
 tipped a bad-but-survivable list into a frame killer.
 
 This was independently confirmed by the user's own observation: **closing the EVE windows did
-not fix it**, because the overview *build* and the full-tree reconcile happen in `EveApp`
-(upstream of the windows) on every delta — only the *rendering* of the 50k rows lives in the
+not fix it**, because the overview _build_ and the full-tree reconcile happen in `EveApp`
+(upstream of the windows) on every delta — only the _rendering_ of the 50k rows lives in the
 window.
 
 ## The fix (smallest change that breaks the every-delta → full-reconcile loop)
@@ -66,14 +66,14 @@ then samples a 7 s window via Chrome CDP `Performance.getMetrics` + DOM counts. 
 hardware-independent signals are the **counts** and **CDP ScriptDuration**, not headless
 wall-clock FPS (see caveat).
 
-| metric | dev BEFORE | dev AFTER | prod BEFORE | prod AFTER |
-|---|---:|---:|---:|---:|
-| overview `<tr>` in DOM | 50,014 | **17** | 50,014 | **17** |
-| JS main-thread ms/s (`ScriptDuration`) | 446.7 | **33** | 161.6 | **~25–57** |
-| layout ms/s | 24.2 | **0.08** | 96.4 | **0.31** |
-| recalc-style ms/s | 0.98 | **0.01** | 2.2 | **0.05** |
-| React commits/s | ~30 (per delta) | **~1.3–1.9\*** | ~30 | **~1.9\*** |
-| overview builds/s | ~30 | **~1.3–1.9\*** | ~30 | **~1.9\*** |
+| metric                                 |      dev BEFORE |      dev AFTER | prod BEFORE | prod AFTER |
+| -------------------------------------- | --------------: | -------------: | ----------: | ---------: |
+| overview `<tr>` in DOM                 |          50,014 |         **17** |      50,014 |     **17** |
+| JS main-thread ms/s (`ScriptDuration`) |           446.7 |         **33** |       161.6 | **~25–57** |
+| layout ms/s                            |            24.2 |       **0.08** |        96.4 |   **0.31** |
+| recalc-style ms/s                      |            0.98 |       **0.01** |         2.2 |   **0.05** |
+| React commits/s                        | ~30 (per delta) | **~1.3–1.9\*** |         ~30 | **~1.9\*** |
+| overview builds/s                      |             ~30 | **~1.3–1.9\*** |         ~30 | **~1.9\*** |
 
 (JS main-thread dropped 447→70 ms/s with coalescing + virtualization, then 70→**33 ms/s**
 once the compact overview model stopped materializing the 50k rows — a **13×** reduction
@@ -97,7 +97,7 @@ ScriptDuration down 5–6× in dev / 2.8× in prod, layout → ~0).
 **swiftshader software-rasterizes the 50k-asteroid shadowed scene on the main thread**, which
 saturates it regardless of React. That is a headless artifact — and the exact inverse of the
 real-hardware situation, where the GPU is hardware-accelerated and **idle** (the trace proved
-it), so on the real M-series laptop the React churn *was* the bottleneck and removing it lets
+it), so on the real M-series laptop the React churn _was_ the bottleneck and removing it lets
 the idle GPU render the scene at full rate. This matches the project's own measurement
 philosophy (`ralph/prd-client.json`: trust deterministic counts over noisy headless FPS).
 
@@ -150,7 +150,7 @@ solving a problem the measurement doesn't show. In binding order:
 3. **GPU-driven instancing (Three WebGPU + TSL compute)** — only worth it once the **in-view**
    instance count or per-frame matrix upload becomes the ceiling. Per-chunk `InstancedMesh` +
    frustum/distance/LOD culling already bounds submitted work to what's actually in view, not
-   the total field, and the server stays independent of render count. Revisit *after* profiling
+   the total field, and the server stays independent of render count. Revisit _after_ profiling
    on real hardware shows the draw path is the new ceiling — references in `prompt.md`.
 
 ## Test status

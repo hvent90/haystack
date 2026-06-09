@@ -15,6 +15,7 @@ review the data (timeseries + flamegraph), so we can later optimize the server t
 ## Findings (grounded in code)
 
 Per 30 Hz `publishAll()` (`src/server/realtime.ts:151`):
+
 1. `world.advanceToNow()` (`realtime.ts:158`) → `syncShipsFromDatabase` (`SELECT * FROM ships`),
    fixed-step `tick()`s, `persistShips` (one `UPDATE` per ship), `persistLastTick` (meta upsert).
 2. `buildSharedWorld()` (`realtime.ts:164` → `sim.ts:203`) internally calls `advanceWorld()` →
@@ -32,6 +33,7 @@ The gameplay DB (`bun:sqlite`, `data/haystack.sqlite`, ~96 KB) is **`synchronous
 server-persisted; the 100k field is virtual/client-derived, so it is **not** the server bottleneck.
 
 ### Ranked bottleneck hypotheses (to confirm with live metrics, not the bench)
+
 1. The miss lives in what the bench never exercises: real WS sends to 16 sockets, GC pauses,
    two-timer contention, the double-advance, synchronous fsync.
 2. Triple `advanceToNow()` per tick → 3× ship `SELECT` + 3× N-row `UPDATE` persist.
@@ -51,6 +53,7 @@ server-persisted; the 100k field is virtual/client-derived, so it is **not** the
 ## Architecture
 
 ### 1. `src/server/metrics.ts` — in-process profiler (gated by `HAYSTACK_METRICS=1`)
+
 - Cheap, allocation-free **named accumulators**: per phase keep `count`, `sum`, `min`, `max`, and a
   fixed log-bucket histogram (≈0.05 ms … 200 ms) for p50/p95/p99 without storing raw samples.
 - Spans recorded via `metrics.now()` deltas (`performance.now()`); helper `time(name, fn)` and
@@ -74,7 +77,9 @@ server-persisted; the 100k field is virtual/client-derived, so it is **not** the
   flame/icicle drill-down); never persisted.
 
 ### 2. Storage — `data/haystack-metrics.sqlite`
+
 Own `Database` handle, `PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL`. One wide-ish table:
+
 ```sql
 CREATE TABLE IF NOT EXISTS metrics (
   ts_bucket INTEGER NOT NULL,  -- epoch seconds
@@ -89,9 +94,11 @@ CREATE TABLE IF NOT EXISTS metrics (
   PRIMARY KEY (ts_bucket, metric)
 );
 ```
+
 Added to `.gitignore` (like the game DB) and easy to `rm` after the day.
 
 ### 3. Visualization — built into the Hono server (local-only, gated)
+
 - `GET /debug/metrics/data?since=&until=` → JSON timeseries from the metrics DB.
 - `GET /debug/metrics/live` → current in-memory window (per-tick ring + latest gauges).
 - `GET /debug/metrics` → one self-contained HTML page (inline JS, tiny hand-rolled canvas charts,
@@ -100,7 +107,7 @@ Added to `.gitignore` (like the game DB) and easy to `rm` after the day.
     and the 33.3 ms budget, plus a `tick.peers` overlay → "where time goes vs player count".
   - **Percentile bars**: p50/p95/p99/max per phase for a selected window.
   - **Flame/icicle**: the phase tree (`publishAll → advanceToNow{syncShips,step,persistShips,…} →
-    buildSharedWorld → computeSharedHashes → flushPeers{getPilotView,hashing,stringify,send}`)
+buildSharedWorld → computeSharedHashes → flushPeers{getPilotView,hashing,stringify,send}`)
     for the selected window (mean and p99 tick).
 - `GET /debug/profile?seconds=10` → captures a real V8 **`.cpuprofile`** for download
   (open in speedscope / Chrome DevTools). Catches GC + anything unexpected.
@@ -108,6 +115,7 @@ Added to `.gitignore` (like the game DB) and easy to `rm` after the day.
   (tunnel points at Vite :5273, which only proxies `/api`).
 
 ### 4. Load generator — `scripts/bench/load.ts`
+
 - Spawns N synthetic WS clients against a target (default `ws://127.0.0.1:8787/api/world/stream`),
   each joins a throwaway pilot (via REST `/api/pilots`), subscribes, and sends realistic flight
   input at ~30–60 Hz. Ramps 1→N over a configurable window, holds, then disconnects.
@@ -115,6 +123,7 @@ Added to `.gitignore` (like the game DB) and easy to `rm` after the day.
 - Prints client-observed delta cadence so we can compare client-side 30 Hz against server metrics.
 
 ## Deployment / "on the server"
+
 1. Implement + `bun run typecheck` + `oxfmt`.
 2. Confirm no bench regression: `BENCH_PLAYERS=16 HAYSTACK_RENDERED_LIMIT=100000 bun scripts/bench/world-stream.ts`.
 3. Reconcile instances: kill stale `:8895`/`:8896` (`bun src/server/main.ts`), keep authoritative `:8787`.
@@ -124,6 +133,7 @@ Added to `.gitignore` (like the game DB) and easy to `rm` after the day.
    capture a baseline screenshot/export. Leave collecting ~1 day.
 
 ## Verification
+
 - `bun run typecheck` and `oxfmt` pass.
 - With `HAYSTACK_METRICS` unset: zero new work on the hot path (no metric calls, no extra DB).
 - With it set: metrics rows accumulate at ~1/s/phase; dashboard renders; `.cpuprofile` downloads;
@@ -131,5 +141,6 @@ Added to `.gitignore` (like the game DB) and easy to `rm` after the day.
 - DB-space check: metrics file growth ≈ a few MB/day; retention prune verified.
 
 ## Non-goals (this task)
+
 - No optimizations applied (double-advance removal, WAL on gameplay DB, send batching, in-memory
   authoritative world) — those come in the **later** data-driven optimization pass.
