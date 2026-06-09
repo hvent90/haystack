@@ -22,10 +22,12 @@ type QueryResult = {
 const fieldSeed = 424242;
 const cellSize = 1130; // ~6000 / ∛150 for 150x asteroid density
 const cellsPerAxis = 100;
-// Cap on how many virtual rocks are streamed/rendered to a player. Env-configurable
-// so the perf benchmark can drive the field to 100k+; defaults to 2000 in normal use.
+// Cap on how many virtual rocks the client derives/renders near a player. Env-configurable
+// so the perf benchmark can drive the field to 100k+; defaults to 50000 in normal use.
+// The field is derived client-side in a Web Worker, so this is free for the server tick —
+// only the client's render budget (frustum/distance/LOD culling) scales with it.
 function renderedLimit(): number {
-  return Number(process.env["HAYSTACK_RENDERED_LIMIT"] ?? "2000");
+  return Number(process.env["HAYSTACK_RENDERED_LIMIT"] ?? "50000");
 }
 const originOffset = -(cellsPerAxis * cellSize) / 2;
 const minerals: Mineral[] = ["nickel", "waterIce", "cobalt", "silicates", "platinum", "xenotime"];
