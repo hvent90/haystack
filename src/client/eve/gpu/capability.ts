@@ -1,8 +1,8 @@
 // WebGPU capability detection (docs/gpu-asteroids-architecture.md §5, §8.2).
 //
-// There is NO second rendering path: a browser without WebGPU is REFUSED. `assertWebGPU`
-// throws the exact unsupported-browser message; the boot path (WorldViewGPU) calls it on
-// mount and renders nothing on failure.
+// There is NO second rendering path: a browser without WebGPU is REFUSED. App.tsx gates
+// startup on `hasWebGPU`; `assertWebGPU` throws the exact unsupported-browser message
+// (used by the gpu-verify harness boot).
 //
 // Pure and unit-testable with a mocked `navigator` (tests/integration/gpu-capability.test.ts)
 // — no live GPU device is required to exercise the detection logic. The detection ITSELF

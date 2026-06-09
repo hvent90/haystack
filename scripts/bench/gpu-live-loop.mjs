@@ -390,7 +390,11 @@ try {
   // and near-black (<18) in the shot — shadowing in the zero-ambient look drives pixels to
   // true black, while the cosmetic tumble between two captures mostly lands on partial
   // facet lums, so this cut separates them. Sampled every 8th pixel; measured healthy on
-  // Metal: tier1 ≈ 8000, tier2 ≈ 2100, identical-state noise ≈ 350.
+  // Metal: tier1 ≈ 8000, tier2 ≈ 2300, identical-state noise ≈ 420, baseline lit ≈ 15500.
+  // The gate also bounds each tier's darkening from ABOVE and requires the production
+  // blend to retain lit pixels — an all-0s aSunlit (or an always-dark shadow factor) is
+  // the design's named "uniformly black wall" failure and would otherwise MAXIMIZE the
+  // darkened counts and pass vacuously (fresh-context review finding).
   summary.stage = "shadow-gate";
   const lumGrid = (png) => {
     const decoded = PNG.sync.read(png);
@@ -430,22 +434,39 @@ try {
     writeFileSync(resolve(SHOTS_DIR, `gpu-live-${stamp}.shadow-${name}.png`), bytes);
     return lumGrid(bytes);
   };
-  let shadowGate = { noise: -1, tier1Darkened: -1, tier2Darkened: -1, pass: false };
+  let shadowGate = {
+    noise: -1,
+    tier1Darkened: -1,
+    tier2Darkened: -1,
+    baselineLit: -1,
+    blendLit: -1,
+    pass: false,
+  };
   try {
+    const litCount = (g) => g.filter((v) => v > 90).length;
     const litA = await shadowShot(false, false, "off");
     const litB = await shadowShot(false, false, "off2"); // noise floor: identical state
     const t2 = await shadowShot(false, true, "tier2");
     const t1 = await shadowShot(true, false, "tier1");
+    const on = await shadowShot(true, true, "on"); // production blend
     shadowGate = {
       noise: darkened(litA, litB),
       tier2Darkened: darkened(litA, t2),
       tier1Darkened: darkened(litA, t1),
+      baselineLit: litCount(litA),
+      blendLit: litCount(on),
       pass: false,
     };
     shadowGate.pass =
       shadowGate.noise < 600 &&
+      // Each tier darkens (alive) but not everything (not a black wall). Healthy ratios
+      // vs baselineLit: tier1 ≈ 0.53, tier2 ≈ 0.15; an all-dark regression ≈ 1.0.
       shadowGate.tier1Darkened > Math.max(2000, 3 * shadowGate.noise) &&
-      shadowGate.tier2Darkened > Math.max(1000, 3 * shadowGate.noise);
+      shadowGate.tier1Darkened < 0.8 * shadowGate.baselineLit &&
+      shadowGate.tier2Darkened > Math.max(1000, 3 * shadowGate.noise) &&
+      shadowGate.tier2Darkened < 0.4 * shadowGate.baselineLit &&
+      // The production blend keeps individually lit rocks (varied, healthy ≈ 2500+).
+      shadowGate.blendLit > 1200;
   } catch (e) {
     record(`[shadow-gate] failed: ${e?.message ?? e}`);
   }
@@ -541,7 +562,7 @@ try {
     `SCAN idleTeal=${scanGate.idleTeal} pulseTeal=${scanGate.pulseTeal} ${scanGate.pass ? "PASS" : "FAIL"} -> ${scanShotPath}`,
   );
   console.log(
-    `SHADOW tier1=${shadowGate.tier1Darkened} tier2=${shadowGate.tier2Darkened} noise=${shadowGate.noise} ${shadowGate.pass ? "PASS" : "FAIL"}`,
+    `SHADOW tier1=${shadowGate.tier1Darkened} tier2=${shadowGate.tier2Darkened} noise=${shadowGate.noise} baseLit=${shadowGate.baselineLit} blendLit=${shadowGate.blendLit} ${shadowGate.pass ? "PASS" : "FAIL"}`,
   );
   console.log(summary.ok ? "GPU_LIVE_RESULT=PASS" : "GPU_LIVE_RESULT=FAIL");
   exitCode = summary.ok ? 0 : 1;

@@ -216,6 +216,20 @@ the identical-state capture pair). Healthy Metal run: `SHADOW tier1=8182 tier2=2
 PASS`. A silently-dead tier measures ≈ noise and fails. The gate counts toward
 `GPU_LIVE_RESULT`.
 
+A fresh-context adversarial review (subagent, no session context) confirmed all evidence and
+constraints (verdict: PASS with concerns) and caught a real gate gap: "darkened" only counts
+lit→black, so an ALL-DARK regression (aSunlit all-0s — the design's named black-wall failure)
+would MAXIMIZE the counts and pass vacuously. Hardened: each tier's darkening is now also
+bounded from above (tier1 < 0.8·baselineLit, tier2 < 0.4·baselineLit; healthy ratios 0.53 /
+0.15, all-dark ≈ 1.0) and the production blend must retain lit pixels (blendLit > 1200;
+healthy ≈ 3600). Re-run: `SHADOW tier1=8315 tier2=2378 noise=439 baseLit=15753 blendLit=3569
+PASS`. Review's remaining minor (accepted, recorded): screen-corner receivers at view depth
+~6.7–8 km can sit outside the ±8 ortho window laterally while bubbleWeight is still ~0.4, so
+a fully-occluded corner rock can render partially lit mid-fade — not visible in any capture;
+revisit only if it shows up in play. Also deleted the dead `WorldViewGPU.tsx` step-1
+beachhead (imported nowhere, contained a 0.4 ambient that contradicts the zero-ambient
+constraint if ever revived).
+
 ### Full verification (this session, real Metal unless noted)
 
 - `bun run verify`: 116 pass + the pre-existing server.test.ts:921 failure (honest baseline).
