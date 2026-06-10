@@ -1732,6 +1732,8 @@ tr:focus-visible {
 
 .app-shell.touch-ui .neocom {
   width: calc(52px + var(--safe-left));
+  /* Seven window buttons at 44px outgrow a 390px-tall landscape phone — scroll. */
+  overflow-y: auto;
 }
 
 .app-shell.touch-ui .neocom button {
