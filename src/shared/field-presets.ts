@@ -231,6 +231,10 @@ export const beltNatural: FieldPreset = {
   ],
   baseDensity: 0.3,
   maxRocksPerCell: 8,
+  // spawn/reset is world origin — guarantee a pocket there (hv decision
+  // pending between this and a moved verify vantage; pocket is the default
+  // because players waking up to scenery is better than waking up to void)
+  home: pocket,
 };
 
 export const PRESETS: Record<string, FieldPreset> = {

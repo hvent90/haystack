@@ -39,10 +39,11 @@ function renderedLimit(): number {
 const originOffset = -(cellsPerAxis * cellSize) / 2;
 const minerals: Mineral[] = ["nickel", "waterIce", "cobalt", "silicates", "platinum", "xenotime"];
 
-// The field-factory preset shaping the virtual field. Defaults to the legacy
-// uniform scatter until a designed belt is approved; env-overridable for A/B.
+// The field-factory preset shaping the virtual field. belt-natural is the
+// hv-approved direction (pockets + drift + voids, guaranteed home pocket at
+// spawn); env-overridable for A/B against legacy-uniform and the alternates.
 function fieldPresetName(): string {
-  const name = process.env["HAYSTACK_FIELD_PRESET"] ?? "legacy-uniform";
+  const name = process.env["HAYSTACK_FIELD_PRESET"] ?? "belt-natural";
   return PRESETS[name] !== undefined ? name : "legacy-uniform";
 }
 

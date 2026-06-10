@@ -32,13 +32,13 @@ A/B and as the default until a belt is approved.
 
 ## Files
 
-| file | role |
-| --- | --- |
-| `src/shared/field-factory.ts` | octaves, archetype geometry, queries (`rocksInCell`, `rocksInSphere`, `clustersNear`) |
-| `src/shared/field-presets.ts` | data-driven archetypes + composed presets (solo-* for debugging, belt-*) |
-| `src/cli/render-field-preview.ts` + `field-preview-entry.ts` | offline WebGPU preview harness (see below) |
-| `scripts/bench/parity-factory.ts` | server==client parity gate + legacy bit-exactness |
-| `scripts/bench/field-factory-stats.ts` | numeric density/mix smoke test |
+| file                                                         | role                                                                                  |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| `src/shared/field-factory.ts`                                | octaves, archetype geometry, queries (`rocksInCell`, `rocksInSphere`, `clustersNear`) |
+| `src/shared/field-presets.ts`                                | data-driven archetypes + composed presets (solo-_ for debugging, belt-_)              |
+| `src/cli/render-field-preview.ts` + `field-preview-entry.ts` | offline WebGPU preview harness (see below)                                            |
+| `scripts/bench/parity-factory.ts`                            | server==client parity gate + legacy bit-exactness                                     |
+| `scripts/bench/field-factory-stats.ts`                       | numeric density/mix smoke test                                                        |
 
 ## Archetypes (data, not code — `ArchetypeParams`)
 
@@ -77,7 +77,7 @@ cloned from `render-thrusters.ts` (Bun.build → headless Chromium →
 
 - **Count-gate falloff must floor at one cell size.** A filament/sheet/ring
   thinner than the 1.13 km cell otherwise only lights up the rare cell whose
-  *center* lands inside the tube — the structure vanishes. Count with
+  _center_ lands inside the tube — the structure vanishes. Count with
   `max(3·thickness, cellSize)`, then placement squeezes rocks back onto the
   thin geometry. This single fix is what made thin archetypes readable.
 - **Don't scale placement pull by local intensity** — rocks jittered outside

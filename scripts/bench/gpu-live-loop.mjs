@@ -109,6 +109,12 @@ const server = spawnLogged(
     PORT: String(SERVER_PORT),
     HAYSTACK_DB: dbPath,
     HAYSTACK_RENDERED_LIMIT: String(RENDERED_LIMIT),
+    // This is a GPU-PIPELINE gate, not a field-design gate: the SCAN/SHADOW
+    // pixel thresholds were calibrated against the uniform legacy field (a
+    // wall of rocks in every direction at spawn). Pin that preset here so the
+    // gate keeps verifying the pipeline at its calibration no matter which
+    // designed preset ships as the game default (override via env for A/B).
+    HAYSTACK_FIELD_PRESET: process.env.HAYSTACK_FIELD_PRESET ?? "legacy-uniform",
   },
   "server",
 );

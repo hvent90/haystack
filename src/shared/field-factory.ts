@@ -205,6 +205,10 @@ export type FieldPreset = {
   // rocks per fine cell baseline outside clusters (before macro modulation)
   baseDensity: number;
   maxRocksPerCell: number;
+  // guaranteed cluster in the coarse cell containing the world origin (the
+  // spawn/reset point), regardless of macro density — players always wake up
+  // with scenery, and the live verify gates always have rocks on screen.
+  home?: ArchetypeParams;
 };
 
 type ClusterSpec = {
@@ -241,20 +245,30 @@ function clusterAt(
     y: geo.originOffset + (ky + 0.25 + 0.5 * jy) * coarseSize,
     z: geo.originOffset + (kz + 0.25 + 0.5 * jz) * coarseSize,
   };
-  // Macro gates cluster EXISTENCE, not cluster intensity: thick belt regions
-  // grow more clusters, voids grow none, and every cluster that does exist is
-  // fully formed (multiplying intensities instead left faint half-clusters
-  // everywhere and crisp ones nowhere).
-  const macroHere = macroDensity(geo, preset.macro, center);
-  const roll = u01(hash4(geo.seed, kx, ky, kz, S_ARCH));
-  // roll over [0,1): macro-scaled archetypes stacked first, "none" = remainder
-  let acc = 0;
   let chosen: ArchetypeParams | null = null;
-  for (const entry of preset.archetypes) {
-    acc += entry.weight * macroHere;
-    if (roll < acc) {
-      chosen = entry.params;
-      break;
+  if (
+    preset.home !== undefined &&
+    kx === Math.floor(-geo.originOffset / coarseSize) &&
+    ky === kx &&
+    kz === kx
+  ) {
+    // home cluster: forced archetype at the origin coarse cell, macro ignored
+    chosen = preset.home;
+  } else {
+    // Macro gates cluster EXISTENCE, not cluster intensity: thick belt regions
+    // grow more clusters, voids grow none, and every cluster that does exist is
+    // fully formed (multiplying intensities instead left faint half-clusters
+    // everywhere and crisp ones nowhere).
+    const macroHere = macroDensity(geo, preset.macro, center);
+    const roll = u01(hash4(geo.seed, kx, ky, kz, S_ARCH));
+    // roll over [0,1): macro-scaled archetypes stacked first, "none" = remainder
+    let acc = 0;
+    for (const entry of preset.archetypes) {
+      acc += entry.weight * macroHere;
+      if (roll < acc) {
+        chosen = entry.params;
+        break;
+      }
     }
   }
   if (chosen === null) {
