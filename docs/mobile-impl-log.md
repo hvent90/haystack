@@ -110,13 +110,19 @@ Commits: `37827f4` (viewport/safe-areas), `a7cb2ae` (sticks + buttons), `c78a04e
   hit the stale server, whose baked `VITE_API_URL` pointed at a dead port, so the app
   never booted. If a suite fails on boot with no code change, `lsof -i :<port>`
   first.
-- **`verify:prediction` intermittently wedged under SwiftShader at full desktop-tier
-  rendering** (its first un-timeboxed `page.evaluate` starves behind multi-second
-  software-rendered froxel frames; observed Chromium at 600 % CPU). The suite is a
-  netcode test and already shrinks the field for exactly this class of reason, so its
-  page now boots with `?tier=mobile` — the input → prediction → ack path under test is
-  tier-independent, and the suite went from minutes-or-hang to a fast deterministic
-  pass. The mobile tier paying down a desktop harness's debt is a pleasing inversion.
+- **`verify:prediction` wedges intermittently under SwiftShader — bounded now, not
+  cured.** Un-timeboxed `page.evaluate` polls starve behind multi-second
+  software-rendered frames (Chromium observed at 600 %+ CPU). Mitigations landed: the
+  page boots `?tier=mobile` (netcode is tier-independent; the suite already shrinks
+  the field for this class of reason) and a 6-minute watchdog fails loudly with
+  cleanup instead of hanging a pipeline forever. Honest status at session end: the
+  delayed-ack phase (the actual netcode assertions) passed on every observed run; the
+  long collision phase completed on ~half of runs on this machine (3 clean full
+  passes recorded today, including post-froxel-rebase), wedging mid-poll on the
+  others — strongly load/thermal correlated after hours of GPU benches. On main
+  before this branch the suite was 100 % broken anyway (window-boot-closed, above).
+  A real fix is timeboxing every evaluate in the collision phase or moving its
+  position sampling to the API side; left for a harness-focused session.
 - **The gpu-live SHADOW gate is margin-flaky on this machine.** The diag counts are
   noise-relative (`tier1 > 2.5 × noise`) and this machine's measure view yields tiny
   absolute counts (~10 px vs the ~8000 the comment expects on Metal), so a noise
