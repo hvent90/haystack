@@ -1,5 +1,5 @@
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { StrictMode, useEffect, useMemo, useRef, useState } from "react";
 import type {
   Asteroid,
   CharacterCard,
@@ -830,182 +830,189 @@ export function EveApp(): ReactNode {
         audioVolume={spatialMasterVolume(audio.mix)}
       />
 
-      <TopRail
-        snapshot={snapshot}
-        myShip={myShip}
-        flightMode={flightMode}
-        throttle={effectiveThrottle}
-        cruiseLock={cruiseLock}
-        error={error}
-      />
-      <Neocom
-        layout={layout}
-        unreadComms={unreadComms}
-        onToggle={toggleWindow}
-        onReset={resetLayout}
-      />
-
-      <div className="window-layer">
-        {windowDefinitions.map((definition) => {
-          const state = layout[definition.key];
-          if (!state.open) {
-            return null;
-          }
-          return (
-            <WindowFrame
-              key={definition.key}
-              definition={definition}
-              state={state}
-              focused={focusedWindow === definition.key}
-              onFocus={() => focusWindow(definition.key)}
-              onPatch={(patch) => patchWindow(definition.key, patch)}
-              onClose={() => patchWindow(definition.key, { open: false })}
-            >
-              {definition.key === "flight" ? (
-                <FlightWindow
-                  myShip={myShip}
-                  flightMode={flightMode}
-                  throttle={effectiveThrottle}
-                  cruiseLock={cruiseLock}
-                  canUse={canUse}
-                  onRequestFlightLock={requestFlightLock}
-                  onThrust={sendFlightCommand}
-                  onThrottleDown={() => adjustFlightThrottle(-throttleStep, true)}
-                  onThrottleZero={() => setFlightThrottle(0, true)}
-                  onThrottleUp={() => adjustFlightThrottle(throttleStep, true)}
-                  onBoost={sendBoostInput}
-                  onCruiseToggle={() => toggleFlightCruiseLock(true)}
-                  onResetToOrigin={resetToOrigin}
-                />
-              ) : definition.key === "scanner" ? (
-                <ScannerWindow
-                  model={overviewModel}
-                  selected={selection}
-                  sort={sort}
-                  filter={overviewFilter}
-                  scanMode={scanMode}
-                  loading={isBusy("scan")}
-                  onSort={sortBy}
-                  onFilter={setOverviewFilter}
-                  onScanMode={setScanMode}
-                  onScan={() => runScan()}
-                  onSelect={selectTarget}
-                  onContextMenu={openContextMenu}
-                />
-              ) : definition.key === "cargo" ? (
-                <CargoWindow
-                  snapshot={snapshot}
-                  myShip={myShip}
-                  selectedAsteroidId={selectedAsteroidId}
-                  deposits={selectedSurfaceDeposits}
-                  canUse={canUse}
-                  busyActions={busyActions}
-                  onMine={mineDeposit}
-                  onSell={sellAllCargo}
-                />
-              ) : definition.key === "comms" ? (
-                <CommsWindow
-                  snapshot={snapshot}
-                  me={meCard}
-                  channel={chatChannel}
-                  targetPilotId={chatTargetPilotId}
-                  draft={chatDraft}
-                  messages={visibleChat}
-                  busy={isBusy("send-chat")}
-                  onChannel={setChatChannel}
-                  onTarget={setChatTargetPilotId}
-                  onDraft={setChatDraft}
-                  onSend={sendChat}
-                />
-              ) : definition.key === "character" ? (
-                <CharacterWindow
-                  snapshot={snapshot}
-                  me={meCard}
-                  myShip={myShip}
-                  onShowInfo={openShowInfo}
-                />
-              ) : (
-                <BasesWindow
-                  snapshot={snapshot}
-                  myShip={myShip}
-                  canUse={canUse}
-                  busyActions={busyActions}
-                  fieldStats={fieldStats}
-                  onDeploy={deployHab}
-                  onInspectField={inspectField}
-                  onUpgrade={upgrade}
-                />
-              )}
-            </WindowFrame>
-          );
-        })}
-      </div>
-
-      <HudCluster
-        myShip={myShip}
-        canUse={canUse}
-        flightMode={flightMode}
-        throttle={effectiveThrottle}
-        cruiseLock={cruiseLock}
-        flashlightOn={flashlightOn}
-        navLightsOn={navLightsOn}
-        onThrust={sendFlightCommand}
-        onThrottleDown={() => adjustFlightThrottle(-throttleStep, true)}
-        onThrottleZero={() => setFlightThrottle(0, true)}
-        onThrottleUp={() => adjustFlightThrottle(throttleStep, true)}
-        onBoost={sendBoostInput}
-        onCruiseToggle={() => toggleFlightCruiseLock(true)}
-      />
-      <SelectedItemPanel
-        row={selectedRow}
-        snapshot={snapshot}
-        markerActive={waypoint !== null}
-        onShowInfo={() => selectedRow !== null && openShowInfo(selectedRow)}
-        onScan={() =>
-          selectedRow?.kind === "asteroid" ? runScan(selectedRow.id) : runScan(selectedAsteroidId)
-        }
-        onMine={mineSelectedDeposit}
-        onSetFocus={() =>
-          selectedRow?.kind === "asteroid" && setSelection({ kind: "asteroid", id: selectedRow.id })
-        }
-        onSetMarker={() => selectedRow !== null && setMarker(selectedRow)}
-        onClearMarker={() => setWaypoint(null)}
-        onInspectBase={openBases}
-      />
-
-      {showInfoTarget !== null ? (
-        <ShowInfoCard
-          target={showInfoTarget}
+      {/* StrictMode wraps ONLY the React/DOM UI overlay — never WorldView above. React's dev
+          double-mount tears down + re-creates the host tree, which for R3F's WebGPU <Canvas>
+          races a delayed dispose(scene) against the reused renderer (see main.tsx). The HUD,
+          rails, and windows are plain React and keep StrictMode's effect-cleanup checks. */}
+      <StrictMode>
+        <TopRail
           snapshot={snapshot}
-          row={
-            overviewModel === null
-              ? null
-              : materializeRowByKey(overviewModel, `${showInfoTarget.kind}:${showInfoTarget.id}`)
-          }
-          onClose={() => setShowInfoTarget(null)}
+          myShip={myShip}
+          flightMode={flightMode}
+          throttle={effectiveThrottle}
+          cruiseLock={cruiseLock}
+          error={error}
         />
-      ) : null}
+        <Neocom
+          layout={layout}
+          unreadComms={unreadComms}
+          onToggle={toggleWindow}
+          onReset={resetLayout}
+        />
 
-      {contextMenu !== null ? (
-        <ContextMenu
-          state={contextMenu}
-          row={contextMenuRow}
+        <div className="window-layer">
+          {windowDefinitions.map((definition) => {
+            const state = layout[definition.key];
+            if (!state.open) {
+              return null;
+            }
+            return (
+              <WindowFrame
+                key={definition.key}
+                definition={definition}
+                state={state}
+                focused={focusedWindow === definition.key}
+                onFocus={() => focusWindow(definition.key)}
+                onPatch={(patch) => patchWindow(definition.key, patch)}
+                onClose={() => patchWindow(definition.key, { open: false })}
+              >
+                {definition.key === "flight" ? (
+                  <FlightWindow
+                    myShip={myShip}
+                    flightMode={flightMode}
+                    throttle={effectiveThrottle}
+                    cruiseLock={cruiseLock}
+                    canUse={canUse}
+                    onRequestFlightLock={requestFlightLock}
+                    onThrust={sendFlightCommand}
+                    onThrottleDown={() => adjustFlightThrottle(-throttleStep, true)}
+                    onThrottleZero={() => setFlightThrottle(0, true)}
+                    onThrottleUp={() => adjustFlightThrottle(throttleStep, true)}
+                    onBoost={sendBoostInput}
+                    onCruiseToggle={() => toggleFlightCruiseLock(true)}
+                    onResetToOrigin={resetToOrigin}
+                  />
+                ) : definition.key === "scanner" ? (
+                  <ScannerWindow
+                    model={overviewModel}
+                    selected={selection}
+                    sort={sort}
+                    filter={overviewFilter}
+                    scanMode={scanMode}
+                    loading={isBusy("scan")}
+                    onSort={sortBy}
+                    onFilter={setOverviewFilter}
+                    onScanMode={setScanMode}
+                    onScan={() => runScan()}
+                    onSelect={selectTarget}
+                    onContextMenu={openContextMenu}
+                  />
+                ) : definition.key === "cargo" ? (
+                  <CargoWindow
+                    snapshot={snapshot}
+                    myShip={myShip}
+                    selectedAsteroidId={selectedAsteroidId}
+                    deposits={selectedSurfaceDeposits}
+                    canUse={canUse}
+                    busyActions={busyActions}
+                    onMine={mineDeposit}
+                    onSell={sellAllCargo}
+                  />
+                ) : definition.key === "comms" ? (
+                  <CommsWindow
+                    snapshot={snapshot}
+                    me={meCard}
+                    channel={chatChannel}
+                    targetPilotId={chatTargetPilotId}
+                    draft={chatDraft}
+                    messages={visibleChat}
+                    busy={isBusy("send-chat")}
+                    onChannel={setChatChannel}
+                    onTarget={setChatTargetPilotId}
+                    onDraft={setChatDraft}
+                    onSend={sendChat}
+                  />
+                ) : definition.key === "character" ? (
+                  <CharacterWindow
+                    snapshot={snapshot}
+                    me={meCard}
+                    myShip={myShip}
+                    onShowInfo={openShowInfo}
+                  />
+                ) : (
+                  <BasesWindow
+                    snapshot={snapshot}
+                    myShip={myShip}
+                    canUse={canUse}
+                    busyActions={busyActions}
+                    fieldStats={fieldStats}
+                    onDeploy={deployHab}
+                    onInspectField={inspectField}
+                    onUpgrade={upgrade}
+                  />
+                )}
+              </WindowFrame>
+            );
+          })}
+        </div>
+
+        <HudCluster
+          myShip={myShip}
+          canUse={canUse}
+          flightMode={flightMode}
+          throttle={effectiveThrottle}
+          cruiseLock={cruiseLock}
+          flashlightOn={flashlightOn}
+          navLightsOn={navLightsOn}
+          onThrust={sendFlightCommand}
+          onThrottleDown={() => adjustFlightThrottle(-throttleStep, true)}
+          onThrottleZero={() => setFlightThrottle(0, true)}
+          onThrottleUp={() => adjustFlightThrottle(throttleStep, true)}
+          onBoost={sendBoostInput}
+          onCruiseToggle={() => toggleFlightCruiseLock(true)}
+        />
+        <SelectedItemPanel
+          row={selectedRow}
+          snapshot={snapshot}
           markerActive={waypoint !== null}
-          onClose={() => setContextMenu(null)}
-          onSelect={selectTarget}
-          onShowInfo={openShowInfo}
-          onScan={(row) => runScan(row.kind === "asteroid" ? row.id : row.asteroidId)}
-          onMine={() => contextMenuRow?.kind === "deposit" && mineDepositById(contextMenuRow.id)}
-          onSetMarker={setMarker}
-          onClearSelection={() => setSelection(null)}
+          onShowInfo={() => selectedRow !== null && openShowInfo(selectedRow)}
+          onScan={() =>
+            selectedRow?.kind === "asteroid" ? runScan(selectedRow.id) : runScan(selectedAsteroidId)
+          }
+          onMine={mineSelectedDeposit}
+          onSetFocus={() =>
+            selectedRow?.kind === "asteroid" &&
+            setSelection({ kind: "asteroid", id: selectedRow.id })
+          }
+          onSetMarker={() => selectedRow !== null && setMarker(selectedRow)}
           onClearMarker={() => setWaypoint(null)}
-          onDeployBase={deployHab}
-          onPulseScan={() => runScan()}
-          onOpenDm={openDmFor}
           onInspectBase={openBases}
         />
-      ) : null}
-      <AudioControls mix={audio.mix} unlocked={audio.unlocked} onChange={audio.setMix} />
+
+        {showInfoTarget !== null ? (
+          <ShowInfoCard
+            target={showInfoTarget}
+            snapshot={snapshot}
+            row={
+              overviewModel === null
+                ? null
+                : materializeRowByKey(overviewModel, `${showInfoTarget.kind}:${showInfoTarget.id}`)
+            }
+            onClose={() => setShowInfoTarget(null)}
+          />
+        ) : null}
+
+        {contextMenu !== null ? (
+          <ContextMenu
+            state={contextMenu}
+            row={contextMenuRow}
+            markerActive={waypoint !== null}
+            onClose={() => setContextMenu(null)}
+            onSelect={selectTarget}
+            onShowInfo={openShowInfo}
+            onScan={(row) => runScan(row.kind === "asteroid" ? row.id : row.asteroidId)}
+            onMine={() => contextMenuRow?.kind === "deposit" && mineDepositById(contextMenuRow.id)}
+            onSetMarker={setMarker}
+            onClearSelection={() => setSelection(null)}
+            onClearMarker={() => setWaypoint(null)}
+            onDeployBase={deployHab}
+            onPulseScan={() => runScan()}
+            onOpenDm={openDmFor}
+            onInspectBase={openBases}
+          />
+        ) : null}
+        <AudioControls mix={audio.mix} unlocked={audio.unlocked} onChange={audio.setMix} />
+      </StrictMode>
     </main>
   );
 
