@@ -34,7 +34,18 @@ export const BELT_FORMAT_VERSION = 1;
 // no re-bake). worldScale maps normalized sim units to meters; pMax is the expected
 // rocks-per-field-cell where the baked density is at its 99.9th-percentile peak.
 export const BELT_WORLD_SCALE = 1.0e6; // meters per normalized unit (a=1 -> 1000 km)
-export const BELT_P_MAX = 0.85; // rocks/cell at density 255 (≈ today's 1-rock-per-cell band feel)
+export const BELT_P_MAX = 0.85; // rocks/cell at density 255 (≈ 1-rock-per-cell band ceiling)
+// Belt grid cell (meters). 530 m + pMax 0.85 -> ~5.7 rocks/km³ peak, ~350 m mean
+// nearest-neighbour spacing — the Elite Dangerous ring feel (research doc §2: ED slab
+// density ~5-10 rocks/km³, spacing ≥300 m). The legacy hash field keeps its own 1130 m.
+export const BELT_CELL_SIZE = 530;
+// Vertical compression of the bake's z structure: the sim's ±zMax (±90 km at this
+// worldScale) reads as a fluffy torus; ED rings are a thin slab — community estimates
+// 2-4 km, with "several km" eyeballs (research doc §3). 22 maps ±90 km -> ±4.1 km
+// (~8 km full slab): ED-thin from outside, hv-requested headroom inside. No re-bake:
+// the grid, density sampling and hero decode all share this constant, so
+// server/client/GPU stay bit-identical.
+export const BELT_VERTICAL_SQUASH = 22;
 export const HERO_RADIUS_BASE = 100; // hero radius = base * d^0.75 (d ∈ [1,60] -> ~100..2150 m)
 export const HERO_RADIUS_EXP = 0.75;
 
@@ -50,9 +61,9 @@ export type BeltGridGeometry = {
   originY: number;
 };
 
-// Key packing for hero cell buckets. cellsXY stays < 8192 for any sane worldScale
-// (3.25e6 m / 1130 m ≈ 5754); (8192^3 = 5.5e11) < 2^53 so the key is exact.
-export const BELT_CELL_KEY_BASE = 8192;
+// Key packing for hero cell buckets. cellsXZ stays < 16384 at the ED-density cell size
+// (3.25e6 m / 530 m ≈ 6132 -> 12264 cells); (16384^3 ≈ 4.4e12) < 2^53 so the key is exact.
+export const BELT_CELL_KEY_BASE = 16384;
 export function beltCellKey(cx: number, cy: number, cz: number): number {
   return (cx * BELT_CELL_KEY_BASE + cy) * BELT_CELL_KEY_BASE + cz;
 }
@@ -84,7 +95,7 @@ export function beltGridGeometry(
   cellSize: number,
 ): BeltGridGeometry {
   const halfXZ = Math.ceil((meta.density.rMax * worldScale) / cellSize);
-  const halfY = Math.ceil((meta.density.zMax * worldScale) / cellSize);
+  const halfY = Math.ceil((meta.density.zMax * worldScale) / BELT_VERTICAL_SQUASH / cellSize);
   const cellsXZ = halfXZ * 2;
   const cellsY = halfY * 2;
   if (cellsXZ >= BELT_CELL_KEY_BASE || cellsY >= BELT_CELL_KEY_BASE) {
@@ -112,10 +123,11 @@ function decodeHeroes(bytes: Uint8Array, geo: BeltGridGeometry, worldScale: numb
   for (let i = 0; i < count; i += 1) {
     const o = i * RECORD;
     // Sim (x, y, z_vertical) -> world (x, y = sim z, z = sim y); see the axis-mapping
-    // note on BeltGridGeometry.
+    // note on BeltGridGeometry. The vertical axis is squashed with the rest of the slab
+    // (BELT_VERTICAL_SQUASH) so heroes stay inside the thinned grid.
     const x = view.getFloat32(o, true) * worldScale;
     const z = view.getFloat32(o + 4, true) * worldScale;
-    const y = view.getFloat32(o + 8, true) * worldScale;
+    const y = (view.getFloat32(o + 8, true) * worldScale) / BELT_VERTICAL_SQUASH;
     const d = view.getFloat32(o + 12, true);
     const radius = HERO_RADIUS_BASE * Math.pow(d, HERO_RADIUS_EXP);
     posRadius[i * 4] = x;

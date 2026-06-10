@@ -72,17 +72,25 @@ function nearestDerivedRock(origin: Vector3): { position: Vector3; radius: numbe
 
 describe("shared ship collision", () => {
   test("virtual obstacle derivation matches the parity-gated field math exactly", () => {
+    // Sample heights sit INSIDE the ED-thin slab (BELT_VERTICAL_SQUASH compresses the
+    // belt to ~±4 km, with most mass within ~±2 km): the old y=16000/-3200 samples are
+    // legitimately empty space now. The test pins obstacle≡derive parity, so samples
+    // must be where rocks exist.
     const samples: Vector3[] = [
       { x: 1264900, y: 20, z: 250 },
       { x: 1250000, y: 1200, z: 8000 },
-      { x: 1348000, y: -3200, z: -22000 },
-      { x: 1454000, y: 16000, z: 24000 },
+      { x: 1348000, y: -1500, z: -22000 },
+      { x: 1454000, y: 800, z: 24000 },
     ];
     for (const origin of samples) {
       const env = makeShipCollisionEnvironment(field, [], serverBeltField());
       const obstacles = env.obstaclesForSegment(origin, origin);
       expect(obstacles.length).toBeGreaterThan(0);
-      const derived = deriveVirtualField(origin, { ...field, renderedLimit: 200 });
+      // The obstacle sweep reaches maxHeroRadius (+ship) ≈ ±2.2 km of the segment; the
+      // cross-check set must cover that whole box. At the ED-ring density (BELT_CELL_SIZE
+      // 530 m, ~4-6 rocks/km³) a 200-rock ball spans only ~2 km, so the limit that made
+      // the box ⊂ ball at the old 1130 m grid now has to be 2500.
+      const derived = deriveVirtualField(origin, { ...field, renderedLimit: 2500 });
       const derivedById = new Map(derived.map((rock) => [rock.id, rock]));
       for (const obstacle of obstacles) {
         const rock = derivedById.get(obstacle.id);
