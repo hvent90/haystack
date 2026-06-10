@@ -210,3 +210,10 @@ fieldDiagnostic, both belt-aware).
   structure + far-field granularity at region scale, and varied rock sizes incl. ~2 km
   heroes at close scale. The failure mode the design conversation feared (formulaic
   noise) is visibly absent.
+
+- Family-shear observation (1M run): even the youngest family (injected 40 orbits before
+  the final epoch) shears into a ~270° arc; azimuthal point-clumps are short-lived at
+  these orbital frequencies, so the lasting family signature is overlapping rings/arcs of
+  varying thickness + element-space tightness (0.048× Poisson). If future tuning wants
+  discrete blob-clumps, push `inject_window[1]` to ~0.9995 and drop `dv_over_vorb_min`
+  (sim re-run required) — or accept that arcs ARE the physical answer.
