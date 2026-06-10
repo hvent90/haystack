@@ -18,7 +18,7 @@ import {
 } from "three/tsl";
 
 import type { Vector3 } from "../../../shared/types";
-import { sampleDensity, type BeltField } from "../../../shared/belt/field";
+import { remapBeltDensity, sampleDensity, type BeltField } from "../../../shared/belt/field";
 import { activeBeltField } from "../field-core";
 import { flightRenderStore } from "../renderStore";
 import { toScene } from "../vector";
@@ -112,7 +112,9 @@ function buildAssets(belt: BeltField): FarFieldAssets {
       let s = 0;
       const base = (ir * ntheta + it) * nz;
       for (let iz = 0; iz < nz; iz += 1) {
-        s += density[base + iz]!;
+        // Same contrast ramp the rocks and fog run through — without it the distant
+        // ring sheet reads thinner than the field the player is actually inside.
+        s += remapBeltDensity(density[base + iz]! / 255) * 255;
       }
       sums[ir * ntheta + it] = s;
       if (s > peak) peak = s;

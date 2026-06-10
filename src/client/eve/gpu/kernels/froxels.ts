@@ -55,7 +55,12 @@ import {
   type ShaderNodeObject,
 } from "three/tsl";
 
-import type { BeltField } from "../../../../shared/belt/field";
+import {
+  BELT_DENSITY_RAMP_HI,
+  BELT_DENSITY_RAMP_LO,
+  BELT_DENSITY_RAMP_TARGET,
+  type BeltField,
+} from "../../../../shared/belt/field";
 import {
   FROXEL_COUNT,
   FROXEL_D,
@@ -152,14 +157,16 @@ export type FroxelTuning = {
 // bright sun-side gradient (research doc §5: "milk of clouds"). The pre-ED bluish
 // breath was sigmaScale 0.22 / albedo (0.5, 0.56, 0.74) / sunStrength 0.65.
 //
-// sigmaScale is CALIBRATED TO THE ACTIVE BAKE's local density statistics: extinction =
-// sigmaScale x baked density (0..1 of the bake's own 99.9th-pct peak). The saturn bake
-// reads ~0.19 of peak in the spawn band (the legacy default bake read ~0.7), so the
-// 0.55 that made milk on the legacy bake rendered as "no haze at all" on saturn (hv
-// report, 2026-06-10). 2.5 x 0.19 ≈ 0.48/km ≈ the legacy look. Re-tune this if the
-// shipped preset (or its density normalization) changes.
+// extinction = sigmaScale x remapBeltDensity(baked density). The contrast ramp
+// (shared/belt/field.ts) pins everything meaningfully in-band to ~RAMP_TARGET (0.9), so
+// the milk no longer rides each bake's density normalization (the 2026-06-10 "no haze
+// at all on saturn" calibration trap: spawn band read 0.19 of saturn's peak vs 0.7 of
+// legacy's, needing sigmaScale 2.5). 1.75 is the hv-picked rung of the 2026-06-10
+// fog-ladder A/B (scripts/bench/fog-ladder.mjs): in-band sigma_t ≈ 1.75 x 0.8 ≈ 1.4/km,
+// rocks dissolve into the milk by ~2 km — the ED claustrophobic ring feel. Gaps stay
+// at sigmaFloor.
 export const FROXEL_DEFAULTS: FroxelTuning = {
-  sigmaScale: 2.5,
+  sigmaScale: 1.75,
   sigmaFloor: 0.01,
   albedo: { r: 0.66, g: 0.58, b: 0.47 },
   ambient: 0.012,
@@ -381,6 +388,19 @@ function farFade(dist: FloatNode): FloatNode {
   return smoothstep(float(FROXEL_FADE_START), float(FROXEL_FAR), dist).oneMinus();
 }
 
+// Density contrast ramp (mirrors shared/belt/field.ts remapBeltDensity, which
+// froxels-cpu.froxelSigmaT applies in f64): identity in the gaps, smoothstep snap to
+// the ramp target in-band, identity again above the target. Keeps the fog thickening
+// in lockstep with rock placement.
+function remapDensityTSL(d: FloatNode): FloatNode {
+  const ramped = d.add(
+    float(BELT_DENSITY_RAMP_TARGET)
+      .sub(d)
+      .mul(smoothstep(float(BELT_DENSITY_RAMP_LO), float(BELT_DENSITY_RAMP_HI), d)),
+  );
+  return max(d, ramped);
+}
+
 // Henyey-Greenstein phase on the shared anisotropy uniform (froxels-cpu.henyeyGreenstein).
 function hgPhase(cosTheta: FloatNode): FloatNode {
   const g2 = uHgG.mul(uHgG);
@@ -449,7 +469,7 @@ export function makeFroxelPipeline(binner: BinnerBuffers): FroxelPipeline {
       const dirWorld = normalize(froxelCamWorld.mul(vec4(dir, 0)).xyz).toVar();
 
       // Density sampling needs the ABSOLUTE world position (polar around the planet).
-      const density = sampleDensityTSL(world.add(vec3(froxelAnchor))).toVar();
+      const density = remapDensityTSL(sampleDensityTSL(world.add(vec3(froxelAnchor)))).toVar();
       const sigmaT = density.mul(uSigmaScale).add(uSigmaFloor).mul(farFade(dist)).toVar();
       const trans = exp(sigmaT.mul(sliceLen).negate()).toVar();
 

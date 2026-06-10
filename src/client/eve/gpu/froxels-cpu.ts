@@ -25,6 +25,8 @@
 //              of slice z. The apply lookup at distance d interpolates fz = zOfDistance(d)-1
 //              (identity (0,0,0,1) below the first slice's far edge).
 
+import { remapBeltDensity } from "../../../shared/belt/field";
+
 // --- grid dimensions (§2.5 — committed schema) ---------------------------------------
 export const FROXEL_W = 160;
 export const FROXEL_H = 90;
@@ -329,7 +331,9 @@ export function froxelCenterWorldMeters(
 }
 
 // Per-slice extinction sigma_t (1/km) at a froxel: baked density × scale + floor, eased
-// out over the far handoff band so the medium never ends on a hard shell.
+// out over the far handoff band so the medium never ends on a hard shell. The density
+// runs through the SAME contrast ramp as rock placement (shared/belt/field.ts
+// remapBeltDensity) so the milk thickens exactly where the rocks do.
 export function froxelSigmaT(
   density01: number,
   dist: number,
@@ -338,7 +342,7 @@ export function froxelSigmaT(
 ): number {
   const t = Math.min(1, Math.max(0, (dist - FROXEL_FADE_START) / (FROXEL_FAR - FROXEL_FADE_START)));
   const fade = 1 - t * t * (3 - 2 * t);
-  return (density01 * sigmaScale + sigmaFloor) * fade;
+  return (remapBeltDensity(density01) * sigmaScale + sigmaFloor) * fade;
 }
 
 // scatter: per-slice (inScatter.rgb, transmittance.a) for every froxel, into `out`

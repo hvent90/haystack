@@ -72,6 +72,26 @@ export function makeBeltField(bake: BeltBake, seed: number, densityScale: number
 
 // --- density sampling --------------------------------------------------------------
 
+// Nonlinear density contrast curve: the belt only reads/flies right at its thickest, so
+// anything meaningfully in-band snaps up toward full thickness while the resonance gaps
+// and band fringes keep the bake's structure. Identity below RAMP_LO (gaps stay gaps),
+// smoothstep ramp to RAMP_TARGET by RAMP_HI, and max() hands back to identity for the
+// rare bins denser than the target. Monotonic and C1, so band edges stay shells-free.
+// EVERY density consumer must share this curve — rocks (here), froxel fog
+// (gpu/froxels-cpu.ts + kernels/froxels.ts mirror it in f32) and the far-field sheet
+// (BeltFarField.tsx) — or local rocks, fog and the distant ring visibly desync.
+export const BELT_DENSITY_RAMP_LO = 0.1;
+export const BELT_DENSITY_RAMP_HI = 0.22;
+export const BELT_DENSITY_RAMP_TARGET = 0.9;
+
+export function remapBeltDensity(d: number): number {
+  let t = (d - BELT_DENSITY_RAMP_LO) / (BELT_DENSITY_RAMP_HI - BELT_DENSITY_RAMP_LO);
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const s = t * t * (3 - 2 * t);
+  const ramped = d + (BELT_DENSITY_RAMP_TARGET - d) * s;
+  return ramped > d ? ramped : d;
+}
+
 // Trilinear sample of the baked polar density at a WORLD position, in rocks-per-cell.
 // f64 throughout; the operation order is fixed — this exact function runs on server,
 // client main thread and worker.
@@ -119,7 +139,7 @@ export function sampleDensity(field: BeltField, x: number, y: number, z: number)
   const c0 = c00 + (c10 - c00) * tt;
   const c1 = c01 + (c11 - c01) * tt;
   const value = c0 + (c1 - c0) * tz;
-  return (value / 255) * field.pPeak;
+  return remapBeltDensity(value / 255) * field.pPeak;
 }
 
 export function zoneAtRadius(field: BeltField, x: number, z: number): number {
