@@ -11,7 +11,10 @@ import { BELT_WORLD_SCALE, type BeltBake, decodeBeltBake } from "../shared/belt/
 const PUBLIC_BELT_DIR = join(import.meta.dir, "..", "..", "public", "belt");
 
 export function beltPresetName(): string {
-  return process.env["HAYSTACK_BELT_PRESET"] ?? "default";
+  // `saturn` is the shipped belt (hv-approved promotion): Saturn-scale rings at
+  // worldScale 7.45e7. The pre-Saturn 1M bake stays available as HAYSTACK_BELT_PRESET=
+  // default, alongside shepherd-moat.
+  return process.env["HAYSTACK_BELT_PRESET"] ?? "saturn";
 }
 
 export function beltDensityScale(): number {

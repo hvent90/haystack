@@ -8,7 +8,7 @@ import { createApp } from "../../src/server/app";
 import { openDatabase, type HaystackDb } from "../../src/server/db";
 import { WorldStream } from "../../src/server/realtime";
 import type { WorldStreamServerMessage } from "../../src/shared/types";
-import { getServerWorld } from "../../src/server/world";
+import { getServerWorld, stationSpawn } from "../../src/server/world";
 
 type TestWorld = {
   db: HaystackDb;
@@ -223,7 +223,7 @@ describe("haystack server", () => {
     );
     const { ship } = await resetResponse.json();
 
-    expect(ship.position).toEqual({ x: 1264900, y: 20, z: 250 });
+    expect(ship.position).toEqual({ ...stationSpawn });
     expect(vectorMagnitude(ship.velocity)).toBe(0);
     expect(vectorMagnitude(ship.angularVelocity)).toBe(0);
     expect(ship.throttle).toBe(0);
@@ -234,7 +234,7 @@ describe("haystack server", () => {
       ships: Array<{ pilotId: string; position: { x: number; y: number; z: number } }>;
     };
     const persisted = snapshot.ships.find((candidate) => candidate.pilotId === pilot.id);
-    expect(persisted?.position).toEqual({ x: 1264900, y: 20, z: 250 });
+    expect(persisted?.position).toEqual({ ...stationSpawn });
   });
 
   test("spends wallet credits on ship system upgrades", async () => {
@@ -1223,7 +1223,7 @@ function moveShipNear(pilotId: string, asteroidId: string): void {
 function moveShipToStation(pilotId: string): void {
   requireWorld()
     .db.query("UPDATE ships SET x = ?, y = ?, z = ?, vx = 0, vy = 0, vz = 0 WHERE pilot_id = ?")
-    .run(1264900, 20, 250, pilotId);
+    .run(stationSpawn.x, stationSpawn.y, stationSpawn.z, pilotId);
 }
 
 function moveShipDeep(pilotId: string): void {

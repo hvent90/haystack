@@ -1,7 +1,8 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 
-import { loadBeltBakeSync } from "../../src/server/belt-bake";
+import { beltLayoutScale, loadBeltBakeSync } from "../../src/server/belt-bake";
 import { fieldSummary, streamedFieldAsteroids } from "../../src/server/field";
+import { stationSpawn } from "../../src/server/world";
 import { deriveVirtualField, setActiveBeltBake } from "../../src/client/eve/field-core";
 import { deriveBase } from "../../src/client/eve/gpu/base-derive";
 import { setFieldAnchor, snapAnchor } from "../../src/client/eve/gpu/anchor";
@@ -41,11 +42,14 @@ beforeAll(() => {
 });
 
 // Positions inside the belt annulus (the station spawn band) and in sparse regions.
+// In-plane coordinates scale with the active bake's layout (legacy presets k=1; saturn
+// k=74.5) so the suite probes the same PHYSICAL places regardless of worldScale.
+const k = beltLayoutScale();
 const POSITIONS: Vector3[] = [
-  { x: 1264900, y: 20, z: 250 }, // station spawn
-  { x: -900000, y: -4000, z: 1100000 }, // opposite side of the belt
-  { x: 0, y: 12000, z: 1700000 }, // outer band
-  { x: 600000, y: 0, z: 0 }, // inner void edge (sparse: may yield few rocks)
+  { ...stationSpawn }, // station spawn (already layout-scaled by world.ts)
+  { x: -900000 * k, y: -4000, z: 1100000 * k }, // opposite side of the belt
+  { x: 0, y: 12000, z: 1700000 * k }, // outer band
+  { x: 600000 * k, y: 0, z: 0 }, // inner void edge (sparse: may yield few rocks)
 ];
 
 describe("belt parity — one derivation, three consumers", () => {
@@ -119,15 +123,18 @@ describe("belt parity — one derivation, three consumers", () => {
       }
       return sum / 64;
     };
-    const band = probe(1.27e6);
-    const voidInner = probe(0.55e6);
-    expect(band).toBeGreaterThan(0.05);
+    const band = probe(1.27e6 * k);
+    const voidInner = probe(0.55e6 * k);
+    // Floor calibrated across shipped bakes: default band ≈ 0.38 rocks/cell; saturn's
+    // 99.9-pct normalization is dominated by bright family ringlets, so its azimuthal
+    // band MEAN is ≈ 0.033 — still 30x the void. The ratio check is the structure claim.
+    expect(band).toBeGreaterThan(0.02);
     expect(voidInner).toBeLessThan(band * 0.05);
   });
 
   test("derive returns fewer rocks in sparse space (emptiness is terrain, not error)", () => {
-    const sparse = deriveVirtualField({ x: 600000, y: 0, z: 0 }, field);
-    const dense = deriveVirtualField({ x: 1264900, y: 20, z: 250 }, field);
+    const sparse = deriveVirtualField({ x: 600000 * k, y: 0, z: 0 }, field);
+    const dense = deriveVirtualField({ ...stationSpawn }, field);
     expect(dense.length).toBeGreaterThan(sparse.length);
   });
 });
@@ -255,8 +262,8 @@ function cellOfSpawn(): { cx: number; cy: number; cz: number } {
     originY: -(field.belt!.cellsY * field.cellSize) / 2,
   };
   return {
-    cx: Math.floor((1264900 - geo.originXZ) / geo.cellSize),
-    cy: Math.floor((20 - geo.originY) / geo.cellSize),
-    cz: Math.floor((250 - geo.originXZ) / geo.cellSize),
+    cx: Math.floor((stationSpawn.x - geo.originXZ) / geo.cellSize),
+    cy: Math.floor((stationSpawn.y - geo.originY) / geo.cellSize),
+    cz: Math.floor((stationSpawn.z - geo.originXZ) / geo.cellSize),
   };
 }
