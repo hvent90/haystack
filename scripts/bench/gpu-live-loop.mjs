@@ -466,24 +466,25 @@ try {
     shadowGate.pass =
       shadowGate.noise < 600 &&
       // The scene must hold a meaningful lit field at all (history: legacy hash field
-      // ≈ 15500 lit / tier1 0.53 / tier2 0.15; belt 1M bake pre-power-law ≈ 7800 /
-      // 0.22 / 0.13; power-law main ≈ 3008 / 0.184 / 0.098; ED-ring slab ≈ 2100-3500 /
-      // 0.066 / 0.040; ED slab + froxels ≈ 1082 / 0.25 / 0.18 — smaller rocks (20 m
-      // floor), the tighter 11 km draw, AND the froxel branch retiring the own-ship
-      // ADDITIVE beam cone (hundreds of >90-luma pixels in the A/B frames, replaced by
-      // volumetric scattering that mix:0 disables) all shrink lit pixel area, so floors
-      // are RELATIVE to baselineLit rather than absolute counts).
+      // ≈ 15500 lit; belt 1M bake ≈ 7800; power-law main ≈ 3008-3750; ED-ring slab +
+      // froxels ≈ 1082-1464 — smaller rocks (20 m floor), the tighter 11 km draw, AND
+      // the froxel work retiring the own-ship ADDITIVE beam cone (hundreds of >90-luma
+      // pixels in the A/B frames) all shrink absolute lit-pixel counts, so the floor is
+      // a low sanity bound, not a calibration).
       shadowGate.baselineLit > 800 &&
-      // Each tier darkens (alive) but not everything (not a black wall). The ED-slab
-      // ratios are geometry, not regression: a ±4 km slab lets the 38°-elevation sun
-      // exit the rock layer within ~5 km (few rocks behind any caster to catch its
-      // shadow vs the old ±90 km cloud), and tier2 acts beyond 8 km where the draw
-      // dissolve has already eaten most rock contrast. The A/B runs at froxel mix 0,
-      // so these floors measure the unfogged image. A dead tier measures ≈ 1x noise;
-      // an all-dark regression ≈ 1.0 still trips the upper bounds.
-      shadowGate.tier1Darkened > Math.max(0.045 * shadowGate.baselineLit, 2.5 * shadowGate.noise) &&
+      // Each tier darkens (alive) but not everything (not a black wall). FLOORS are
+      // noise-relative only: a dead tier darkens ≈ 1.0x the identical-state noise count;
+      // alive tiers measure 2.5-4.7x (default bake), 2.6-4.3x (saturn) and 2.0-3.0x
+      // (ED slab — a ±4 km slab lets the 38°-elevation sun exit the rock layer within
+      // ~5 km, so there is physically less rock-on-rock shadowing; tier2 sits at
+      // 1.8-2.2x). Ratio-to-baselineLit floors were dropped 2026-06-10: at Saturn scale
+      // the down-sun frame contains the PLANET — a huge lit object rock shadows can
+      // never darken — so any ratio floor becomes scene-dependent. The A/B runs at
+      // froxel mix 0 (unfogged image). The all-dark UPPER bounds stay ratio-based on
+      // purpose (a black wall darkens nearly everything regardless of scene).
+      shadowGate.tier1Darkened > 2.5 * shadowGate.noise &&
       shadowGate.tier1Darkened < 0.8 * shadowGate.baselineLit &&
-      shadowGate.tier2Darkened > Math.max(0.028 * shadowGate.baselineLit, 1.8 * shadowGate.noise) &&
+      shadowGate.tier2Darkened > 1.8 * shadowGate.noise &&
       shadowGate.tier2Darkened < 0.4 * shadowGate.baselineLit &&
       // The production blend keeps individually lit rocks (varied, not a black wall).
       shadowGate.blendLit > 0.4 * shadowGate.baselineLit;

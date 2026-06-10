@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { openDatabase } from "../../src/server/db";
-import { getServerWorld } from "../../src/server/world";
+import { getServerWorld, stationSpawn } from "../../src/server/world";
 
 import {
   makeShipCollisionEnvironment,
@@ -12,7 +12,7 @@ import {
 } from "../../src/shared/collision";
 import { deriveVirtualField } from "../../src/client/eve/field-core";
 import { fieldSummary, serverBeltField } from "../../src/server/field";
-import { loadBeltBakeSync } from "../../src/server/belt-bake";
+import { beltLayoutScale, loadBeltBakeSync } from "../../src/server/belt-bake";
 import { setActiveBeltBake } from "../../src/client/eve/field-core";
 import {
   applyShipCommandForPrediction,
@@ -72,24 +72,28 @@ function nearestDerivedRock(origin: Vector3): { position: Vector3; radius: numbe
 
 describe("shared ship collision", () => {
   test("virtual obstacle derivation matches the parity-gated field math exactly", () => {
-    // Sample heights sit INSIDE the ED-thin slab (BELT_VERTICAL_SQUASH compresses the
-    // belt to ~±4 km, with most mass within ~±2 km): the old y=16000/-3200 samples are
-    // legitimately empty space now. The test pins obstacle≡derive parity, so samples
-    // must be where rocks exist.
+    // Station spawn + the seeded pocket centers, in-plane scaled with the active bake
+    // (db.ts seeds them the same way) so the probes land in the same physical bands.
+    // HEIGHTS sit inside the squashed ED slab (beltVerticalSquash compresses every bake
+    // to ~±4 km, most mass within ~±2 km — research doc §3): unsquashed sample heights
+    // like y=16000 are legitimately empty space now.
+    const k = beltLayoutScale();
     const samples: Vector3[] = [
-      { x: 1264900, y: 20, z: 250 },
-      { x: 1250000, y: 1200, z: 8000 },
-      { x: 1348000, y: -1500, z: -22000 },
-      { x: 1454000, y: 800, z: 24000 },
+      { ...stationSpawn },
+      { x: 1250000 * k, y: 1200, z: 8000 * k },
+      { x: 1348000 * k, y: -1500, z: -22000 * k },
+      { x: 1454000 * k, y: 800, z: 24000 * k },
     ];
+    let totalObstacles = 0;
     for (const origin of samples) {
       const env = makeShipCollisionEnvironment(field, [], serverBeltField());
       const obstacles = env.obstaclesForSegment(origin, origin);
-      expect(obstacles.length).toBeGreaterThan(0);
-      // The obstacle sweep reaches maxHeroRadius (+ship) ≈ ±2.2 km of the segment; the
-      // cross-check set must cover that whole box. At the ED-ring density (BELT_CELL_SIZE
-      // 530 m, ~4-6 rocks/km³) a 200-rock ball spans only ~2 km, so the limit that made
-      // the box ⊂ ball at the old 1130 m grid now has to be 2500.
+      // A single probe's collision window CAN be empty in sparse bands (emptiness is
+      // terrain); the union check below keeps the test non-vacuous.
+      totalObstacles += obstacles.length;
+      // The obstacle sweep reaches maxHeroRadius (+ship) ≈ ±2.2 km of the segment; at
+      // the ED-ring density (BELT_CELL_SIZE 530 m, ~4-6 rocks/km³) a 200-rock ball
+      // spans only ~2 km, so the cross-check set needs 2500 to cover the whole box.
       const derived = deriveVirtualField(origin, { ...field, renderedLimit: 2500 });
       const derivedById = new Map(derived.map((rock) => [rock.id, rock]));
       for (const obstacle of obstacles) {
@@ -110,6 +114,7 @@ describe("shared ship collision", () => {
         }
       }
     }
+    expect(totalObstacles).toBeGreaterThan(0);
   });
 
   test("pushes an overlapping ship out to the contact distance and kills inward velocity", () => {
@@ -145,7 +150,7 @@ describe("shared ship collision", () => {
   });
 
   test("integrateShipTick with a collision environment stops a ship flying into a virtual rock", () => {
-    const origin: Vector3 = { x: 1264900, y: 20, z: 250 };
+    const origin: Vector3 = { ...stationSpawn };
     const rock = nearestDerivedRock(origin);
     const env = makeShipCollisionEnvironment(field, [], serverBeltField());
 
@@ -188,7 +193,7 @@ describe("shared ship collision", () => {
   });
 
   test("prediction and server integrate identically through a collision", () => {
-    const origin: Vector3 = { x: 1264900, y: 20, z: 250 };
+    const origin: Vector3 = { ...stationSpawn };
     const rock = nearestDerivedRock(origin);
     const env = makeShipCollisionEnvironment(field, [], serverBeltField());
     const command: FlightInputCommand = {
@@ -350,7 +355,7 @@ describe("shared ship collision", () => {
       expect(response.status).toBe(201);
       const row = db.query("SELECT pilot_id FROM ships").get() as { pilot_id: string };
 
-      const origin: Vector3 = { x: 1264900, y: 20, z: 250 };
+      const origin: Vector3 = { ...stationSpawn };
       const rock = nearestDerivedRock(origin);
       const approach = rock.radius + SHIP_COLLISION_RADIUS + 600;
       const direction = {
@@ -449,7 +454,7 @@ describe("shared ship collision", () => {
         z: number;
       }>;
       expect(ships).toHaveLength(3);
-      const spawnCenter: Vector3 = { x: 1264900, y: 20, z: 250 };
+      const spawnCenter: Vector3 = { ...stationSpawn };
       for (let i = 0; i < ships.length; i += 1) {
         const ship = ships[i]!;
         // Near the station spawn (mining/scan distances unaffected)...

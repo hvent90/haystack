@@ -61,7 +61,43 @@ const SHOTS_HASH = [
     settleMs: 9000,
   },
 ];
-const SHOTS = HASH_BASELINE ? SHOTS_HASH : SHOTS_BELT;
+// Saturn-scale shots (labels starting "saturn"): worldScale 7.45e7, planet 60,268 km,
+// rings a∈[1.0, 1.86]. The four contract captures: cockpit-in-ring, Cassini gap edge,
+// planet filling the sky from the C ring, and the full ring system from above.
+const WS = 7.45e7;
+const SHOTS_SATURN = [
+  {
+    // Cockpit scale inside the B-ring band at the station spawn.
+    name: "close",
+    pos: { x: 1.2656 * WS - 700, y: 20, z: 250 },
+    look: { x: 0.05, y: 0.02, z: 0.999 },
+    settleMs: 16000,
+  },
+  {
+    // Mid-distance over the Cassini-division edge (2:1 at a=1.61): band on one side,
+    // 4,700 km of cleared lane on the other.
+    name: "gap-edge",
+    pos: { x: 1.585 * WS, y: 1.5e6, z: 0 },
+    look: { x: 0.45, y: -0.6, z: 0.66 },
+    settleMs: 12000,
+  },
+  {
+    // From the C-ring inner edge looking at the planet: 60,268 km of gas giant at
+    // 74,500 km — it fills the sky (angular radius ~54°).
+    name: "planet",
+    pos: { x: 1.0 * WS, y: 3e5, z: 0 },
+    look: { x: -0.999, y: 0.02, z: 0.04 },
+    settleMs: 12000,
+  },
+  {
+    // The whole ring system face-on from far above the plane.
+    name: "rings",
+    pos: { x: 0, y: 3.2e8, z: 0 },
+    look: { x: 0.02, y: -0.999, z: 0.04 },
+    settleMs: 9000,
+  },
+];
+const SHOTS = HASH_BASELINE ? SHOTS_HASH : LABEL.startsWith("saturn") ? SHOTS_SATURN : SHOTS_BELT;
 
 function detectChrome() {
   const c = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -79,8 +115,10 @@ page.on("pageerror", (e) => errors.push(e.message));
 await page.goto(CLIENT_URL, { waitUntil: "domcontentloaded" });
 await page.waitForTimeout(2500);
 
-// Onboard a pilot when the create form is showing.
-const input = page.locator("input").first();
+// Onboard a pilot when the create form is showing. (The app auto-onboards since the
+// windows-closed layout change; the only first-paint input may be the audio slider, so
+// target text inputs specifically and fall through when none exists.)
+const input = page.locator('input[type="text"]').first();
 if ((await input.count()) > 0 && (await input.isVisible().catch(() => false))) {
   await input.fill(`Capture-${LABEL}`.slice(0, 18));
   await page.keyboard.press("Enter");

@@ -145,7 +145,7 @@ function smoothstepf(edge0: number, edge1: number, x: number): number {
 }
 
 export type CollisionGridImage = {
-  gridOrigin: { x: number; y: number; z: number }; // meters, ship-cell-snapped
+  gridOrigin: { x: number; y: number; z: number }; // ship-cell-snapped, ANCHOR-RELATIVE meters
   cellMeters: number; // 768
   gridAxis: number; // 64
   cellCount: Uint32Array; // per-cell occupancy (atomic image)
@@ -242,7 +242,14 @@ export type FroxelMediumParams = {
   // Column-major 4x4 matrices (THREE.Matrix4.elements layout).
   projectionMatrixInverse: ArrayLike<number>;
   cameraWorldMatrix: ArrayLike<number>;
+  // ANCHOR-RELATIVE meters (gpu/anchor.ts), like every GPU coordinate at Saturn scale.
+  // The reconstructed froxel positions and the shadow march stay in this frame (the grid
+  // image's gridOrigin/posXYZR must be anchor-relative too); only the polar density
+  // sample adds `anchorMeters` back to reach absolute world space.
   originMeters: { x: number; y: number; z: number };
+  // The field anchor (absolute meters). Omitted = (0,0,0): relative == absolute, the
+  // legacy-scale behaviour.
+  anchorMeters?: { x: number; y: number; z: number };
   // Extinction per unit baked density (1/km at density 1.0) + a tiny uniform floor.
   sigmaScale: number;
   sigmaFloor: number;
@@ -345,12 +352,14 @@ export function froxelScatterCPU(
   out: Float32Array,
 ): void {
   const lights = p.lights ?? null;
+  const anchor = p.anchorMeters ?? { x: 0, y: 0, z: 0 };
   for (let z = 0; z < FROXEL_D; z += 1) {
     const sliceLen = sliceFarEdge(z) - (z === 0 ? FROXEL_NEAR : sliceFarEdge(z - 1));
     for (let y = 0; y < FROXEL_H; y += 1) {
       for (let x = 0; x < FROXEL_W; x += 1) {
         const c = froxelCenterWorldMeters(x, y, z, p);
-        const d = g === null ? 0 : sampleDensity(g, c.x, c.y, c.z);
+        // c is anchor-relative; the density bake is absolute-polar around the planet.
+        const d = g === null ? 0 : sampleDensity(g, c.x + anchor.x, c.y + anchor.y, c.z + anchor.z);
         const sigmaT = froxelSigmaT(d, c.dist, p.sigmaScale, p.sigmaFloor);
         const trans = Math.exp(-sigmaT * sliceLen);
         let lr = p.ambient;

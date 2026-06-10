@@ -13,7 +13,7 @@ import {
   makeBeltField,
   queryBeltAsteroids,
 } from "../shared/belt/field";
-import { BELT_CELL_SIZE, BELT_VERTICAL_SQUASH, beltFieldInfo } from "../shared/belt/format";
+import { BELT_CELL_SIZE, beltFieldInfo } from "../shared/belt/format";
 import { beltDensityScale, beltPresetName, fieldMode, loadBeltBakeSync } from "./belt-bake";
 
 type Cell = {
@@ -94,7 +94,7 @@ const beltTotalAsteroids: number = (() => {
     const rMid = rMin + (ir + 0.5) * dr;
     // dz spans the bake's normalized z; the runtime squash compresses it vertically.
     const texelVolumeWorld =
-      (rMid * dr * dtheta * dz * worldScale * worldScale * worldScale) / BELT_VERTICAL_SQUASH;
+      (rMid * dr * dtheta * dz * worldScale * worldScale * worldScale) / beltField.bake.squash;
     texelSum += (perRing[ir]! / 255) * beltField.pPeak * (texelVolumeWorld / cellVolume);
   }
   return Math.round(texelSum);

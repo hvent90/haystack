@@ -16,6 +16,7 @@
 
 import type { Asteroid } from "../../../shared/types";
 import { sunlitForId } from "../sun-occlusion";
+import { fieldAnchor } from "./anchor";
 import { phaseSeed } from "./base-derive";
 
 export type RingTarget = {
@@ -117,6 +118,7 @@ export class FieldRingStream {
     }
 
     // Enter: place new rocks into freed slots, writing the exact full-pack bytes.
+    const anchor = fieldAnchor();
     let entered = 0;
     for (const rock of entering) {
       const slot = this.free.pop();
@@ -127,9 +129,11 @@ export class FieldRingStream {
       this.idBySlot[slot] = rock.id;
       this.lastSeen[slot] = epoch;
       const o = slot * 4;
-      target.base[o] = rock.position.x;
-      target.base[o + 1] = rock.position.y;
-      target.base[o + 2] = rock.position.z;
+      // ANCHOR-RELATIVE (anchor.ts), f64 subtract before the f32 store — byte-identical
+      // to packFromRocks for the same rock under the same anchor (gpu-ring-stream gate).
+      target.base[o] = rock.position.x - anchor.x;
+      target.base[o + 1] = rock.position.y - anchor.y;
+      target.base[o + 2] = rock.position.z - anchor.z;
       target.base[o + 3] = rock.radius;
       target.packAttr[o] = 0;
       target.packAttr[o + 1] = rock.mineralRichness;

@@ -1,5 +1,5 @@
 import type { Asteroid, Mineral, Vector3 } from "../types";
-import { type BeltBake, BELT_P_MAX, BELT_VERTICAL_SQUASH, beltCellKey } from "./format";
+import { type BeltBake, BELT_P_MAX, beltCellKey } from "./format";
 
 // THE deterministic belt derivation — the single source of rock structure for the
 // server (field.ts), the client derive (field-core.ts / field-worker.ts), ship collision
@@ -83,9 +83,9 @@ export function sampleDensity(field: BeltField, x: number, y: number, z: number)
   if (r <= rMin || r >= rMax) {
     return 0;
   }
-  // Vertical squash (format.ts): world y is expanded back into the bake's z range, so
-  // the sim's vertical profile plays out across an ED-thin slab.
-  const zn = (y * BELT_VERTICAL_SQUASH) / worldScale;
+  // Vertical squash (format.ts beltVerticalSquash): world y is expanded back into the
+  // bake's z range, so the sim's vertical profile plays out across an ED-thin slab.
+  const zn = (y * field.bake.squash) / worldScale;
   if (zn <= -zMax || zn >= zMax) {
     return 0;
   }

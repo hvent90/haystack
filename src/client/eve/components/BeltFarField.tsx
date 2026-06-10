@@ -19,7 +19,6 @@ import {
 
 import type { Vector3 } from "../../../shared/types";
 import { sampleDensity, type BeltField } from "../../../shared/belt/field";
-import { BELT_VERTICAL_SQUASH } from "../../../shared/belt/format";
 import { activeBeltField } from "../field-core";
 import { flightRenderStore } from "../renderStore";
 import { toScene } from "../vector";
@@ -77,7 +76,7 @@ const SHELL_REBUILD_M = 12000;
 const SHELL_TRIES_PER_TILE = 220;
 
 function buildShellPositions(belt: BeltField, centerX: number, centerZ: number): Float32Array {
-  const zHalfM = (belt.bake.meta.density.zMax * belt.bake.worldScale) / BELT_VERTICAL_SQUASH;
+  const zHalfM = (belt.bake.meta.density.zMax * belt.bake.worldScale) / belt.bake.squash;
   const half = Math.ceil(SHELL_RADIUS_M / SHELL_TILE_M);
   const tcx = Math.floor(centerX / SHELL_TILE_M);
   const tcz = Math.floor(centerZ / SHELL_TILE_M);
@@ -211,7 +210,7 @@ function buildAssets(belt: BeltField): FarFieldAssets {
     // Vertical: UNIFORM inside the squashed slab — a triangular (midplane-peaked)
     // distribution viewed edge-on integrates into a razor-bright line at the eye-line;
     // uniform reads as the soft band ED's ring makes across the horizon.
-    const zv = ((rng() * 2 - 1) * zMax * 0.8) / BELT_VERTICAL_SQUASH;
+    const zv = ((rng() * 2 - 1) * zMax * 0.8) / belt.bake.squash;
     const o = placed * 3;
     pts[o] = (r * Math.cos(theta) * worldScale) / SCENE;
     pts[o + 1] = (zv * worldScale) / SCENE;
@@ -266,7 +265,9 @@ function buildAssets(belt: BeltField): FarFieldAssets {
   shell.renderOrder = -8;
 
   // --- gas giant + moons -----------------------------------------------------------------
-  const planetRadiusS = (0.34 * worldScale) / SCENE;
+  // Bakes with a world block carry their own planet size (saturn: 0.809 normalized =
+  // 60,268 km at worldScale 7.45e7); older bakes keep the legacy 0.34 (~340 km giant).
+  const planetRadiusS = ((meta.world?.planetRadius ?? 0.34) * worldScale) / SCENE;
   const planetMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.85, metalness: 0 });
   planetMat.fog = false;
   // Procedural latitude banding: layered sines of the LOCAL y (stable under the

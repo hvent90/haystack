@@ -33,6 +33,7 @@ import type {
 import type { HaystackDb } from "./db";
 import { fieldDiagnostic, fieldSummary, virtualScanHits } from "./field";
 import { stationSpawn } from "./world";
+import { beltLayoutScale } from "./belt-bake";
 import { getServerWorld } from "./world";
 
 // Symbol-keyed (so JSON.stringify ignores it -> wire format unchanged) cheap
@@ -628,6 +629,10 @@ function advanceWorld(db: HaystackDb): void {
 }
 
 function scanBelt(db: HaystackDb, ship: Ship): ScanHit[] {
+  // Belt-mode scan is the whole-belt awareness pulse; its reach scales with the active
+  // bake's layout (saturn: k = 74.5, pockets sit ~1,000+ km from the station instead of
+  // ~15 km). Pocket/surface scan modes stay metric — they are about NEARBY objects.
+  const layoutK = beltLayoutScale();
   const asteroids = db
     .query(
       `SELECT pocket,
@@ -652,7 +657,7 @@ function scanBelt(db: HaystackDb, ship: Ship): ScanHit[] {
   const pocketHits = asteroids.map((row) => {
     const position = { x: row.x, y: row.y, z: row.z };
     const range = distance(ship.position, position);
-    const strength = signalStrength(row.signature, range, ship.scanPower * 34);
+    const strength = signalStrength(row.signature, range, ship.scanPower * 34 * layoutK);
     return {
       id: row.pocket,
       kind: "pocket" as const,
@@ -674,7 +679,7 @@ function scanBelt(db: HaystackDb, ship: Ship): ScanHit[] {
         kind: "structure" as const,
         label: structure.name,
         distance: range,
-        strength: signalStrength(structure.signature, range, ship.scanPower * 28),
+        strength: signalStrength(structure.signature, range, ship.scanPower * 28 * layoutK),
         bearing: unit(subtract(structure.position, ship.position)),
         clue: `${structure.kind} signal at belt scale`,
       };

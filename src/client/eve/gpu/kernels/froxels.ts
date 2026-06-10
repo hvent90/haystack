@@ -56,7 +56,6 @@ import {
 } from "three/tsl";
 
 import type { BeltField } from "../../../../shared/belt/field";
-import { BELT_VERTICAL_SQUASH } from "../../../../shared/belt/format";
 import {
   FROXEL_COUNT,
   FROXEL_D,
@@ -122,6 +121,12 @@ const uDensityReady = uniform(0); // 0 until a bake is uploaded; gates the baked
 // --- camera + tuning uniforms ----------------------------------------------------------
 export const froxelProjInv = uniform(new THREE.Matrix4());
 export const froxelCamWorld = uniform(new THREE.Matrix4());
+// The field anchor (gpu/anchor.ts): every GPU coordinate (originMeters, pos, gridOrigin)
+// is ANCHOR-RELATIVE at Saturn scale, so the froxel ray reconstruction and the up-sun
+// march stay in that frame — but the polar DENSITY sample needs ABSOLUTE world meters
+// (the belt is centered on the planet at the true origin). The anchor is added back just
+// for the density lookup; at ~1.5e8 m the f32 ULP (~16 m) is noise against ≥70 km bins.
+export const froxelAnchor = uniform(new THREE.Vector3());
 
 export type FroxelTuning = {
   // Extinction per unit baked density (1/km at density 1.0).
@@ -270,13 +275,13 @@ export function ensureFroxelDensity(belt: BeltField | null): boolean {
     nz,
     rMin,
     rMax,
-    // The runtime squashes the bake's vertical structure into an ED-thin slab
-    // (shared/belt/format.ts BELT_VERTICAL_SQUASH; the rock derivation samples density
-    // at y·squash). Dividing the grid's zMax by the same factor reproduces that exact
+    // The runtime squashes every bake's vertical structure into the same ED-thin slab
+    // (shared/belt/format.ts beltVerticalSquash; the rock derivation samples density at
+    // y·squash). Dividing the grid's zMax by the bake's squash reproduces that exact
     // mapping in the froxel sampler — fz = ((y/ws)+zMax')/(2·zMax') with
     // zMax' = zMax/squash is identical to the shared sampleDensity's compressed fz —
     // so the fog slab is the SAME slab the rocks live in.
-    zMax: zMax / BELT_VERTICAL_SQUASH,
+    zMax: zMax / belt.bake.squash,
     worldScale: belt.bake.worldScale,
   });
   return true;
@@ -423,15 +428,17 @@ export function makeFroxelPipeline(binner: BinnerBuffers): FroxelPipeline {
         .toVar();
       const sliceLen = sliceFar.sub(sliceNear).toVar();
 
-      // Floating-origin world position (meters): scene = camWorld · (dir·dist);
-      // world = originMeters + scene·1000 (the §"floating origin" hard constraint).
+      // Floating-origin position (ANCHOR-RELATIVE meters, the frame pos/gridOrigin live
+      // in): scene = camWorld · (dir·dist); rel = originMeters + scene·1000 (the
+      // §"floating origin" hard constraint). The march below stays in this frame.
       const posScene = froxelCamWorld.mul(vec4(dir.mul(dist), 1)).xyz.toVar();
       const world = vec3(originMeters).add(posScene.mul(METERS_PER_SCENE_UNIT)).toVar();
       // Unit view direction in scene == world axes (the camWorld rotation applied to the
       // view-space ray) — the lighting phase functions' frame.
       const dirWorld = normalize(froxelCamWorld.mul(vec4(dir, 0)).xyz).toVar();
 
-      const density = sampleDensityTSL(world).toVar();
+      // Density sampling needs the ABSOLUTE world position (polar around the planet).
+      const density = sampleDensityTSL(world.add(vec3(froxelAnchor))).toVar();
       const sigmaT = density.mul(uSigmaScale).add(uSigmaFloor).mul(farFade(dist)).toVar();
       const trans = exp(sigmaT.mul(sliceLen).negate()).toVar();
 

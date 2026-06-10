@@ -69,7 +69,8 @@ import {
   shadowTier1Enable,
   shadowTier2Enable,
 } from "../gpu/kernels/render-node";
-import { frameCounter, genFieldOverlay } from "../gpu/kernels/overlay";
+import { frameCounter, genFieldOverlay, setGravityWells } from "../gpu/kernels/overlay";
+import { anchorNeedsRebase, fieldAnchor, setFieldAnchor, snapAnchor } from "../gpu/anchor";
 import { makeCullPipeline } from "../gpu/kernels/cull";
 import {
   collisionDt,
@@ -94,6 +95,7 @@ import { FieldRingStream, mergeDirtyToRanges } from "../gpu/ring-stream";
 import {
   applyFroxelTuning,
   ensureFroxelDensity,
+  froxelAnchor,
   froxelCamWorld,
   froxelProjInv,
   makeFroxelPipeline,
@@ -190,11 +192,16 @@ export function WorldView({
       onPointerDown={onStagePointerDown}
       onContextMenu={(event) => onContextMenu(event, null)}
     >
+      {/* Camera far = 5e5 scene units (500,000 km): the Saturn-scale far field — planet
+          at up to ~205,000 km away, opposite ring edge ~290,000 km — must stay inside
+          the frustum (was 20,000, which clipped the whole far field at worldScale
+          7.45e7). Free for depth precision: standard perspective depth error
+          ≈ z²/(near·2^23) is near-plane-dominated and unchanged by the far bump. */}
       <Canvas
         data-testid="world-canvas"
         gl={makeWebGPUFactory()}
         shadows
-        camera={{ position: [0, 0.12, 0], fov: 68, near: 0.01, far: 20000 }}
+        camera={{ position: [0, 0.12, 0], fov: 68, near: 0.01, far: 500000 }}
         dpr={[1, 1.5]}
       >
         <RenderDriver fallbackShip={myShip} viewMode={viewMode} flightMode={flightMode} />
@@ -523,7 +530,10 @@ function FlightVectorLayer({
         <div
           className="velocity-vector reverse-velocity-vector"
           data-testid="reverse-velocity-vector"
-          style={{ left: `${reverseVelocityPoint.x}%`, top: `${reverseVelocityPoint.y}%` }}
+          style={{
+            left: `${reverseVelocityPoint.x}%`,
+            top: `${reverseVelocityPoint.y}%`,
+          }}
         />
       ) : null}
       {torque !== null ? (
@@ -1228,11 +1238,20 @@ function RenderDriver({
         }
       ).__probe = {
         owned: { x: origin.x, y: origin.y, z: origin.z },
-        ownedQuat: { x: quaternion.x, y: quaternion.y, z: quaternion.z, w: quaternion.w },
+        ownedQuat: {
+          x: quaternion.x,
+          y: quaternion.y,
+          z: quaternion.z,
+          w: quaternion.w,
+        },
         viewMode: view,
         flightMode: mode,
         camera: {
-          position: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
+          position: {
+            x: camera.position.x,
+            y: camera.position.y,
+            z: camera.position.z,
+          },
           quaternion: {
             x: camera.quaternion.x,
             y: camera.quaternion.y,
@@ -1323,14 +1342,31 @@ function InstancedAsteroids({
   useLayoutEffect(() => {
     const start = performance.now();
     const ring = (ringRef.current ??= new FieldRingStream(MAX_RESIDENT));
-    const result = ring.reconcile(asteroids, {
+    const target = {
       base: backingArrayOf(base),
       packAttr: backingArrayOf(packAttr),
       slotMeta: backingU32Of(slotMeta),
-    });
+    };
+    // Field-anchor rebase (gpu/anchor.ts): GPU bytes are anchor-relative; when the render
+    // origin has strayed too far from the anchor (first seed, long flights, warp), re-snap
+    // it and evict EVERY resident slot so the whole ring rewrites under the new anchor.
+    // The evict pass + the reconcile below produce one merged dirty-range upload.
+    let rebaseDirty: number[] = [];
+    const origin = renderOrigin(fallbackOrigin);
+    if (anchorNeedsRebase(origin)) {
+      setFieldAnchor(snapAnchor(origin));
+      rebaseDirty = ring.reconcile([], target).dirty;
+      // Uniform coordinates are anchor-relative too — refresh them under the new anchor.
+      setGravityWells(wells);
+    }
+    const result = ring.reconcile(asteroids, target);
     // Merge near-adjacent dirty slots (uploading a small gap beats another writeBuffer
     // call) and cap the per-frame range count; beyond the cap one spanning write wins.
-    const ranges = mergeDirtyToRanges(result.dirty, 64, 64);
+    const dirty =
+      rebaseDirty.length === 0
+        ? result.dirty
+        : [...new Set([...rebaseDirty, ...result.dirty])].sort((a, b) => a - b);
+    const ranges = mergeDirtyToRanges(dirty, 64, 64);
     markRangesForUpload(base, ranges);
     markRangesForUpload(packAttr, ranges);
     markRangesForUpload(slotMeta, ranges);
@@ -1349,7 +1385,10 @@ function InstancedAsteroids({
   // refreshes matrixWorldInverse, so the planes are THIS frame's.
   useFrame(({ camera }, delta) => {
     const origin = renderOrigin(fallbackOrigin);
-    originMeters.value.set(origin.x, origin.y, origin.z);
+    // originMeters is ANCHOR-RELATIVE (gpu/anchor.ts): the f64 CPU subtraction keeps the
+    // uniform small, so the shader's (pos - originMeters) math never sees ~1e8 magnitudes.
+    const anchor = fieldAnchor();
+    originMeters.value.set(origin.x - anchor.x, origin.y - anchor.y, origin.z - anchor.z);
     frameCounter.value += 1;
     camera.updateMatrixWorld();
     projScreen.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
@@ -1357,8 +1396,10 @@ function InstancedAsteroids({
     gl.compute(genFieldOverlay);
     // The collision WORLD GRID is now built every frame (§1.3): the froxel sun-shadow
     // march reads it, so the binner half runs unconditionally over the resident set.
+    // gridOrigin is ANCHOR-RELATIVE like every GPU coordinate (gpu/anchor.ts): the snap
+    // happens in absolute f64, the subtraction narrows it to f32-safe magnitudes.
     const snapped = snapGridOrigin(origin);
-    gridOrigin.value.set(snapped.x, snapped.y, snapped.z);
+    gridOrigin.value.set(snapped.x - anchor.x, snapped.y - anchor.y, snapped.z - anchor.z);
     for (const kernel of collision.binnerDispatches) {
       gl.compute(kernel);
     }
@@ -1388,6 +1429,7 @@ function InstancedAsteroids({
     applyFroxelTuning(getRenderDebugControls().froxel);
     froxelProjInv.value.copy(camera.projectionMatrixInverse);
     froxelCamWorld.value.copy(camera.matrixWorld);
+    froxelAnchor.value.set(anchor.x, anchor.y, anchor.z);
     for (const kernel of froxel.dispatches) {
       gl.compute(kernel);
     }

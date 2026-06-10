@@ -618,8 +618,17 @@ export async function verifyFroxels(renderer: Renderer): Promise<GateResult> {
     const { COLLISION_CELL_METERS, COLLISION_GRID_AXIS } = await import("./collide-cpu");
 
     // --- camera + origin: mid-belt, cockpit offset, looking down -Z -------------------
+    // A NON-ZERO field anchor (gpu/anchor.ts) pins the anchor-relative plumbing: every
+    // GPU coordinate below (originMeters, pos, gridOrigin) is absolute MINUS this, and
+    // only the density sample adds it back. 2^16-aligned like the runtime snap.
+    const anchor = { x: 4 * 65536, y: -65536, z: 65536 };
     const shipMeters = { x: 1_500_000, y: 0, z: 0 };
-    originMeters.value.set(shipMeters.x, shipMeters.y, shipMeters.z);
+    originMeters.value.set(
+      shipMeters.x - anchor.x,
+      shipMeters.y - anchor.y,
+      shipMeters.z - anchor.z,
+    );
+    froxelsKernels.froxelAnchor.value.set(anchor.x, anchor.y, anchor.z);
     const camera = new THREE.PerspectiveCamera(68, 16 / 9, 0.01, 20000);
     camera.position.set(0, 0.12, 0);
     camera.updateMatrixWorld(true);
@@ -650,9 +659,11 @@ export async function verifyFroxels(renderer: Renderer): Promise<GateResult> {
     froxelsKernels.setFroxelFlashlight(flashPose.pos, flashPose.dir, true);
 
     // --- authored rocks: a small cluster ahead of the camera, offset up-sun so their
-    // shadow cones cross the view frustum (shafts must exist in the output) -------------
+    // shadow cones cross the view frustum (shafts must exist in the output). Stored
+    // ANCHOR-RELATIVE like the runtime pos buffer. ---------------------------------------
     const origin = snapGridOrigin(shipMeters);
-    gridOrigin.value.set(origin.x, origin.y, origin.z);
+    const originRel = { x: origin.x - anchor.x, y: origin.y - anchor.y, z: origin.z - anchor.z };
+    gridOrigin.value.set(originRel.x, originRel.y, originRel.z);
     const sun = lighting.sunDirection;
     const posBytes = new Float32Array(MAX_RESIDENT * 4);
     let seed = 13579;
@@ -665,9 +676,9 @@ export async function verifyFroxels(renderer: Renderer): Promise<GateResult> {
       const o = i * 4;
       // 2-6 km ahead (-z), scattered, nudged up-sun so shadows fall back through the view.
       const ahead = 2000 + rand() * 4000;
-      posBytes[o] = shipMeters.x + (rand() - 0.5) * 3000 + sun.x * 800;
-      posBytes[o + 1] = shipMeters.y + (rand() - 0.5) * 2000 + sun.y * 800;
-      posBytes[o + 2] = shipMeters.z - ahead + sun.z * 800;
+      posBytes[o] = shipMeters.x + (rand() - 0.5) * 3000 + sun.x * 800 - anchor.x;
+      posBytes[o + 1] = shipMeters.y + (rand() - 0.5) * 2000 + sun.y * 800 - anchor.y;
+      posBytes[o + 2] = shipMeters.z - ahead + sun.z * 800 - anchor.z;
       posBytes[o + 3] = 150 + rand() * 200;
     }
     seedBaseFromCPU(posBuffer, posBytes);
@@ -703,7 +714,12 @@ export async function verifyFroxels(renderer: Renderer): Promise<GateResult> {
       {
         projectionMatrixInverse: camera.projectionMatrixInverse.elements,
         cameraWorldMatrix: camera.matrixWorld.elements,
-        originMeters: shipMeters,
+        originMeters: {
+          x: shipMeters.x - anchor.x,
+          y: shipMeters.y - anchor.y,
+          z: shipMeters.z - anchor.z,
+        },
+        anchorMeters: anchor,
         sigmaScale: defaults.sigmaScale,
         sigmaFloor: defaults.sigmaFloor,
         albedo: { x: defaults.albedo.r, y: defaults.albedo.g, z: defaults.albedo.b },
@@ -714,7 +730,7 @@ export async function verifyFroxels(renderer: Renderer): Promise<GateResult> {
           sunStrength: defaults.sunStrength,
           hgG: defaults.hgG,
           grid: {
-            gridOrigin: origin,
+            gridOrigin: originRel,
             cellMeters: COLLISION_CELL_METERS,
             gridAxis: COLLISION_GRID_AXIS,
             cellCount: cellCountRaw,

@@ -4,6 +4,7 @@ import {
   BELT_P_MAX,
   BELT_WORLD_SCALE,
   beltGridGeometry,
+  beltVerticalSquash,
   decodeBeltBake,
 } from "../../shared/belt/format";
 import { beltReady, setActiveBeltBake } from "./field-core";
@@ -44,7 +45,9 @@ export async function beltSummaryFromArtifacts(
     throw new Error(`belt meta fetch failed: ${res.status}`);
   }
   const meta = (await res.json()) as BeltBakeMeta;
-  const geo = beltGridGeometry(meta, BELT_WORLD_SCALE, cellSize);
+  const worldScale = meta.world?.worldScale ?? BELT_WORLD_SCALE;
+  const squash = beltVerticalSquash(meta, worldScale);
+  const geo = beltGridGeometry(meta, worldScale, cellSize, squash);
   return {
     totalAsteroids: 0,
     seed,
@@ -54,9 +57,10 @@ export async function beltSummaryFromArtifacts(
     belt: {
       preset,
       formatVersion: meta.formatVersion,
-      worldScale: BELT_WORLD_SCALE,
+      worldScale,
       pMax: BELT_P_MAX,
       densityScale: 1,
+      squash,
       cellsXZ: geo.cellsXZ,
       cellsY: geo.cellsY,
     },
@@ -100,6 +104,9 @@ export function ensureBeltBake(field: FieldSummary): Promise<void> {
       { metaJson, density, heroes, zones, flow },
       field.cellSize,
       belt.worldScale,
+      // The server's resolved vertical squash (HAYSTACK_BELT_SLAB toggle): decode with
+      // the exact published value so both sides derive the identical slab.
+      belt.squash,
     );
     setActiveBeltBake(bake, field);
   })();

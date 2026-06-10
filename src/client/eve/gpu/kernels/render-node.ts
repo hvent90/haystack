@@ -46,9 +46,10 @@ import { packAttr, pos } from "../buffers";
 // 1000 m per scene unit (§2.6). The render basis divides meters by this.
 const METERS_PER_SCENE_UNIT = 1000;
 
-// Floating-origin offset in world meters — set each frame from the own-ship position so the
-// rendered field is recentred on the camera. Exported so the per-frame loop can update it
-// (`originMeters.value.copy(ownShipMeters)`).
+// Floating-origin offset in ANCHOR-RELATIVE meters (gpu/anchor.ts): own-ship position
+// minus the field anchor, subtracted in f64 on the CPU each frame. The buffer coordinates
+// it is subtracted from are anchor-relative too, so the shader math never sees Saturn-scale
+// (~1.5e8 m) magnitudes where the f32 ULP would be ~16 m.
 export const originMeters = uniform(new THREE.Vector3());
 
 // Benchmark-only A/B switches for the two shadow tiers (1 = on, 0 = term forced to 1.0 /
