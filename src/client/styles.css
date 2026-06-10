@@ -1622,6 +1622,129 @@ tr:focus-visible {
   }
 }
 
+/* --- touch flight controls (touch devices only; see TouchFlightControls.tsx) -------- */
+
+.touch-controls {
+  display: contents;
+}
+
+/* Stick spawn zones: above the canvas (z 1) but below the bracket layer (z 2), so
+   tapping a target bracket still selects it; a touch on bare canvas spawns a stick. */
+.touch-zone {
+  position: absolute;
+  z-index: 1;
+  top: calc(56px + var(--safe-top));
+  bottom: 0;
+  width: 44%;
+  touch-action: none;
+}
+
+.touch-zone-left {
+  left: 0;
+}
+
+.touch-zone-right {
+  right: 0;
+}
+
+.touch-stick {
+  position: fixed;
+  z-index: 6400;
+  width: 136px;
+  height: 136px;
+  margin: -68px 0 0 -68px;
+  border: 1px solid rgb(135 208 189 / 42%);
+  border-radius: 50%;
+  background: rgb(14 15 14 / 28%);
+  pointer-events: none;
+}
+
+.touch-stick-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 56px;
+  height: 56px;
+  margin: -28px 0 0 -28px;
+  border: 1px solid var(--accent-cyan);
+  border-radius: 50%;
+  background: rgb(135 208 189 / 26%);
+}
+
+.touch-stick-hint {
+  position: absolute;
+  bottom: calc(24px + var(--safe-bottom));
+  display: grid;
+  width: 92px;
+  height: 92px;
+  place-items: center;
+  border: 1px dashed rgb(135 208 189 / 30%);
+  border-radius: 50%;
+  color: rgb(135 208 189 / 48%);
+  font-size: 11px;
+  letter-spacing: 2px;
+  pointer-events: none;
+}
+
+.touch-stick-hint-left {
+  left: calc(76px + var(--safe-left));
+}
+
+.touch-stick-hint-right {
+  right: calc(28px + var(--safe-right));
+}
+
+.touch-btn-col {
+  position: absolute;
+  z-index: 6500;
+  top: 50%;
+  display: grid;
+  gap: 10px;
+  transform: translateY(-50%);
+}
+
+.touch-btn-col-left {
+  left: calc(58px + var(--safe-left));
+}
+
+.touch-btn-col-right {
+  right: calc(10px + var(--safe-right));
+}
+
+/* ≥44px touch targets. */
+.touch-btn {
+  display: grid;
+  width: 52px;
+  height: 48px;
+  place-items: center;
+  border: 1px solid var(--border-cyan);
+  background: rgb(14 15 14 / 74%);
+  color: var(--text-primary);
+  backdrop-filter: blur(8px);
+}
+
+.touch-btn.active {
+  border-color: rgb(135 208 189 / 70%);
+  color: var(--accent-cyan);
+}
+
+.touch-btn-pair {
+  display: flex;
+  gap: 6px;
+}
+
+.touch-btn-half {
+  width: 48px;
+}
+
+.touch-throttle-readout {
+  padding: 4px 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
 .audio-controls {
   position: fixed;
   right: calc(12px + var(--safe-right));

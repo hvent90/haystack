@@ -68,6 +68,9 @@ import {
   windowDefinitions,
 } from "./constants";
 import { isEditableTarget, isFlightKey } from "./flight";
+import { isTouchDevice } from "./mobile";
+import { createTouchFlightState, resetTouchFlightAxes, touchFlightEngaged } from "./touch-input";
+import { TouchFlightControls } from "./components/TouchFlightControls";
 import {
   clampLayout,
   createDefaultLayout,
@@ -213,6 +216,15 @@ export function EveApp(): ReactNode {
   // carries the current on/off state, mirroring how cruiseLock stays sticky server-side.
   const lightsRef = useRef({ navLights: false, flashlight: false });
   const oneShotRef = useRef<OneShotFlightInput>({ boost: false });
+  // Touch flight input (sticks + hold buttons). Mutated by TouchFlightControls' pointer
+  // handlers, read by buildFlightInput on the input timer — the touch twin of
+  // heldKeysRef/mouseDeflectionRef. Always allocated; only ever non-zero on touch
+  // devices because the touch UI is the only writer.
+  const touchFlightRef = useRef(createTouchFlightState());
+  // Capability probe is stable for the session (see mobile.ts).
+  const touchUi = useMemo(() => isTouchDevice(), []);
+  // Active touch points on the world stage for third-person orbit/pinch gestures.
+  const touchOrbitRef = useRef<Map<number, { x: number; y: number }>>(new Map());
   const lastFlightActiveRef = useRef(false);
   // Wall-clock fixed-step accumulator for owned-ship prediction. Each input-timer
   // fire drains `floor(elapsed / shipFixedDt)` steps, so the client advances the
@@ -619,7 +631,12 @@ export function EveApp(): ReactNode {
     }
 
     const interval = window.setInterval(() => {
-      const active = flightModeRef.current === "flight";
+      // Touch engagement (a finger on a stick/hold button) plays the role pointer lock
+      // plays on desktop: while engaged, the timer streams active commands through the
+      // same prediction path. Releasing every finger sends one trailing inactive
+      // command (lastFlightActiveRef below), zeroing rotation/strafe server-side.
+      const active =
+        flightModeRef.current === "flight" || touchFlightEngaged(touchFlightRef.current);
       const hasOneShot = oneShotRef.current.boost;
       if (!active && !lastFlightActiveRef.current && !hasOneShot) {
         // Idle: stop accumulating wall time so resuming flight doesn't dump a
@@ -1049,6 +1066,20 @@ export function EveApp(): ReactNode {
           onBoost={sendBoostInput}
           onCruiseToggle={() => toggleFlightCruiseLock(true)}
         />
+        {touchUi ? (
+          <TouchFlightControls
+            state={touchFlightRef.current}
+            viewMode={viewMode}
+            throttle={effectiveThrottle}
+            cruiseLock={cruiseLock}
+            flashlightOn={flashlightOn}
+            onBoost={sendBoostInput}
+            onCruiseToggle={() => toggleFlightCruiseLock(true)}
+            onFlashlight={toggleFlashlight}
+            onScan={() => setScanNonce((nonce) => nonce + 1)}
+            onCamera={toggleViewMode}
+          />
+        ) : null}
         <SelectedItemPanel
           row={selectedRow}
           snapshot={snapshot}
@@ -1425,6 +1456,16 @@ export function EveApp(): ReactNode {
     if (!(event.target === event.currentTarget || event.target instanceof HTMLCanvasElement)) {
       return;
     }
+    // Touch devices never drive pointer lock. First person: the stick zones (which sit
+    // above the canvas) own flight input, so a canvas touch reaching here can only be
+    // outside them — ignore it. Third person: one-finger drag orbits, two-finger pinch
+    // zooms (the touch twin of mouse drag + wheel).
+    if (touchUi && event.pointerType === "touch") {
+      if (viewModeRef.current === "third") {
+        beginTouchOrbit(event);
+      }
+      return;
+    }
     if (flightModeRef.current === "flight") {
       return;
     }
@@ -1454,6 +1495,55 @@ export function EveApp(): ReactNode {
       window.removeEventListener("pointercancel", finish);
       if (!engaged && finishEvent.type === "pointerup") {
         requestFlightLock();
+      }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+  }
+
+  // Third-person touch camera: one finger orbits (same orbitCamera writes as the mouse
+  // drag below — never a FlightInputCommand), two fingers pinch-zoom. Listeners attach
+  // on the first touch of a gesture and detach when the last finger lifts.
+  function beginTouchOrbit(event: ReactPointerEvent<HTMLDivElement>): void {
+    event.preventDefault();
+    const points = touchOrbitRef.current;
+    points.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (points.size !== 1) {
+      return; // gesture listeners already attached by the first finger
+    }
+    const move = (moveEvent: PointerEvent): void => {
+      const prev = points.get(moveEvent.pointerId);
+      if (prev === undefined) {
+        return;
+      }
+      if (points.size === 1) {
+        orbitCamera.orbitBy(moveEvent.clientX - prev.x, moveEvent.clientY - prev.y);
+        points.set(moveEvent.pointerId, { x: moveEvent.clientX, y: moveEvent.clientY });
+        return;
+      }
+      // Pinch: distance delta between the two oldest fingers -> wheel-deltaY semantics
+      // (positive = zoom out), matching zoomBy's exponential curve.
+      const ids = [...points.keys()].slice(0, 2);
+      if (!ids.includes(moveEvent.pointerId)) {
+        return;
+      }
+      const [a, b] = ids.map((id) => points.get(id)!);
+      const before = Math.hypot(a!.x - b!.x, a!.y - b!.y);
+      points.set(moveEvent.pointerId, { x: moveEvent.clientX, y: moveEvent.clientY });
+      const [a2, b2] = ids.map((id) => points.get(id)!);
+      const after = Math.hypot(a2!.x - b2!.x, a2!.y - b2!.y);
+      orbitCamera.zoomBy((before - after) * 2);
+    };
+    const finish = (finishEvent: PointerEvent): void => {
+      if (!points.delete(finishEvent.pointerId)) {
+        return;
+      }
+      if (points.size === 0) {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", finish);
+        window.removeEventListener("pointercancel", finish);
+        saveOrbitDistance(orbitCamera.distance);
       }
     };
     window.addEventListener("pointermove", move);
@@ -1494,18 +1584,25 @@ export function EveApp(): ReactNode {
     mouseDeflectionRef.current = { x: 0, y: 0, z: 0 };
     setMouseDeflection({ x: 0, y: 0, z: 0 });
     oneShotRef.current = { boost: false };
+    resetTouchFlightAxes(touchFlightRef.current);
   }
 
   function buildFlightInput(active: boolean): FlightInputCommand {
     const oneShot = oneShotRef.current;
     oneShotRef.current = { boost: false };
     const keys = heldKeysRef.current;
+    // Touch axes merge additively with the keyboard/mouse axes (clamped); on desktop
+    // they are permanently zero (the touch UI is the only writer), so this path is
+    // byte-identical to the pre-touch command stream there.
+    const touch = touchFlightRef.current;
     const inputScale = active ? flightInputScaleRef.current : 1;
     const keyboardThrottleInput = Number(keys.has("KeyW")) - Number(keys.has("KeyS"));
     const rawThrottle =
       active && keyboardThrottleInput !== 0
         ? keyboardThrottleInput
-        : flightStateRef.current.throttle;
+        : active && touch.throttle !== null
+          ? touch.throttle
+          : flightStateRef.current.throttle;
     const commandThrottle = rawThrottle * inputScale;
     return {
       kind: "flight",
@@ -1516,7 +1613,9 @@ export function EveApp(): ReactNode {
       active,
       strafe: active
         ? {
-            x: (Number(keys.has("KeyD")) - Number(keys.has("KeyA"))) * inputScale,
+            x:
+              clamp(Number(keys.has("KeyD")) - Number(keys.has("KeyA")) + touch.strafeX, -1, 1) *
+              inputScale,
             y:
               (Number(keys.has("Space")) -
                 Number(keys.has("ControlLeft") || keys.has("ControlRight"))) *
@@ -1526,12 +1625,14 @@ export function EveApp(): ReactNode {
         : { x: 0, y: 0, z: 0 },
       rotation: active
         ? {
-            x: mouseDeflectionRef.current.x * inputScale,
-            y: mouseDeflectionRef.current.y * inputScale,
-            z: (Number(keys.has("KeyQ")) - Number(keys.has("KeyE"))) * inputScale,
+            x: clamp(mouseDeflectionRef.current.x + touch.rotation.x, -1, 1) * inputScale,
+            y: clamp(mouseDeflectionRef.current.y + touch.rotation.y, -1, 1) * inputScale,
+            z:
+              clamp(Number(keys.has("KeyQ")) - Number(keys.has("KeyE")) + touch.rotation.z, -1, 1) *
+              inputScale,
           }
         : { x: 0, y: 0, z: 0 },
-      ...(active && keys.has("KeyX") ? { stabilize: true } : {}),
+      ...(active && (keys.has("KeyX") || touch.stabilize) ? { stabilize: true } : {}),
       ...(oneShot.boost ? { boost: true } : {}),
     };
   }
