@@ -426,6 +426,12 @@ try {
         const dbg = window.__HAYSTACK_RENDER_DEBUG__;
         dbg.lookDir(d);
         dbg.shadowTiers(t1, t2);
+        // Froxel fog OFF for the shadow A/B: the gate isolates the two SHADOW tiers, and
+        // the volumetric medium (extinction dims lit faces below the 90-lum baseline cut,
+        // in-scatter lifts blacks above 18) would otherwise swamp both thresholds — the
+        // post-froxel baseline collapsed 15k -> 470 lit samples. The froxel pass has its
+        // own device gate (verify:gpu verifyFroxels).
+        dbg.froxel({ mix: 0 });
       },
       [downSun, tier1, tier2],
     );
@@ -459,18 +465,24 @@ try {
     };
     shadowGate.pass =
       shadowGate.noise < 600 &&
-      // The scene must hold a meaningful lit field at all (legacy hash ≈ 15500 lit
-      // samples; belt-bake band ≈ 7800 — the belt is genuinely sparser than the old
-      // 1-rock-per-cell field, so the tier floors below are RELATIVE to baselineLit
-      // rather than absolute pixel counts).
-      shadowGate.baselineLit > 4000 &&
-      // Each tier darkens (alive) but not everything (not a black wall). Measured
-      // healthy ratios vs baselineLit: legacy tier1 ≈ 0.53 / tier2 ≈ 0.15; belt 1M bake
-      // tier1 ≈ 0.22 / tier2 ≈ 0.13. An all-dark regression ≈ 1.0 and fails the upper
-      // bounds; a dead tier fails the floors.
-      shadowGate.tier1Darkened > Math.max(0.18 * shadowGate.baselineLit, 3 * shadowGate.noise) &&
+      // The scene must hold a meaningful lit field at all. RECALIBRATED 2026-06-10: the
+      // power-law background-rock radii (commit a81c400) shrank the lit-sample population
+      // — measured on CURRENT MAIN (99b1c8c, prod, Metal): baseLit ≈ 3008,
+      // tier1/baseLit ≈ 0.184, tier2/baseLit ≈ 0.098 (the old floors 4000 / 0.18 / 0.1
+      // were tuned on the pre-power-law field at baseLit ≈ 7800 and now fail MAIN
+      // itself, straddling the measured ratios). New floors keep the same failure
+      // detection: a DEAD tier measures ≈ noise/baseLit ≈ 0.03–0.04, far under 0.12/0.06;
+      // an ALL-DARK regression ≈ 1.0 still trips the upper bounds.
+      // (History: legacy hash field ≈ 15500 lit / tier1 0.53 / tier2 0.15; belt 1M bake
+      // pre-power-law ≈ 7800 / 0.22 / 0.13.)
+      shadowGate.baselineLit > 2000 &&
+      shadowGate.tier1Darkened > Math.max(0.12 * shadowGate.baselineLit, 3 * shadowGate.noise) &&
       shadowGate.tier1Darkened < 0.8 * shadowGate.baselineLit &&
-      shadowGate.tier2Darkened > Math.max(0.1 * shadowGate.baselineLit, 3 * shadowGate.noise) &&
+      // Tier2's noise arm is 2× (not 3×): on the power-law field its signal shrank to
+      // ~2.3–3.6× the tumble-noise floor (measured across runs: tier2 278/295/317 vs
+      // noise 88/135/114 — 3× fails CURRENT MAIN). A dead tier2 measures ≈ 1× noise and
+      // ≈ 0.03–0.04·baseLit, still well under both arms.
+      shadowGate.tier2Darkened > Math.max(0.06 * shadowGate.baselineLit, 2 * shadowGate.noise) &&
       shadowGate.tier2Darkened < 0.4 * shadowGate.baselineLit &&
       // The production blend keeps individually lit rocks (varied, not a black wall).
       shadowGate.blendLit > 0.4 * shadowGate.baselineLit;
@@ -483,6 +495,7 @@ try {
     const dbg = window.__HAYSTACK_RENDER_DEBUG__;
     dbg.lookDir(null);
     dbg.shadowTiers(true, true);
+    dbg.froxel(null);
   });
 
   // --- Write all artifacts ---
