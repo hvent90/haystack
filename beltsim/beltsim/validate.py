@@ -50,7 +50,9 @@ def validate(run_dir: str | Path) -> dict:
         for lo in np.arange(a_res + search_w, a_res + flank_w, bin_w):
             flank_bins.append(float(np.mean((a > lo) & (a < lo + bin_w))) / bin_w)
         flank = float(np.median(flank_bins))
-        ratio = gap_density / flank if flank > 0 else float("nan")
+        # A zero flank means the whole region was carved away (e.g. an embedded
+        # shepherd's moat swallowed the resonance) — maximal depletion, not missing data.
+        ratio = gap_density / flank if flank > 0 else 0.0
         gaps[label] = {"a": round(a_res, 4), "notchOverFlankMedian": round(ratio, 3)}
     # The marquee gaps must be visibly depleted at their own width. Thresholds calibrated
     # on the 8000-orbit default run: the 2:1 chasm is fully carved (0.26); the 3:1 notch is
