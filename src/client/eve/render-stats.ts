@@ -240,6 +240,11 @@ export type RenderDebugControls = {
   // tier contributes. Both true in normal play.
   shadowTier1: boolean;
   shadowTier2: boolean;
+  // Capture-only viewpoint override: when non-null the owned ship's RENDER position (the
+  // camera/floating origin) AND its snapshot position (what the field deriver pages
+  // around) become this point. Lets capture scripts shoot the belt at any scale without
+  // flying there. No effect in normal play (nothing sets it).
+  viewPos: { x: number; y: number; z: number } | null;
 };
 
 const debugControls: RenderDebugControls = {
@@ -248,6 +253,7 @@ const debugControls: RenderDebugControls = {
   lookDir: null,
   shadowTier1: true,
   shadowTier2: true,
+  viewPos: null,
 };
 
 export function getRenderDebugControls(): RenderDebugControls {
@@ -264,6 +270,7 @@ if (typeof window !== "undefined") {
         drift: (metersPerDelta: number) => void;
         lookDir: (dir: { x: number; y: number; z: number } | null) => void;
         shadowTiers: (tier1: boolean, tier2: boolean) => void;
+        viewPos: (pos: { x: number; y: number; z: number } | null) => void;
       };
     }
   ).__HAYSTACK_RENDER_DEBUG__ = {
@@ -281,6 +288,9 @@ if (typeof window !== "undefined") {
     shadowTiers: (tier1: boolean, tier2: boolean) => {
       debugControls.shadowTier1 = tier1;
       debugControls.shadowTier2 = tier2;
+    },
+    viewPos: (pos: { x: number; y: number; z: number } | null) => {
+      debugControls.viewPos = pos;
     },
   };
 }

@@ -126,6 +126,19 @@ function driftOwnedShip(
   driftXRef: { current: number | null },
   advance: number,
 ): WorldSnapshot {
+  const viewPos = getRenderDebugControls().viewPos;
+  if (viewPos !== null) {
+    const owned = snapshot.ships.find((ship) => ship.pilotId === pilotId);
+    if (owned === undefined) {
+      return snapshot;
+    }
+    return {
+      ...snapshot,
+      ships: snapshot.ships.map((ship) =>
+        ship.pilotId === pilotId ? { ...ship, position: { ...viewPos } } : ship,
+      ),
+    };
+  }
   if (getRenderDebugControls().drift <= 0) {
     driftXRef.current = null;
     return snapshot;
