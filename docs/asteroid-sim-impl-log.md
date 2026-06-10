@@ -252,3 +252,20 @@ fieldDiagnostic, both belt-aware).
    belt-hash-baseline-{close,region,belt}.png; visual verdict recorded above.
 7. Deferred (explicit): far-field flow-field animation (artifact shipped, consumer is
    future cosmetic drift); deeper 3:1 via longer re-sim (knob documented); GIF flythrough.
+
+## Session 1 — post-ship fixes (user-reported)
+
+- Stale-cache split-brain: browser served the cached smoke `density.bin.gz` against the
+  fresh 1M `belt-meta.json`; the decode length guard threw and the client derived zero
+  rocks. Fix: content-addressed `bakeId` (sha1 of binaries) in belt-meta.json, meta
+  fetched cache-bypassed, binaries fetched with `?v=<bakeId>`.
+- Spawn-in-planet: the user's dev DB predated the belt (seeded at old coordinates) —
+  reset (backup at data/haystack.sqlite.pre-belt-backup). Separately, `ShipActor.reset`
+  hardcoded the origin (now the planet core); recenter now targets `stationSpawn`
+  (exported from world.ts; sim.ts imports it).
+- "All asteroids look the same size": background radii were uniform 45–355 m. Now
+  truncated power law N(>r) ∝ r⁻² over [55, 355] m (same noise channel, positions
+  unchanged): median 78 m, ~2.5% at the cap, heroes above. Shadow-gate floors moved to
+  NOISE-RELATIVE thresholds (live tiers measure 3.6–4.7×/2.1–2.9× the identical-state
+  noise floor; dead ≈ 1×) — fraction-of-baseLit floors assumed a size distribution and
+  broke twice. All gates re-green (verify 140/140, verify:gpu-live:prod PASS).
