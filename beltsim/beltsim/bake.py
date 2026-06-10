@@ -105,8 +105,14 @@ def bake(run_dir: str | Path) -> list[Path]:
     # --- size assignment + hero split ---------------------------------------
     diam = _power_law_diameters(n, cfg.size_slope, cfg.size_d_min, cfg.size_d_max, preset.seed)
     order = np.argsort(-diam)
+    # Heroes must lie inside the baked volume (the runtime grid is sized from r_max/z_max;
+    # a hero outside it cannot exist at runtime — found the hard way: 3/2000 smoke heroes
+    # sat above z_max and silently vanished at decode).
+    r_all = np.hypot(pos[:, 0], pos[:, 1])
+    inside = (np.abs(pos[:, 2]) < cfg.z_max * 0.999) & (r_all > cfg.r_min) & (r_all < cfg.r_max)
+    order = order[inside[order]]
     hero_idx = order[: cfg.hero_count]
-    rest_idx = order[cfg.hero_count :]
+    rest_idx = np.concatenate([order[cfg.hero_count :], np.flatnonzero(~inside)])
 
     heroes = np.zeros((hero_idx.size,), dtype=[
         ("x", "<f4"), ("y", "<f4"), ("z", "<f4"), ("d", "<f4"), ("family", "<i2"), ("pad", "<i2"),

@@ -87,6 +87,12 @@ export function beltGridGeometry(
   const halfY = Math.ceil((meta.density.zMax * worldScale) / cellSize);
   const cellsXZ = halfXZ * 2;
   const cellsY = halfY * 2;
+  if (cellsXZ >= BELT_CELL_KEY_BASE || cellsY >= BELT_CELL_KEY_BASE) {
+    throw new Error(
+      `belt grid ${cellsXZ}x${cellsY} exceeds cell-key base ${BELT_CELL_KEY_BASE} — ` +
+        "raise BELT_CELL_KEY_BASE before raising worldScale/cutting cellSize this far",
+    );
+  }
   return {
     cellSize,
     cellsXZ,
@@ -121,7 +127,9 @@ function decodeHeroes(bytes: Uint8Array, geo: BeltGridGeometry, worldScale: numb
     const cy = Math.floor((y - geo.originY) / geo.cellSize);
     const cz = Math.floor((z - geo.originXZ) / geo.cellSize);
     if (cx < 0 || cx >= geo.cellsXZ || cy < 0 || cy >= geo.cellsY || cz < 0 || cz >= geo.cellsXZ) {
-      continue; // outside the field grid (shouldn't happen with matched extents)
+      // A hero outside the grid cannot exist at runtime. The bake excludes them since
+      // format v1 hero-volume clipping; tolerate stragglers in older artifacts.
+      continue;
     }
     const key = beltCellKey(cx, cy, cz);
     const existing = byCell.get(key);
@@ -155,6 +163,12 @@ export function decodeBeltBake(
   }
   if (bytes.zones.byteLength !== nr) {
     throw new Error(`zones bytes ${bytes.zones.byteLength} != nr ${nr}`);
+  }
+  if (bytes.heroes.byteLength % 20 !== 0) {
+    throw new Error(`heroes bytes ${bytes.heroes.byteLength} not a multiple of the 20B record`);
+  }
+  if (bytes.flow.byteLength !== meta.flow.nr * meta.flow.ntheta * 4) {
+    throw new Error(`flow bytes ${bytes.flow.byteLength} != ${meta.flow.nr}*${meta.flow.ntheta}*4`);
   }
   const geo = beltGridGeometry(meta, worldScale, cellSize);
   return {
