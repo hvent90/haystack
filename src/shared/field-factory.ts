@@ -261,7 +261,17 @@ function clusterAt(
 
 // intensity ∈ [0,1] of a cluster at point p, plus the nearest point on the
 // cluster's geometry (the warp target for rock placement).
-function clusterField(c: ClusterSpec, p: Vector3): { intensity: number; nearest: Vector3 } {
+//
+// minScale floors the thin-direction falloff scale. The COUNT path passes the
+// fine cell size: a filament/sheet/ring far thinner than a cell must still
+// light up every cell its geometry passes through (the cell center can sit up
+// to ~cellSize/√2 off the surface) — placement then squeezes the rocks back
+// onto the thin geometry. The placement path passes 0.
+function clusterField(
+  c: ClusterSpec,
+  p: Vector3,
+  minScale = 0,
+): { intensity: number; nearest: Vector3 } {
   const dx = p.x - c.center.x;
   const dy = p.y - c.center.y;
   const dz = p.z - c.center.z;
@@ -291,7 +301,7 @@ function clusterField(c: ClusterSpec, p: Vector3): { intensity: number; nearest:
     const lateral = Math.sqrt(lx * lx + ly * ly + lz * lz);
     const thickness = c.params.thickness ?? 400;
     // lateral gaussian-ish falloff over ~3 thicknesses; soft longitudinal ends
-    const lt = lateral / (thickness * 3);
+    const lt = lateral / Math.max(thickness * 3, minScale);
     const lat = lt >= 1 ? 0 : 1 - lt * lt;
     const at = Math.abs(along) / c.radius;
     const lon = at >= 1.2 ? 0 : Math.min(1, 1.2 - at);
@@ -312,7 +322,7 @@ function clusterField(c: ClusterSpec, p: Vector3): { intensity: number; nearest:
       z: c.center.z + pz * scale,
     };
     const thickness = c.params.thickness ?? 300;
-    const nt = Math.abs(along) / (thickness * 3);
+    const nt = Math.abs(along) / Math.max(thickness * 3, minScale);
     const norm = nt >= 1 ? 0 : 1 - nt * nt;
     const rt = radial / c.radius;
     const rad = rt >= 1.15 ? 0 : Math.min(1, (1.15 - rt) / 0.4);
@@ -334,7 +344,7 @@ function clusterField(c: ClusterSpec, p: Vector3): { intensity: number; nearest:
   }
   const dRing = Math.sqrt((radial - ringR) * (radial - ringR) + along * along);
   const thickness = c.params.thickness ?? 350;
-  const t = dRing / (thickness * 3);
+  const t = dRing / Math.max(thickness * 3, minScale);
   let intensity = t >= 1 ? 0 : (1 - t * t) * (1 - t * t);
   const arc = c.params.arcFraction ?? 1;
   if (arc < 1 && intensity > 0) {
@@ -487,7 +497,7 @@ export function rocksInCell(
         if (cluster === null) {
           continue;
         }
-        const field = clusterField(cluster, cellCenter);
+        const field = clusterField(cluster, cellCenter, geo.cellSize);
         if (field.intensity <= 0) {
           continue;
         }
@@ -530,14 +540,31 @@ export function rocksInCell(
     if (best !== null && bestField !== null) {
       params = best.params;
       archetypeName = params.name;
-      // pull toward the cluster geometry: re-evaluate nearest for THIS rock's
-      // jittered position so filaments/rings stay crisp, not cell-quantized
+      intensity = bestField.intensity;
+      // Re-sample this rock's distance from the cluster geometry directly:
+      // nearest point on the geometry for the jittered position, then a
+      // controlled residual offset along the away-direction. This keeps
+      // filaments/rings/sheets crisp instead of cell-quantized (warping by
+      // local intensity fails: rocks jittered outside the falloff see
+      // intensity 0 and never move).
       const f = clusterField(best, { x: px, y: py, z: pz });
-      intensity = f.intensity;
-      const pull = params.sharpness * Math.pow(u01(ch(3)), 0.4);
-      px += (f.nearest.x - px) * pull * intensity;
-      py += (f.nearest.y - py) * pull * intensity;
-      pz += (f.nearest.z - pz) * pull * intensity;
+      const ax = px - f.nearest.x;
+      const ay = py - f.nearest.y;
+      const az = pz - f.nearest.z;
+      const away = Math.sqrt(ax * ax + ay * ay + az * az);
+      if (away > 1e-6) {
+        const scatterScale =
+          params.kind === "pocket" || params.kind === "drift"
+            ? best.radius
+            : (params.thickness ?? 300) * 3;
+        const residual = Math.min(away, scatterScale * Math.pow(u01(ch(3)), 1.4));
+        const wx = f.nearest.x + (ax / away) * residual;
+        const wy = f.nearest.y + (ay / away) * residual;
+        const wz = f.nearest.z + (az / away) * residual;
+        px += (wx - px) * params.sharpness;
+        py += (wy - py) * params.sharpness;
+        pz += (wz - pz) * params.sharpness;
+      }
     }
 
     const dist = params?.radius ?? DEFAULT_RADIUS;
@@ -606,6 +633,54 @@ function legacyRock(geo: FieldGeometry, cx: number, cy: number, cz: number): Roc
 
 function clampCell(value: number, cellsPerAxis: number): number {
   return Math.max(0, Math.min(cellsPerAxis - 1, value));
+}
+
+// Clusters within `radius` meters of `origin`, nearest first — used by the
+// preview harness to frame close-ups on real cluster centers.
+export function clustersNear(
+  geo: FieldGeometry,
+  preset: FieldPreset,
+  origin: Vector3,
+  radius: number,
+): Array<{ name: string; kind: string; center: Vector3; radius: number; axis: Vector3 }> {
+  const coarseSize = preset.clusterCells * geo.cellSize;
+  const span = Math.ceil(radius / coarseSize);
+  const k0 = {
+    x: Math.floor((origin.x - geo.originOffset) / coarseSize),
+    y: Math.floor((origin.y - geo.originOffset) / coarseSize),
+    z: Math.floor((origin.z - geo.originOffset) / coarseSize),
+  };
+  const found: Array<{
+    name: string;
+    kind: string;
+    center: Vector3;
+    radius: number;
+    axis: Vector3;
+    d2: number;
+  }> = [];
+  for (let dx = -span; dx <= span; dx += 1) {
+    for (let dy = -span; dy <= span; dy += 1) {
+      for (let dz = -span; dz <= span; dz += 1) {
+        const c = clusterAt(geo, preset, k0.x + dx, k0.y + dy, k0.z + dz);
+        if (c === null) {
+          continue;
+        }
+        const ox = c.center.x - origin.x;
+        const oy = c.center.y - origin.y;
+        const oz = c.center.z - origin.z;
+        found.push({
+          name: c.params.name,
+          kind: c.params.kind,
+          center: c.center,
+          radius: c.radius,
+          axis: c.axis,
+          d2: ox * ox + oy * oy + oz * oz,
+        });
+      }
+    }
+  }
+  found.sort((a, b) => a.d2 - b.d2);
+  return found.map(({ d2: _d2, ...rest }) => rest);
 }
 
 // All rocks within `radius` meters of `origin` (no sorting, no limit) — the
