@@ -132,7 +132,7 @@ export function makeLodAsteroidMaterial(
   // Rocky-ring albedo (research doc §4: mid grey-brown, matte) with per-instance
   // lightness variation so the field doesn't read as a single repeated material.
   const tint = varying(fract(phase.mul(3.33)));
-  mat.colorNode = mix(color("#564d42"), color("#867d6e"), tint);
+  mat.colorNode = mix(color("#544e45"), color("#7f786d"), tint);
   // Vertex-stage per-instance values, interpolated to the fragment stage where the shadow
   // blend runs (instanceIndex is vertex-only).
   const aSunlit = varying(packAttr.element(slot).w);
