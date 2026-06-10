@@ -144,7 +144,8 @@ roll on the keyboard — correct for a scan/mine game rather than a dogfighter.
 | **Mine**                              | Fire trigger / R                                                 | ED hardpoint fire                                                           | Range `radius + 1400 m`; heat-throttled.                                                                                                                                                                                      |
 | **Dock request / gear**               | L                                                                | ED `L` = landing gear; dock request                                         | Guaranteed early reflex; needs a real "approach the station" answer (cruise + Stabilizer + dock UI).                                                                                                                          |
 | **UI panels**                         | 1 / 2 / 3 / 4                                                    | ED 1–4 default                                                              | Maps to EVE-style Flight / Scan / Cargo / Map windows. Works in either mouse mode; see §5.1 for input arbitration.                                                                                                            |
-| **Free-look**                         | hold (suggested `V`)                                             | ED headlook (hold)                                                          | **Deferred** until orientation + chase-cam exist (§7.7) — nothing to glance around in today's fixed frame.                                                                                                                    |
+| **Camera view toggle**                | C (toggle)                                                       | ED has no third-person flight; EVE's orbit camera is the reference          | **Implemented.** First ↔ third person, independent of cursor/flight mode. In third person the local ship renders (hull, nav lights, flashlight beam) from the smoothed render transform. See §5.2.                            |
+| **Free-look**                         | —                                                                | ED headlook (hold)                                                          | Superseded by the third-person camera (§5.2): chase cam while locked, EVE-style orbit in cursor mode. (`V` went to the scan pulse, so the view toggle landed on `C`.)                                                         |
 
 **Cut from the ED reflex set: pips / capacitor distribution (arrow keys).** ED's pip
 dance feeds a **capacitor Haystack does not have.** Repurposing arrows as a
@@ -196,6 +197,35 @@ Toggle (not hold) is correct here because UI work — dragging a window, typing 
 chat — is sustained, and you should not have to hold a key through it. Cursor mode is
 a pure input gate: flight is fully suspended and the ship coasts unchanged (no
 auto-brake, no auto-damp) — so the only remaining open choice is the final key (§10).
+
+### 5.2 Third-person view + EVE-style orbit camera (implemented)
+
+`C` toggles first ↔ third person. View mode is _what you see_; cursor/flight mode stays
+_what the mouse controls_ — the two are independent, and both the view mode and the orbit
+zoom distance persist in `localStorage`. The camera is still written once per frame by
+`RenderDriver` (`src/client/eve/components/WorldView.tsx`) from the smoothed render store;
+orbit state lives outside React in `src/client/eve/cameraStore.ts`.
+
+- **Third person + flight (pointer locked): chase cam.** The camera sits behind/above the
+  ship in ship space (view axis parallel to the nose), so mouse steering reads exactly as
+  it does in first person. The local ship renders with the same treatment remote ships get
+  (cone hull, nav lights, flashlight beam cone), driven from the smoothed owned transform.
+- **Third person + cursor (pointer free): EVE-style orbit.** Left-click-drag on the
+  stage/canvas orbits the camera around the ship — yaw wraps the full 360°, pitch clamps
+  at ±80° — and the scroll wheel zooms exponentially between ~0.18 and 16 scene units
+  (hull-filling close to speck-against-the-belt far, inside the fog band). A click that
+  never crosses a ~4 px drag threshold still re-locks flight, so the "click the canvas to
+  fly" habit keeps working, and drags that start on HUD/UI elements never engage the
+  orbit. Orbiting and zooming are pure camera inputs: they never touch
+  `mouseDeflectionRef`, never emit a `FlightInputCommand`, and never bleed into
+  `flightInputScale` — the ship keeps coasting on its current inputs (`tests/e2e/camera.ts`
+  pins all of this via `window.__probe`).
+- **No snaps.** Every pose change (view toggle, lock/unlock) eases from the camera's
+  current transform over ~0.45 s; unlocking out of chase seeds the orbit angles from the
+  chase pose so the camera starts the orbit exactly where it already is.
+- **Reticle decision:** the center reticle marks the cockpit view axis, which third person
+  does not have (the orbit camera especially), so it is hidden in third person rather than
+  projected along the nose. First-person HUD and reticle are unchanged.
 
 ---
 
