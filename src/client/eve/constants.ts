@@ -70,6 +70,13 @@ export const windowDefinitions: WindowDefinition[] = [
     minHeight: 260,
     defaultState: { x: 862, y: 378, width: 390, height: 310, open: false, minimized: false, z: 60 },
   },
+  {
+    key: "settings",
+    label: "Settings",
+    minWidth: 340,
+    minHeight: 400,
+    defaultState: { x: 100, y: 100, width: 380, height: 600, open: false, minimized: false, z: 70 },
+  },
 ];
 
 export const windowDefinitionByKey = Object.fromEntries(

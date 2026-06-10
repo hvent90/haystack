@@ -75,13 +75,13 @@ async function verifyChrome(page: Page, pilotId: string): Promise<void> {
   const neocomButtons = await page.$$eval("[data-testid^='neocom-']", (nodes) =>
     nodes.map((node) => node.getAttribute("data-testid")),
   );
-  assert(neocomButtons.length === 6, `expected six neocom buttons, got ${neocomButtons.length}`);
+  assert(neocomButtons.length === 7, `expected seven neocom buttons, got ${neocomButtons.length}`);
   assert(
     !neocomButtons.some((id) => /upgrade|market|fitting|industry|fleet|drones|pi/.test(id ?? "")),
     "no forbidden neocom buttons",
   );
 
-  for (const key of ["flight", "scanner", "cargo", "comms", "character", "bases"]) {
+  for (const key of ["flight", "scanner", "cargo", "comms", "character", "bases", "settings"]) {
     await page.waitForSelector(`[data-testid='window-${key}']`);
     await page.waitForSelector(`[data-testid='window-${key}-close']`);
     await page.waitForSelector(`[data-testid='window-${key}-resize-se']`);

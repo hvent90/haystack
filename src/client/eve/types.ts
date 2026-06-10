@@ -1,6 +1,13 @@
 import type { ScanMode, Vector3 } from "../../shared/types";
 
-export type WindowKey = "flight" | "scanner" | "cargo" | "comms" | "character" | "bases";
+export type WindowKey =
+  | "flight"
+  | "scanner"
+  | "cargo"
+  | "comms"
+  | "character"
+  | "bases"
+  | "settings";
 
 export type WindowState = {
   x: number;

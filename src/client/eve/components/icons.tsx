@@ -1,4 +1,12 @@
-import { House, MessageSquare, Pickaxe, ScanLine, Ship as ShipIcon, UserRound } from "lucide-react";
+import {
+  House,
+  MessageSquare,
+  Pickaxe,
+  ScanLine,
+  Settings,
+  Ship as ShipIcon,
+  UserRound,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import type { WindowKey } from "../types";
 
@@ -16,5 +24,7 @@ export function WindowIcon({ windowKey, size }: { windowKey: WindowKey; size: nu
       return <UserRound size={size} />;
     case "bases":
       return <House size={size} />;
+    case "settings":
+      return <Settings size={size} />;
   }
 }

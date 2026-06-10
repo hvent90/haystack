@@ -52,6 +52,7 @@ import { CargoWindow } from "./components/windows/CargoWindow";
 import { CharacterWindow } from "./components/windows/CharacterWindow";
 import { CommsWindow } from "./components/windows/CommsWindow";
 import { FlightWindow } from "./components/windows/FlightWindow";
+import { FogSettingsWindow } from "./components/windows/FogSettingsWindow";
 import { ScannerWindow } from "./components/windows/ScannerWindow";
 import {
   flightInputScaleMax,
@@ -1013,6 +1014,8 @@ export function EveApp(): ReactNode {
                     myShip={myShip}
                     onShowInfo={openShowInfo}
                   />
+                ) : definition.key === "settings" ? (
+                  <FogSettingsWindow />
                 ) : (
                   <BasesWindow
                     snapshot={snapshot}
