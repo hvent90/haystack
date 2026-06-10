@@ -51,6 +51,7 @@ export type RemoteTransform = {
 export class FlightRenderStore {
   private readonly predPos = new ThreeVector3();
   private readonly predVel = new ThreeVector3();
+  private readonly predAngVel = new ThreeVector3();
   private readonly predQuat = new ThreeQuaternion(0, 0, 0, 1);
   private readonly errPos = new ThreeVector3();
   private readonly errQuat = new ThreeQuaternion(0, 0, 0, 1);
@@ -64,8 +65,10 @@ export class FlightRenderStore {
 
   // Reused scratch / output objects to avoid per-frame allocation.
   private readonly scratchVec = new ThreeVector3();
+  private readonly scratchAngVel = new ThreeVector3();
   private readonly scratchQuat = new ThreeQuaternion();
   private readonly scratchQuat2 = new ThreeQuaternion();
+  private readonly scratchDeltaQuat = new ThreeQuaternion();
   private readonly identityQuat = new ThreeQuaternion(0, 0, 0, 1);
   private readonly outPos: Vector3 = { x: 0, y: 0, z: 0 };
   private readonly outQuat: Quaternion = { x: 0, y: 0, z: 0, w: 1 };
@@ -82,6 +85,7 @@ export class FlightRenderStore {
   resetOwned(ship: Ship): void {
     this.predPos.set(ship.position.x, ship.position.y, ship.position.z);
     this.predVel.set(ship.velocity.x, ship.velocity.y, ship.velocity.z);
+    this.predAngVel.set(ship.angularVelocity.x, ship.angularVelocity.y, ship.angularVelocity.z);
     this.predQuat
       .set(ship.orientation.x, ship.orientation.y, ship.orientation.z, ship.orientation.w)
       .normalize();
@@ -118,6 +122,7 @@ export class FlightRenderStore {
 
     this.predPos.set(ship.position.x, ship.position.y, ship.position.z);
     this.predVel.set(ship.velocity.x, ship.velocity.y, ship.velocity.z);
+    this.predAngVel.set(ship.angularVelocity.x, ship.angularVelocity.y, ship.angularVelocity.z);
     this.predQuat
       .set(ship.orientation.x, ship.orientation.y, ship.orientation.z, ship.orientation.w)
       .normalize();
@@ -161,9 +166,21 @@ export class FlightRenderStore {
     return this.scratchVec.copy(this.predVel).multiplyScalar(t).add(this.predPos).add(this.errPos);
   }
 
-  // errQuat * predQuat, written into scratchQuat2.
+  // errQuat * (predQuat advanced by predAngVel * clampedExtrapolation), written into
+  // scratchQuat2. Mirrors ownedRenderVector's position dead-reckoning so rotation
+  // advances every frame between predicts instead of freezing at the last predicted
+  // quat (the gap that left owned-ship ROTATION visibly jerky). The body-local delta
+  // matches the shared integrator's `orientation * delta` convention (ship-motion.ts).
   private ownedRenderQuat(): ThreeQuaternion {
-    return this.scratchQuat2.copy(this.errQuat).multiply(this.predQuat).normalize();
+    const out = this.scratchQuat2.copy(this.predQuat);
+    const angularSpeed = this.predAngVel.length();
+    if (angularSpeed > 1e-6) {
+      const t = Math.min(this.extrapolationSec, maxOwnedExtrapolationSec);
+      this.scratchAngVel.copy(this.predAngVel).multiplyScalar(1 / angularSpeed);
+      this.scratchDeltaQuat.setFromAxisAngle(this.scratchAngVel, angularSpeed * t);
+      out.multiply(this.scratchDeltaQuat);
+    }
+    return out.premultiply(this.errQuat).normalize();
   }
 
   ownedRenderPosition(): Vector3 {

@@ -3,6 +3,14 @@ import type { ChatChannel, WindowDefinition } from "./types";
 
 export const localPilotKey = "haystack.pilotId";
 export const flightInputIntervalMs = 1000 / 60;
+// The owned-ship predictor advances by ELAPSED WALL TIME (a fixed-step accumulator),
+// not by how often the input timer happens to fire. Under main-thread contention
+// the timer fires late; without this the client would predict fewer 1/60 steps per
+// wall-second than the server integrates, so the predicted pose lags and every ack
+// snaps (the jerk). `maxFlightCatchupSec` bounds the catch-up after a real stall
+// (e.g. a backgrounded tab) so resume produces one reconcile, not a huge burst.
+export const maxFlightCatchupSec = 0.25;
+export const maxFlightStepsPerTick = 16;
 export const flightInputScaleMax = 1;
 export const flightInputScaleMin = 0.001;
 export const flightInputScaleWheelDivisor = 480;

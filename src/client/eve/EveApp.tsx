@@ -16,6 +16,8 @@ import type {
   WorldSnapshot,
 } from "../../shared/types";
 import { makeShipCollisionEnvironment } from "../../shared/collision";
+import { shipFixedDt } from "../../shared/ship-motion";
+import { predictionDebug } from "./prediction-debug";
 import {
   buildBase,
   createPilot,
@@ -53,6 +55,8 @@ import {
   flightInputScaleWheelDivisor,
   flightInputIntervalMs,
   localPilotKey,
+  maxFlightCatchupSec,
+  maxFlightStepsPerTick,
   mouseSensitivity,
   relativeMouseDecay,
   throttleStep,
@@ -180,6 +184,12 @@ export function EveApp(): ReactNode {
   const lightsRef = useRef({ navLights: false, flashlight: false });
   const oneShotRef = useRef<OneShotFlightInput>({ boost: false });
   const lastFlightActiveRef = useRef(false);
+  // Wall-clock fixed-step accumulator for owned-ship prediction. Each input-timer
+  // fire drains `floor(elapsed / shipFixedDt)` steps, so the client advances the
+  // SAME number of 1/60 steps per wall-second as the server regardless of timer
+  // jitter (see maxFlightCatchupSec in constants.ts and the cadence regression test).
+  const predictAccumulatorRef = useRef(0);
+  const predictClockRef = useRef(0); // performance.now() at the last fire (0 = idle/reset)
   const syncedFlightPilotRef = useRef<string | null>(null);
   const myShipRef = useRef<Ship | null>(null);
   const previousChatIdsRef = useRef<Set<string>>(new Set());
@@ -388,6 +398,7 @@ export function EveApp(): ReactNode {
             const outcome = predictionRef.current.reconcile(message.ackClientTick, message.ship);
             if (outcome.corrected) {
               predictionCorrectionsRef.current += 1;
+              predictionDebug.noteCorrection();
               flightRenderStore.correctOwned(outcome.ship);
             } else {
               flightRenderStore.setOwnedPredicted(outcome.ship);
@@ -568,10 +579,38 @@ export function EveApp(): ReactNode {
       const active = flightModeRef.current === "flight";
       const hasOneShot = oneShotRef.current.boost;
       if (!active && !lastFlightActiveRef.current && !hasOneShot) {
+        // Idle: stop accumulating wall time so resuming flight doesn't dump a
+        // catch-up burst built from the idle gap.
+        predictAccumulatorRef.current = 0;
+        predictClockRef.current = 0;
         return;
       }
+      // Advance prediction by ELAPSED WALL TIME, not once per fire. A starved timer
+      // (localhost CPU contention) fires late; draining the accumulator here keeps
+      // the client at ~60 steps/wall-second to match the server, so the predicted
+      // pose stops lagging and acks stop snapping. send+predict stays 1:1 per step;
+      // only the COUNT per wall-second changes. One-shots (boost) fire on the first
+      // step only — the server applies them once too (a single forced tick).
+      const now = performance.now();
+      const elapsedSec =
+        predictClockRef.current === 0 ? shipFixedDt : (now - predictClockRef.current) / 1000;
+      predictClockRef.current = now;
+      predictAccumulatorRef.current += Math.min(elapsedSec, maxFlightCatchupSec);
+      let steps = 0;
+      while (predictAccumulatorRef.current >= shipFixedDt && steps < maxFlightStepsPerTick) {
+        predictAccumulatorRef.current -= shipFixedDt;
+        steps += 1;
+      }
+      predictionDebug.noteFire(steps);
       const flightInput = buildFlightInput(active);
-      sendFlightInput(flightInput);
+      if (steps === 0) {
+        // Timer fired faster than the fixed step; keep the just-built one-shot for
+        // the next fire instead of dropping it.
+        oneShotRef.current.boost = oneShotRef.current.boost || flightInput.boost === true;
+      }
+      for (let step = 0; step < steps; step += 1) {
+        sendFlightInput(step === 0 ? flightInput : withoutOneShots(flightInput));
+      }
       lastFlightActiveRef.current = active;
       const nextMouseDeflection = {
         x: mouseDeflectionRef.current.x * relativeMouseDecay,
@@ -1382,6 +1421,17 @@ export function EveApp(): ReactNode {
       ...(active && keys.has("KeyX") ? { stabilize: true } : {}),
       ...(oneShot.boost ? { boost: true } : {}),
     };
+  }
+
+  // The held part of a command, with one-shot impulses removed. Catch-up prediction
+  // steps within a single timer fire replay only the held thrust — the server applies
+  // a one-shot (boost) exactly once (one forced tick), so the client must too.
+  function withoutOneShots(command: FlightInputCommand): FlightInputCommand {
+    if (command.boost !== true) {
+      return command;
+    }
+    const { boost: _boost, ...held } = command;
+    return held;
   }
 
   function syncKeyboardThrottle(): void {

@@ -275,6 +275,35 @@ The browser-owned ship prediction loop is `OwnedShipPrediction` in
 - outgoing stream inputs are stamped with `currentPredictionTick + 1`;
 - each successful send advances local prediction once and buffers
   `{ clientTick, command, postState }`;
+
+### Cadence: predict by ELAPSED WALL TIME, not by timer-fire count
+
+`OwnedShipPrediction.predict()` advances exactly one `shipFixedDt = 1/60` step per
+call. The number of steps the client takes per wall-second must equal the number the
+server integrates per wall-second, or the predicted pose drifts and every ack snaps it
+back — the classic "localhost is jerkier than a remote tunnel" symptom, because the
+server steps by **elapsed time** (`ServerWorld.advanceToNow`'s `while (accumulator >=
+fixedDt)`, `world.ts:340-405`) while a contended client's `setInterval` fires below
+60Hz.
+
+So the EveApp input timer (`src/client/eve/EveApp.tsx`) does **not** predict once per
+fire. It drains a wall-clock fixed-step accumulator: each fire adds the real elapsed
+time and sends+predicts `floor(elapsed / shipFixedDt)` steps (1:1 send+predict
+preserved — the server then runs one forced tick per input and ~zero background ticks,
+so each acked tick maps to a predicted step). A starved timer simply takes more steps
+per fire and stays matched to the server. `maxFlightCatchupSec` (constants.ts) bounds
+the catch-up after a real stall (backgrounded tab) so resume reconciles once instead of
+bursting. One-shot impulses (boost) ride only the first step of a fire — the server
+applies them exactly once. Regression: `tests/integration/prediction-cadence.test.ts`
+(step-count cadence under a 30Hz timer snaps on >40% of acks; elapsed-time cadence
+stays matched and clean at 50/40/30/20Hz). Live probe: `window.__predictionDebug`.
+
+`FlightRenderStore` (`renderStore.ts`) dead-reckons BOTH position (by `predVel`) and
+orientation (by `predAngVel`, same `orientation * delta` convention as the shared
+integrator) between predicts, capped at `maxOwnedExtrapolationSec`, so the rendered
+owned pose advances every animation frame instead of freezing at the last predicted
+step.
+
 - ACK frames carry `ackClientTick` and the authoritative ship frame;
 - matching ACKs drop buffered entries without writing the ACKed server pose onto the
   currently rendered owned ship;
