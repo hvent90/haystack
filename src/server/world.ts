@@ -15,6 +15,11 @@ import {
   type ShipCollisionEnvironment,
 } from "../shared/collision";
 import { fieldSummary, serverBeltField } from "./field";
+
+// ~700 m sunward of station-kestrel (db.ts), in the belt's inner band (r ≈ 1.265e6 m
+// from the gas giant at the origin). Lives here (not sim.ts) because ShipActor.reset
+// recenters to it and sim.ts already imports from this module.
+export const stationSpawn: Vector3 = { x: 1264900, y: 20, z: 250 };
 import type { HaystackDb } from "./db";
 import { metrics } from "./metrics";
 
@@ -223,13 +228,14 @@ export class ShipActor extends Actor {
     this.inputFreshFor = receipt.inputFreshFor;
   }
 
-  // Recenter at the origin and clear all movement (velocity, spin, throttle, cruise lock) while
-  // keeping orientation and ship loadout. Also drops any held flight input so the next tick does
-  // not immediately re-accelerate.
+  // Recenter at the station spawn and clear all movement (velocity, spin, throttle, cruise
+  // lock) while keeping orientation and ship loadout. Also drops any held flight input so the
+  // next tick does not immediately re-accelerate. (The world origin is the gas giant's core
+  // since the belt move — recentering there parks the ship inside the planet.)
   reset(): void {
     this.assignShip({
       ...this.toUnroundedShip(),
-      position: { x: 0, y: 0, z: 0 },
+      position: { ...stationSpawn },
       velocity: { x: 0, y: 0, z: 0 },
       angularVelocity: { x: 0, y: 0, z: 0 },
       throttle: 0,

@@ -1,10 +1,10 @@
 {
   "formatVersion": 1,
-  "preset": "default",
-  "seed": 424242,
+  "preset": "shepherd-moat",
+  "seed": 171717,
   "counts": {
     "heroes": 30000,
-    "background": 942472
+    "background": 190882
   },
   "density": {
     "nr": 1024,
@@ -13,14 +13,14 @@
     "rMin": 0.5,
     "rMax": 3.25,
     "zMax": 0.09,
-    "countScale": 2.2696244716644287,
+    "countScale": 0.9647281169891357,
     "densityScale": 1.0,
     "order": "[r][theta][z], C-order, uint8"
   },
   "flow": {
     "nr": 256,
     "ntheta": 256,
-    "vMax": 1.2908287558406861,
+    "vMax": 1.1920478302873287,
     "order": "[r][theta], int8 xyz dir + speed/127*vMax"
   },
   "zones": {
@@ -38,10 +38,15 @@
       "a": 0.62
     },
     {
+      "name": "shepherd",
+      "mass": 5e-5,
+      "a": 1.45
+    },
+    {
       "name": "veil",
       "mass": 0.0025,
       "a": 3.0
     }
   ],
-  "bakeId": "935459de941f"
+  "bakeId": "2a18e90c9c45"
 }

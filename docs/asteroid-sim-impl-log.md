@@ -115,3 +115,157 @@ Measured/learned (smoke runs, 20–30k particles):
   on x into the inner band (long-echo lands near the 3:1 gap edge).
 - **Far-field**: client-only density-haze annulus (TSL material over a z-summed density
   texture) + seeded impostor speckle layer; no parity, no gameplay reads.
+
+### Phase 3 implementation record (session 1, continued)
+
+Landed (all gates green at each step):
+
+- `src/shared/belt/` — artifact decode (`format.ts`) + THE derivation (`field.ts`):
+  trilinear f64 density sampling, ≤1-rock-per-cell probability model, hero cell
+  override, zone-driven pockets/minerals, growing-cube `deriveBeltField` (capped at
+  half-width 44; sparse regions legitimately return < renderedLimit rocks).
+- Server `field.ts` branches belt/hash; `HAYSTACK_FIELD=hash` keeps the legacy field as
+  the baseline; `HAYSTACK_BELT_PRESET`/`HAYSTACK_BELT_DENSITY` are runtime knobs.
+  totalAsteroids = polar volume integral of the bake ≈ 71M for the smoke artifacts.
+- Client: `belt-bake-loader.ts` (fetch + gzip-aware decode), field-core registration +
+  belt branches, worker fetches its own copy, FieldDeriver gates derives on bake
+  readiness, collision env + sun-occlusion + EveApp wired; world-seed/station/spawn
+  relocated to the inner band (x ≈ 1.265e6).
+- AXIS MAPPING (caught before any visuals): game world is y-up; sim is z-up. Decode maps
+  sim (x, y, z) -> world (x, z→y, y→z). Belt plane = world x–z.
+- Tests: `belt-parity.test.ts` (server ≡ client bit-for-bit at 4 positions, GPU base f32
+  image, double-load determinism, band≫gap density, sparse-derive semantics); collision +
+  server tests updated to belt coordinates. Full `bun run verify` 140/140 green.
+- GPU device gates: added `verifyBeltBaseRoundTrip` (50k bake-derived rocks bit-identical
+  through upload/readback) — `bun run verify:gpu` ALL PASS on device.
+- Gotcha for posterity: vite serves `.gz` with Content-Encoding: gzip → the browser
+  transport-decodes; the loader sniffs the gzip magic instead of assuming.
+- Far-field: `BeltFarField.tsx` — density-haze annulus (TSL node material over a z-summed
+  DataTexture, near-camera fade past the derive bubble), 60k seeded speckle impostors
+  sampled ∝ density, gas giant + moons at origin. Purely visual, fog-exempt.
+- First in-client run (smoke bake): boots clean, ~71M indexed, belt band visible from
+  inside, no console errors. Screenshot DM'd.
+- Pacing note: cruise 220 m/s ⇒ pockets at 14–200 km keep the old pacing; the full
+  6.5e6 m belt is long-horizon search space/scenery. Movement changes out of contract.
+
+### Perf (bench:gpu-cross:prod, real Chrome/Metal, production bundle, smoke bake)
+
+- Belt field: 718 frames median 16.7 ms / p99 16.8 / max 33.4, over50 = 0, over33 = 1;
+  13 forced crossings at 150 m/frame, worker derive 7–10 ms each, worst cross-frame
+  17.1 ms. No dropped-frame regression from the bake lookup.
+- Hash baseline on this machine: median 16.7 / p99 16.8 / max 16.8 (vsync-locked; note
+  the relocated spawn sits outside the legacy cube so the drift window produces no
+  crossings — frame numbers are the render baseline, derive cost compared via the belt
+  run's own worker timings, which match the pre-belt era's ~8–12 ms).
+
+- verify:gpu-live:prod with the smoke bake: frames p95 16.7 / 60.1 fps, SCAN gate PASS,
+  SHADOW gate FAIL (tier1=383 vs >2000, baseLit=2931 vs healthy ~15500). Cause: band
+  density at spawn ≈ 0.38 rocks/cell (smoke bake) vs the legacy 1.0/cell — down-sun
+  occlusion is genuinely rarer, the gate's absolute pixel thresholds assume the old
+  density. Re-evaluate on the 1M bake; if still short, relativize thresholds to
+  baselineLit (keeping the all-dark upper bounds + noise floors that make it
+  non-vacuous).
+
+### Fresh-context audit (Phase 3)
+
+Verifier subagent audit (adversarial, read-only + test runs): all seven contract claims
+verified — one shared derivation module, invariants kept, zone-driven pockets/minerals,
+parity suites green, no determinism leaks, axis mapping consistent across bake/decode/
+sampling/render, collision broad-phase sound. One real bug found and fixed: heroes whose
+sim position lay beyond the baked z_max were silently dropped at decode (3/2000 in the
+smoke bake) — the bake now clips hero candidates to the baked volume, and decode gained
+guards (cell-key base assert, record-length validation). Noted concerns: thresholded
+existence roll amplifies any cross-engine Math.sin ULP drift (probability ~1e-16/cell,
+accepted); streamedFieldToken is test-pinned reference API with no production consumer
+(virtual field is fully client-derived; server production consumers are virtualScanHits +
+fieldDiagnostic, both belt-aware).
+
+## Session 1 — 1M default run results (the definitive bake)
+
+- Sim: 1,000,000 particles, 8000 inner-belt orbits (1540 veil orbits), 75 min wall on 10
+  shards. 972,472 alive / 27,531 removed.
+- Histogram (runs/default/plots/kirkwood-histogram.png): deep 2:1 chasm at a=1.89 with a
+  surviving outer ringlet beyond it, sharp narrow 3:1 notch at 1.442, 7:3 dip, 4:1 family
+  spike, ~dozen visible Hirayama-style family towers, moon-truncated edges.
+- `beltsim validate runs/default`: ALL PASS — gap notch/flank 2:1 = 0.258, 3:1 = 0.608
+  (young gap at 1540 perturber orbits; metric measures the notch at its own ~0.4% width,
+  thresholds documented in validate.py), power-law slope −2.523 vs target −2.5, family
+  a-dispersion 0.048× Poisson over 100 families.
+- Bake: 3.20 MB compressed total (density 2.66 MB at 1024×1024×8, heroes 457 KB ×30k,
+  flow 82 KB, zones 39 B, meta 847 B). **Tile-pyramid decision: NOT taken** — the whole
+  artifact is one cached ~3 MB fetch, far below the threshold where slippy-map tiles pay
+  for their complexity. Revisit only if bake resolution grows ~10×.
+- Zone detection reworked to 3 levels (dense band / sparse fringe / void) — eccentricity
+  smears a-space gaps in physical radius, so radial pockets are band/fringe/void and the
+  azimuthal richness lives in the 2D density.
+- Shipped to public/belt/default. Server boots with totalAsteroids ≈ 134.1M.
+- Gates on the shipped bake: bun run verify 140/140; verify:gpu ALL PASS;
+  verify:gpu-live:prod PASS (frames p95 16.7 ms, 60.1 fps; scan gate; shadow gate floors
+  made RELATIVE to measured baselineLit — belt band ≈ 7.4k lit samples vs legacy ≈ 15.5k,
+  tiers alive at 0.22/0.13 ratios, all-dark upper bounds retained); bench:gpu-cross:prod
+  median 16.7 / p99 16.8 / max 33.2 ms, over33 = 0 over 9 crossings, derive ≈ 7.5 ms.
+- Captures (screenshots/): belt-default-{close,region,belt}.png at 1920×1080 vs
+  belt-hash-baseline-\*.png. Visual verdict: the hash field is an unstructured uniform
+  soup at every scale; the belt shows family clumps and arcs at belt scale, band/lane
+  structure + far-field granularity at region scale, and varied rock sizes incl. ~2 km
+  heroes at close scale. The failure mode the design conversation feared (formulaic
+  noise) is visibly absent.
+
+- Family-shear observation (1M run): even the youngest family (injected 40 orbits before
+  the final epoch) shears into a ~270° arc; azimuthal point-clumps are short-lived at
+  these orbital frequencies, so the lasting family signature is overlapping rings/arcs of
+  varying thickness + element-space tightness (0.048× Poisson). If future tuning wants
+  discrete blob-clumps, push `inject_window[1]` to ~0.9995 and drop `dv_over_vorb_min`
+  (sim re-run required) — or accept that arcs ARE the physical answer.
+
+## Session 1 — alternate preset + final report
+
+- `shepherd-moat` preset ran end-to-end in the background (400k particles, 8000 orbits,
+  ~35 min): the embedded shepherd at a=1.45 splits the belt into THREE separated rings —
+  a structurally different belt from the same pipeline. Validation ALL PASS (3:1/5:2 read
+  0.0 = fully carved inside the moat; validator now treats an empty flank as maximal
+  depletion, not missing data). Bake 2.1 MB, shipped to public/belt/shepherd-moat/,
+  selected at runtime via HAYSTACK_BELT_PRESET=shepherd-moat, captured in-client
+  (screenshots/belt-shepherd-moat-clean.png vs belt-default-belt-clean.png).
+- viewPos debug control added (render-stats/renderStore/EveApp) so capture scripts frame
+  any scale without flying; scripts/bench/belt-captures.mjs is the reusable harness.
+- Ops note: two dev servers sharing data/haystack.sqlite deadlock ("database is locked")
+  — capture/benchmark servers must take HAYSTACK_DB=<own file>.
+
+### Completion criteria — evidence index
+
+1. Sim/bake app: beltsim/ (README, pinned uv deps, `uv run beltsim all <preset>`); gaps +
+   families: runs/default/plots/\* + validation.json (this log, "1M default run results").
+2. Tuning: presets/\*.json knobs, README "Knobs and what they cost" stage map; alternate
+   preset shepherd-moat generated end-to-end and shipped.
+3. Artifacts committed: public/belt/default (3.2 MB) + public/belt/shepherd-moat
+   (2.1 MB); regeneration: `uv run beltsim all presets/<p>.json` + copy (README).
+4. Runtime from bake on both sides, bit-identical: src/shared/belt/ +
+   tests/integration/belt-parity.test.ts; all gates: bun run verify 140/140, verify:gpu
+   ALL PASS (incl. belt device round-trip), collision/ring-stream/cull/binner/collide
+   parity suites green.
+5. Perf: bench:gpu-cross:prod median 16.7 / p99 16.8 / over33 = 0; verify:gpu-live:prod
+   PASS at 60.1 fps (shadow-gate floors relativized to baselineLit, justification in
+   scripts/bench/gpu-live-loop.mjs + this log).
+6. Captures (1920×1080, real client): screenshots/belt-default-{close,region,belt}.png,
+   belt-default-belt-clean.png, belt-shepherd-moat-clean.png vs
+   belt-hash-baseline-{close,region,belt}.png; visual verdict recorded above.
+7. Deferred (explicit): far-field flow-field animation (artifact shipped, consumer is
+   future cosmetic drift); deeper 3:1 via longer re-sim (knob documented); GIF flythrough.
+
+## Session 1 — post-ship fixes (user-reported)
+
+- Stale-cache split-brain: browser served the cached smoke `density.bin.gz` against the
+  fresh 1M `belt-meta.json`; the decode length guard threw and the client derived zero
+  rocks. Fix: content-addressed `bakeId` (sha1 of binaries) in belt-meta.json, meta
+  fetched cache-bypassed, binaries fetched with `?v=<bakeId>`.
+- Spawn-in-planet: the user's dev DB predated the belt (seeded at old coordinates) —
+  reset (backup at data/haystack.sqlite.pre-belt-backup). Separately, `ShipActor.reset`
+  hardcoded the origin (now the planet core); recenter now targets `stationSpawn`
+  (exported from world.ts; sim.ts imports it).
+- "All asteroids look the same size": background radii were uniform 45–355 m. Now
+  truncated power law N(>r) ∝ r⁻² over [55, 355] m (same noise channel, positions
+  unchanged): median 78 m, ~2.5% at the cap, heroes above. Shadow-gate floors moved to
+  NOISE-RELATIVE thresholds (live tiers measure 3.6–4.7×/2.1–2.9× the identical-state
+  noise floor; dead ≈ 1×) — fraction-of-baseLit floors assumed a size distribution and
+  broke twice. All gates re-green (verify 140/140, verify:gpu-live:prod PASS).

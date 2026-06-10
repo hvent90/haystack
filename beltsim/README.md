@@ -19,7 +19,13 @@ All commands run from `beltsim/` with [uv](https://docs.astral.sh/uv/) (deps are
 uv run beltsim simulate presets/default.json   # N-body sim -> runs/default/particles.npz
 uv run beltsim plots    runs/default           # diagnostic plots -> runs/default/plots/
 uv run beltsim bake     runs/default           # runtime artifacts -> runs/default/bake/
+uv run beltsim validate runs/default           # statistical gates -> runs/default/validation.json
 uv run beltsim all      presets/default.json   # end-to-end regeneration, one command
+
+Shipping a bake: copy `runs/<preset>/bake/{belt-meta.json,*.bin.gz}` into the repo's
+`public/belt/<preset>/` (the server reads it from disk, vite serves the same files to the
+client) and run `bun run verify` — the belt parity suite re-derives against the new
+artifacts.
 ```
 
 `simulate` shards test particles across CPU cores (`--shards N` to override). The default

@@ -1,3 +1,4 @@
+import { getRenderDebugControls } from "./render-stats";
 import { Quaternion as ThreeQuaternion, Vector3 as ThreeVector3 } from "three";
 
 import type { Quaternion, Ship, Vector3 } from "../../shared/types";
@@ -167,6 +168,15 @@ export class FlightRenderStore {
   }
 
   ownedRenderPosition(): Vector3 {
+    // Capture-only viewpoint override (render-stats debug controls): the camera origin
+    // snaps to the override so capture scripts can frame the belt at any scale.
+    const viewPos = getRenderDebugControls().viewPos;
+    if (viewPos !== null) {
+      this.outPos.x = viewPos.x;
+      this.outPos.y = viewPos.y;
+      this.outPos.z = viewPos.z;
+      return this.outPos;
+    }
     const vector = this.ownedRenderVector();
     this.outPos.x = vector.x;
     this.outPos.y = vector.y;

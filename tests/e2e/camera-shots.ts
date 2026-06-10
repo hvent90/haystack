@@ -46,9 +46,15 @@ try {
   url.searchParams.set("pilotId", pilot.id);
   await page.goto(url.toString(), { waitUntil: "networkidle" });
   await page.waitForSelector("[data-testid='haystack-app']", { timeout: 15000 });
-  await Bun.sleep(4000); // let the field stream in and the first frames settle
+  await Bun.sleep(9000); // field stream-in takes ~5s+; let the first frames settle
 
   mkdirSync("screenshots", { recursive: true });
+
+  // Close every window so the ship at screen center isn't hidden behind UI.
+  for (const key of ["flight", "scanner", "cargo", "comms", "character", "bases"]) {
+    await page.getByTestId(`neocom-${key}`).click();
+    await Bun.sleep(150);
+  }
 
   // Lights on so the ship reads against the void.
   await page.keyboard.press("l");

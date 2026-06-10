@@ -60,30 +60,34 @@ def _polar_indices(
 
 
 def _detect_zones(radial_profile: np.ndarray) -> np.ndarray:
-    """Label each r-bin: 0 = void, odd = dense band k, even = gap between bands.
+    """Label each r-bin: 0 = void, odd = dense band k, even = sparse fringe/gap.
 
-    Bands are contiguous runs where the (smoothed) radial profile exceeds 18%
-    of its 95th percentile; everything below that inside the belt span is a
-    gap, and outside the belt span is void. This is what replaces the
-    hardcoded pocket x-bands at runtime.
+    Three levels of the (smoothed) radial profile vs its 95th percentile:
+    dense band > 45%, sparse (present but thin — moon-eroded fringes, smeared
+    resonance shoulders) > 4%, void below. Eccentricity smears a-space gaps in
+    physical radius, so the radial anatomy that survives is band/fringe/void;
+    azimuthal variation (families, arcs) lives in the 2D density itself. This
+    replaces the hardcoded pocket x-bands at runtime.
     """
     smooth = gaussian_filter1d(radial_profile.astype(np.float64), 6.0)
     peak = np.percentile(smooth, 95)
-    dense = smooth > 0.18 * peak
-    inside = np.flatnonzero(dense)
+    dense = smooth > 0.45 * peak
+    present = smooth > 0.04 * peak
     zones = np.zeros(len(smooth), dtype=np.uint8)
-    if inside.size == 0:
-        return zones
-    lo, hi = inside[0], inside[-1]
     band_id = 0
     in_band = False
-    for i in range(lo, hi + 1):
-        if dense[i] and not in_band:
-            band_id += 1
-            in_band = True
-        elif not dense[i] and in_band:
+    for i in range(len(smooth)):
+        if not present[i]:
             in_band = False
-        zones[i] = 2 * band_id - 1 if dense[i] else 2 * band_id  # band -> odd, gap after band k -> even
+            continue
+        if dense[i]:
+            if not in_band:
+                band_id += 1
+                in_band = True
+            zones[i] = 2 * band_id - 1
+        else:
+            in_band = False
+            zones[i] = max(2, 2 * band_id)  # sparse fringe (leading fringe shares id 2)
     return zones
 
 
@@ -105,8 +109,14 @@ def bake(run_dir: str | Path) -> list[Path]:
     # --- size assignment + hero split ---------------------------------------
     diam = _power_law_diameters(n, cfg.size_slope, cfg.size_d_min, cfg.size_d_max, preset.seed)
     order = np.argsort(-diam)
+    # Heroes must lie inside the baked volume (the runtime grid is sized from r_max/z_max;
+    # a hero outside it cannot exist at runtime — found the hard way: 3/2000 smoke heroes
+    # sat above z_max and silently vanished at decode).
+    r_all = np.hypot(pos[:, 0], pos[:, 1])
+    inside = (np.abs(pos[:, 2]) < cfg.z_max * 0.999) & (r_all > cfg.r_min) & (r_all < cfg.r_max)
+    order = order[inside[order]]
     hero_idx = order[: cfg.hero_count]
-    rest_idx = order[cfg.hero_count :]
+    rest_idx = np.concatenate([order[cfg.hero_count :], np.flatnonzero(~inside)])
 
     heroes = np.zeros((hero_idx.size,), dtype=[
         ("x", "<f4"), ("y", "<f4"), ("z", "<f4"), ("d", "<f4"), ("family", "<i2"), ("pad", "<i2"),
@@ -163,8 +173,15 @@ def bake(run_dir: str | Path) -> list[Path]:
     written.append(p)
 
     # --- metadata ---------------------------------------------------------------
+    # Content-addressed id: clients append it as a cache-busting query param so a fresh
+    # belt-meta.json can never pair with a stale cached binary (the lengths guard in the
+    # runtime decoder turns that mismatch into a hard error).
+    import hashlib
+
+    bake_id = hashlib.sha1(density_u8.tobytes() + heroes.tobytes()).hexdigest()[:12]
     meta = {
         "formatVersion": FORMAT_VERSION,
+        "bakeId": bake_id,
         "preset": meta_in["preset"]["name"] if isinstance(meta_in["preset"], dict) else str(meta_in["preset"]),
         "seed": preset.seed,
         "counts": {"heroes": int(hero_idx.size), "background": int(rest_idx.size)},

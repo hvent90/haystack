@@ -26,6 +26,9 @@ def main() -> None:
     p_bake = sub.add_parser("bake", help="bake a run into runtime artifacts")
     p_bake.add_argument("run_dir")
 
+    p_val = sub.add_parser("validate", help="statistical checks (gaps, power law, clustering)")
+    p_val.add_argument("run_dir")
+
     p_all = sub.add_parser("all", help="simulate + plots + bake end to end")
     p_all.add_argument("preset")
     p_all.add_argument("--shards", type=int, default=None)
@@ -47,6 +50,10 @@ def main() -> None:
 
         for p in bake(args.run_dir):
             print(p)
+    elif args.cmd == "validate":
+        from .validate import validate
+
+        validate(args.run_dir)
     elif args.cmd == "all":
         from .simulate import run
 

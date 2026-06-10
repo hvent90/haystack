@@ -199,7 +199,7 @@ describe("haystack server", () => {
     expect(lockedPayload.ship.heat).toBeGreaterThanOrEqual(96);
   });
 
-  test("recenters the ship at the origin and clears all movement", async () => {
+  test("recenters the ship at the station spawn and clears all movement", async () => {
     const pilot = await createPilot("Verifier Reset");
     requireWorld()
       .db.query(
@@ -223,7 +223,7 @@ describe("haystack server", () => {
     );
     const { ship } = await resetResponse.json();
 
-    expect(ship.position).toEqual({ x: 0, y: 0, z: 0 });
+    expect(ship.position).toEqual({ x: 1264900, y: 20, z: 250 });
     expect(vectorMagnitude(ship.velocity)).toBe(0);
     expect(vectorMagnitude(ship.angularVelocity)).toBe(0);
     expect(ship.throttle).toBe(0);
@@ -234,7 +234,7 @@ describe("haystack server", () => {
       ships: Array<{ pilotId: string; position: { x: number; y: number; z: number } }>;
     };
     const persisted = snapshot.ships.find((candidate) => candidate.pilotId === pilot.id);
-    expect(persisted?.position).toEqual({ x: 0, y: 0, z: 0 });
+    expect(persisted?.position).toEqual({ x: 1264900, y: 20, z: 250 });
   });
 
   test("spends wallet credits on ship system upgrades", async () => {

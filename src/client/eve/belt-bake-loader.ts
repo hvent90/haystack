@@ -79,15 +79,22 @@ export function ensureBeltBake(field: FieldSummary): Promise<void> {
   loadingFor = belt.preset;
   loading = (async () => {
     const base = `/belt/${belt.preset}`;
-    const [metaJson, density, heroes, zones, flow] = await Promise.all([
-      fetch(`${base}/belt-meta.json`).then((r) => {
-        if (!r.ok) throw new Error(`belt bake fetch failed: ${base}/belt-meta.json -> ${r.status}`);
-        return r.text();
-      }),
-      fetchBytes(`${base}/density.bin.gz`),
-      fetchBytes(`${base}/heroes.bin.gz`),
-      fetchBytes(`${base}/zones.bin.gz`),
-      fetchBytes(`${base}/flow.bin.gz`),
+    // The meta is fetched cache-bypassed, and its content-addressed bakeId versions the
+    // binary URLs — so a fresh meta can never pair with a stale cached binary (which
+    // decodes to a hard length-mismatch error and an asteroid-less client).
+    const metaJson = await fetch(`${base}/belt-meta.json`, { cache: "no-cache" }).then((r) => {
+      if (!r.ok) {
+        throw new Error(`belt bake fetch failed: ${base}/belt-meta.json -> ${r.status}`);
+      }
+      return r.text();
+    });
+    const bakeId = (JSON.parse(metaJson) as { bakeId?: string }).bakeId;
+    const v = bakeId !== undefined ? `?v=${bakeId}` : "";
+    const [density, heroes, zones, flow] = await Promise.all([
+      fetchBytes(`${base}/density.bin.gz${v}`),
+      fetchBytes(`${base}/heroes.bin.gz${v}`),
+      fetchBytes(`${base}/zones.bin.gz${v}`),
+      fetchBytes(`${base}/flow.bin.gz${v}`),
     ]);
     const bake = decodeBeltBake(
       { metaJson, density, heroes, zones, flow },

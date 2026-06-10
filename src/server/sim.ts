@@ -32,6 +32,7 @@ import type {
 } from "../shared/types";
 import type { HaystackDb } from "./db";
 import { fieldDiagnostic, fieldSummary, virtualScanHits } from "./field";
+import { stationSpawn } from "./world";
 import { getServerWorld } from "./world";
 
 // Symbol-keyed (so JSON.stringify ignores it -> wire format unchanged) cheap
@@ -124,9 +125,6 @@ type ChatRow = {
   created_at: string;
 };
 
-// ~700 m sunward of station-kestrel (db.ts), in the belt's inner band (r ≈ 1.265e6 m
-// from the gas giant at the origin).
-const stationSpawn: Vector3 = { x: 1264900, y: 20, z: 250 };
 const mineralPrices: Record<Mineral, number> = {
   cobalt: 92,
   nickel: 48,

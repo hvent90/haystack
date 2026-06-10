@@ -47,6 +47,17 @@ function noise(seed: number): number {
   return value - Math.floor(value);
 }
 
+// Background rock radius from a uniform roll: truncated power law N(>r) ∝ r^-2 between
+// 55 m and the legacy 355 m cap — swarms of small rocks punctuated by rare big ones
+// (real-belt size statistics; the uniform legacy 45..355 read as uniformly mid-sized).
+// ~2.4% of rocks saturate the cap; everything above 355 m is hero territory. Same noise
+// channel (+5) as the legacy formula, so positions/attributes are unchanged.
+const RADIUS_MIN = 55;
+const RADIUS_MAX = 355;
+function backgroundRadius(u: number): number {
+  return Math.min(RADIUS_MAX, RADIUS_MIN / Math.sqrt(1 - u * 0.999999));
+}
+
 export type BeltField = {
   bake: BeltBake;
   seed: number;
@@ -178,7 +189,7 @@ export function beltRockAt(field: BeltField, cx: number, cy: number, cz: number)
       y: geo.originY + cy * geo.cellSize + noise(seed + 2) * geo.cellSize,
       z: geo.originXZ + cz * geo.cellSize + noise(seed + 3) * geo.cellSize,
     },
-    radius: 45 + noise(seed + 5) * 310,
+    radius: backgroundRadius(noise(seed + 5)),
     signature: 0.08 + noise(seed + 6) * 0.7,
     mineralRichness: 0.18 + noise(seed + 7) * 0.82,
     rareMineral: mineralFor(noise(seed + 4), zone),
@@ -217,7 +228,7 @@ export function beltRockShapeAt(
   out.x = geo.originXZ + cx * geo.cellSize + noise(seed + 1) * geo.cellSize;
   out.y = geo.originY + cy * geo.cellSize + noise(seed + 2) * geo.cellSize;
   out.z = geo.originXZ + cz * geo.cellSize + noise(seed + 3) * geo.cellSize;
-  out.radius = 45 + noise(seed + 5) * 310;
+  out.radius = backgroundRadius(noise(seed + 5));
   return true;
 }
 
