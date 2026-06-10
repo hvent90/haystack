@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 import type { Mineral, Vector3 } from "../shared/types";
+import { beltLayoutScale } from "./belt-bake";
 
 export type HaystackDb = Database;
 
@@ -190,7 +191,9 @@ function migrate(db: HaystackDb): void {
 }
 
 function ensureColumn(db: HaystackDb, table: string, column: string, ddl: string): void {
-  const columns = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  const columns = db.query(`PRAGMA table_info(${table})`).all() as Array<{
+    name: string;
+  }>;
   if (!columns.some((candidate) => candidate.name === column)) {
     db.exec(ddl);
   }
@@ -216,11 +219,22 @@ function seedWorld(db: HaystackDb): void {
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
   );
 
+  // Seeded layout coordinates were authored against the legacy worldScale (1e6). For
+  // bakes that declare their own scale (saturn), stretch the IN-PLANE coordinates so the
+  // home region stays inside the inner ring band; vertical offsets and spreads stay
+  // metric (belt thickness and docking distances don't grow with the ring radius).
+  const k = beltLayoutScale();
+
   let globalIndex = 0;
   for (const pocket of pockets) {
     for (let localIndex = 0; localIndex < 10; localIndex += 1) {
       const seed = 1000 + globalIndex * 91;
-      const position = jitter(pocket.center, pocket.spread, seed);
+      const scaledCenter = {
+        x: pocket.center.x * k,
+        y: pocket.center.y,
+        z: pocket.center.z * k,
+      };
+      const position = jitter(scaledCenter, pocket.spread, seed);
       const radius = 70 + noise(seed + 5) * 360;
       const mineralRichness = 0.25 + noise(seed + 11) * 0.75;
       const rareMineral = minerals[(globalIndex + 2) % minerals.length] ?? "nickel";
@@ -270,17 +284,37 @@ function seedWorld(db: HaystackDb): void {
     `INSERT INTO structures
       (id, owner_pilot_id, kind, name, x, y, z, signature, hidden)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run("station-kestrel", null, "station", "Kestrel Transfer", 1265600, 0, 0, 1.0, 0);
+  ).run("station-kestrel", null, "station", "Kestrel Transfer", 1265600 * k, 0, 0, 1.0, 0);
   db.query(
     `INSERT INTO structures
       (id, owner_pilot_id, kind, name, x, y, z, signature, hidden)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run("relay-narrowband-7", null, "relay", "Narrowband Relay 7", 1354000, -1900, -20000, 0.62, 0);
+  ).run(
+    "relay-narrowband-7",
+    null,
+    "relay",
+    "Narrowband Relay 7",
+    1354000 * k,
+    -1900,
+    -20000 * k,
+    0.62,
+    0,
+  );
   db.query(
     `INSERT INTO structures
       (id, owner_pilot_id, kind, name, x, y, z, signature, hidden)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run("hab-cold-cache", null, "forwardHab", "Cold Cache HAB", 1458000, 14800, 26000, 0.08, 1);
+  ).run(
+    "hab-cold-cache",
+    null,
+    "forwardHab",
+    "Cold Cache HAB",
+    1458000 * k,
+    14800,
+    26000 * k,
+    0.08,
+    1,
+  );
 
   ensureMeta(db);
 }

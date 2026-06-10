@@ -121,6 +121,12 @@ const uDensityReady = uniform(0); // 0 until a bake is uploaded; gates the baked
 // --- camera + tuning uniforms ----------------------------------------------------------
 export const froxelProjInv = uniform(new THREE.Matrix4());
 export const froxelCamWorld = uniform(new THREE.Matrix4());
+// The field anchor (gpu/anchor.ts): every GPU coordinate (originMeters, pos, gridOrigin)
+// is ANCHOR-RELATIVE at Saturn scale, so the froxel ray reconstruction and the up-sun
+// march stay in that frame — but the polar DENSITY sample needs ABSOLUTE world meters
+// (the belt is centered on the planet at the true origin). The anchor is added back just
+// for the density lookup; at ~1.5e8 m the f32 ULP (~16 m) is noise against ≥70 km bins.
+export const froxelAnchor = uniform(new THREE.Vector3());
 
 export type FroxelTuning = {
   // Extinction per unit baked density (1/km at density 1.0).
@@ -416,15 +422,17 @@ export function makeFroxelPipeline(binner: BinnerBuffers): FroxelPipeline {
         .toVar();
       const sliceLen = sliceFar.sub(sliceNear).toVar();
 
-      // Floating-origin world position (meters): scene = camWorld · (dir·dist);
-      // world = originMeters + scene·1000 (the §"floating origin" hard constraint).
+      // Floating-origin position (ANCHOR-RELATIVE meters, the frame pos/gridOrigin live
+      // in): scene = camWorld · (dir·dist); rel = originMeters + scene·1000 (the
+      // §"floating origin" hard constraint). The march below stays in this frame.
       const posScene = froxelCamWorld.mul(vec4(dir.mul(dist), 1)).xyz.toVar();
       const world = vec3(originMeters).add(posScene.mul(METERS_PER_SCENE_UNIT)).toVar();
       // Unit view direction in scene == world axes (the camWorld rotation applied to the
       // view-space ray) — the lighting phase functions' frame.
       const dirWorld = normalize(froxelCamWorld.mul(vec4(dir, 0)).xyz).toVar();
 
-      const density = sampleDensityTSL(world).toVar();
+      // Density sampling needs the ABSOLUTE world position (polar around the planet).
+      const density = sampleDensityTSL(world.add(vec3(froxelAnchor))).toVar();
       const sigmaT = density.mul(uSigmaScale).add(uSigmaFloor).mul(farFade(dist)).toVar();
       const trans = exp(sigmaT.mul(sliceLen).negate()).toVar();
 

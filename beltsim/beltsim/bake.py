@@ -197,6 +197,11 @@ def bake(run_dir: str | Path) -> list[Path]:
         "heroes": {"record": "f32 x,y,z,d + i16 family + i16 pad (20 bytes LE)", "sizeSlope": cfg.size_slope},
         "moons": meta_in["moons"],
     }
+    if cfg.world_scale is not None:
+        world: dict = {"worldScale": cfg.world_scale}
+        if cfg.planet_radius is not None:
+            world["planetRadius"] = cfg.planet_radius
+        meta["world"] = world
     p = out_dir / "belt-meta.json"
     p.write_text(json.dumps(meta, indent=2))
     written.append(p)

@@ -16,11 +16,12 @@ import { instancedArray } from "three/tsl";
 // stream/derive cap (§2.6, §9.1 decision 4). Default 50k; headroom to 256k.
 export const MAX_RESIDENT = 50_000;
 
-// xyz = ABSOLUTE static-noise world meters (server-matched), w = radius (45..355).
-// IMMUTABLE after seed; CPU-authored & draw-readable.
+// xyz = ANCHOR-RELATIVE static-noise meters (server-matched f64 positions minus the field
+// anchor, see anchor.ts — keeps f32 exact at Saturn-scale world coordinates), w = radius
+// (45..355). IMMUTABLE between anchor rebases; CPU-authored & draw-readable.
 export const base = instancedArray(MAX_RESIDENT, "vec4").setPBO(true);
 
-// xyz = rendered world meters = base + bounded overlay, w = radius copy.
+// xyz = rendered anchor-relative meters = base + bounded overlay, w = radius copy.
 // What `material.positionNode` reads (zero-copy). setPBO so it is draw-readable.
 export const pos = instancedArray(MAX_RESIDENT, "vec4").setPBO(true);
 

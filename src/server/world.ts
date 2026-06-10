@@ -15,11 +15,18 @@ import {
   type ShipCollisionEnvironment,
 } from "../shared/collision";
 import { fieldSummary, serverBeltField } from "./field";
+import { beltLayoutScale } from "./belt-bake";
 
-// ~700 m sunward of station-kestrel (db.ts), in the belt's inner band (r ≈ 1.265e6 m
-// from the gas giant at the origin). Lives here (not sim.ts) because ShipActor.reset
-// recenters to it and sim.ts already imports from this module.
-export const stationSpawn: Vector3 = { x: 1264900, y: 20, z: 250 };
+// ~700 m sunward of station-kestrel (db.ts), in the belt's inner band. The station's
+// in-plane radius scales with the active bake's worldScale (legacy presets: k = 1,
+// x = 1,265,600 m; saturn: a = 1.2656 -> ~94.3e6 m, inside the B-ring analogue) — the
+// docking OFFSET stays metric. Lives here (not sim.ts) because ShipActor.reset recenters
+// to it and sim.ts already imports from this module.
+export const stationSpawn: Vector3 = {
+  x: 1265600 * beltLayoutScale() - 700,
+  y: 20,
+  z: 250,
+};
 import type { HaystackDb } from "./db";
 import { metrics } from "./metrics";
 
@@ -185,7 +192,12 @@ export class ShipActor extends Actor {
     this.name = row.name;
     this.position = { x: row.x, y: row.y, z: row.z };
     this.velocity = { x: row.vx, y: row.vy, z: row.vz };
-    this.orientation = normalizeQuaternion({ x: row.qx, y: row.qy, z: row.qz, w: row.qw });
+    this.orientation = normalizeQuaternion({
+      x: row.qx,
+      y: row.qy,
+      z: row.qz,
+      w: row.qw,
+    });
     this.angularVelocity = { x: row.wx, y: row.wy, z: row.wz };
     this.throttle = clamp(row.throttle, -1, 1);
     this.cruiseLock = row.cruise_lock === 1;
@@ -203,7 +215,12 @@ export class ShipActor extends Actor {
     this.name = row.name;
     this.position = { x: row.x, y: row.y, z: row.z };
     this.velocity = { x: row.vx, y: row.vy, z: row.vz };
-    this.orientation = normalizeQuaternion({ x: row.qx, y: row.qy, z: row.qz, w: row.qw });
+    this.orientation = normalizeQuaternion({
+      x: row.qx,
+      y: row.qy,
+      z: row.qz,
+      w: row.qw,
+    });
     this.angularVelocity = { x: row.wx, y: row.wy, z: row.wz };
     this.throttle = clamp(row.throttle, -1, 1);
     this.cruiseLock = row.cruise_lock === 1;
@@ -488,7 +505,13 @@ export class ServerWorld {
     if (this.collisionEnvironment === null) {
       const rows = this.db
         .query("SELECT id, x, y, z, radius FROM asteroids ORDER BY id ASC")
-        .all() as Array<{ id: string; x: number; y: number; z: number; radius: number }>;
+        .all() as Array<{
+        id: string;
+        x: number;
+        y: number;
+        z: number;
+        radius: number;
+      }>;
       this.collisionEnvironment = makeShipCollisionEnvironment(
         fieldSummary(),
         rows.map((row) => ({

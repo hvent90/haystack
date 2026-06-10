@@ -33,6 +33,7 @@ import {
 } from "three/tsl";
 import * as THREE from "three/webgpu";
 
+import { fieldAnchor } from "../anchor";
 import { base, MAX_RESIDENT, packAttr, pos } from "../buffers";
 import { collOffset } from "./collide";
 import {
@@ -61,9 +62,13 @@ const wellCount = uniform(0);
 
 export function setGravityWells(wells: readonly GravityWell[]): void {
   const count = Math.min(wells.length, MAX_WELLS);
+  // Well coordinates are world meters; the uniform holds them ANCHOR-RELATIVE
+  // (gpu/anchor.ts) so the kernel's (well - base) math matches the rebased base buffer.
+  // Re-call this after a setFieldAnchor rebase (WorldView does).
+  const anchor = fieldAnchor();
   for (let i = 0; i < count; i += 1) {
     const well = wells[i]!;
-    wellVectors[i]!.set(well.x, well.y, well.z, well.strength);
+    wellVectors[i]!.set(well.x - anchor.x, well.y - anchor.y, well.z - anchor.z, well.strength);
   }
   wellCount.value = count;
 }

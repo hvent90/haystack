@@ -1,0 +1,67 @@
+{
+  "name": "saturn",
+  "seed": 19811,
+  "moons": [
+    {
+      "name": "korr",
+      "mass": 0.0005,
+      "a": 0.63,
+      "e": 0.005
+    },
+    {
+      "name": "weir",
+      "mass": 5e-10,
+      "a": 1.225,
+      "e": 0.0
+    },
+    {
+      "name": "pan",
+      "mass": 1e-10,
+      "a": 1.755,
+      "e": 0.0
+    },
+    {
+      "name": "mimas",
+      "mass": 0.00105,
+      "a": 2.556,
+      "e": 0.005,
+      "inc": 0.005
+    }
+  ],
+  "belt": {
+    "n_particles": 3000000,
+    "a_min": 1.0,
+    "a_max": 1.85,
+    "e_sigma": 0.0015,
+    "inc_sigma": 0.00075
+  },
+  "families": {
+    "count": 60,
+    "particle_fraction": 0.1,
+    "dv_over_vorb_min": 0.0003,
+    "dv_over_vorb_max": 0.0015,
+    "inject_window": [0.3, 0.9995]
+  },
+  "integration": {
+    "n_orbits": 12000,
+    "dt_fraction": 0.05,
+    "cull_every_orbits": 40,
+    "e_max": 0.85,
+    "r_bounds": [0.25, 6.0]
+  },
+  "bake": {
+    "nr": 2048,
+    "ntheta": 512,
+    "nz": 8,
+    "r_min": 0.9,
+    "r_max": 1.95,
+    "z_max": 0.006,
+    "hero_count": 30000,
+    "size_slope": 2.5,
+    "size_d_min": 1.0,
+    "size_d_max": 60.0,
+    "density_scale": 1.0,
+    "world_scale": 74500000.0,
+    "planet_radius": 0.809
+  }
+}

@@ -13,6 +13,15 @@ export type BeltBakeMeta = {
   formatVersion: number;
   preset: string;
   seed: number;
+  // Optional world-mapping block (bakes from the saturn line onward). When present it
+  // overrides the legacy BELT_WORLD_SCALE default so a preset carries its own scale —
+  // e.g. saturn: worldScale 7.45e7 (a=1 -> 74,500 km, the C-ring inner edge) and
+  // planetRadius 0.809 normalized (60,268 km / 74,500 km). Server and client read the
+  // identical meta bytes, so the scale cannot split-brain.
+  world?: {
+    worldScale: number;
+    planetRadius?: number;
+  };
   density: {
     nr: number;
     ntheta: number;
@@ -50,11 +59,15 @@ export type BeltGridGeometry = {
   originY: number;
 };
 
-// Key packing for hero cell buckets. cellsXY stays < 8192 for any sane worldScale
-// (3.25e6 m / 1130 m ≈ 5754); (8192^3 = 5.5e11) < 2^53 so the key is exact.
-export const BELT_CELL_KEY_BASE = 8192;
+// Key packing for hero cell buckets. The grid is wide and FLAT (the belt is quasi-2D),
+// so the axes get asymmetric bases: 2^19 for the two horizontal axes, 2^11 for the
+// vertical. Worst key = (2^19·2^11 + 2^11)·2^19 + 2^19 < 2^49 < 2^53, so the packed key
+// stays an exact f64 integer even at Saturn scale (worldScale 7.45e7 -> cellsXZ ≈ 264k).
+// The old single base (8192) overflowed there: 264k^3 does not fit in 2^53.
+export const BELT_CELL_KEY_BASE_XZ = 524288; // 2^19
+export const BELT_CELL_KEY_BASE_Y = 2048; // 2^11
 export function beltCellKey(cx: number, cy: number, cz: number): number {
-  return (cx * BELT_CELL_KEY_BASE + cy) * BELT_CELL_KEY_BASE + cz;
+  return (cx * BELT_CELL_KEY_BASE_Y + cy) * BELT_CELL_KEY_BASE_XZ + cz;
 }
 
 export type BeltHeroes = {
@@ -87,10 +100,11 @@ export function beltGridGeometry(
   const halfY = Math.ceil((meta.density.zMax * worldScale) / cellSize);
   const cellsXZ = halfXZ * 2;
   const cellsY = halfY * 2;
-  if (cellsXZ >= BELT_CELL_KEY_BASE || cellsY >= BELT_CELL_KEY_BASE) {
+  if (cellsXZ >= BELT_CELL_KEY_BASE_XZ || cellsY >= BELT_CELL_KEY_BASE_Y) {
     throw new Error(
-      `belt grid ${cellsXZ}x${cellsY} exceeds cell-key base ${BELT_CELL_KEY_BASE} — ` +
-        "raise BELT_CELL_KEY_BASE before raising worldScale/cutting cellSize this far",
+      `belt grid ${cellsXZ}x${cellsY} exceeds cell-key bases ` +
+        `${BELT_CELL_KEY_BASE_XZ}/${BELT_CELL_KEY_BASE_Y} — ` +
+        "repack beltCellKey (watch the 2^53 exact-integer ceiling) before scaling further",
     );
   }
   return {
@@ -156,6 +170,11 @@ export function decodeBeltBake(
   const meta = JSON.parse(bytes.metaJson) as BeltBakeMeta;
   if (meta.formatVersion !== BELT_FORMAT_VERSION) {
     throw new Error(`belt bake format ${meta.formatVersion} != supported ${BELT_FORMAT_VERSION}`);
+  }
+  // A bake that declares its own world mapping wins over the caller's default — the meta
+  // is the one artifact every consumer shares byte-identically.
+  if (meta.world?.worldScale !== undefined) {
+    worldScale = meta.world.worldScale;
   }
   const { nr, ntheta, nz } = meta.density;
   if (bytes.density.byteLength !== nr * ntheta * nz) {
