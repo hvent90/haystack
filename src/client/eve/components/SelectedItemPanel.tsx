@@ -1,4 +1,4 @@
-import { Info } from "lucide-react";
+import { Info, X } from "lucide-react";
 import type { ReactNode } from "react";
 import type { WorldSnapshot } from "../../../shared/types";
 import { kindLabel, selectedStats } from "../overview";
@@ -16,6 +16,11 @@ export function SelectedItemPanel({
   onSetMarker,
   onClearMarker,
   onInspectBase,
+  // Touch UI: deselect affordance (desktop deselects via the context menu and keeps
+  // its panel persistent — pass this ONLY on touch so desktop chrome is unchanged).
+  onClear,
+  // Touch UI hides the panel entirely while nothing is selected.
+  hidden = false,
 }: {
   row: OverviewRow | null;
   snapshot: WorldSnapshot;
@@ -27,13 +32,29 @@ export function SelectedItemPanel({
   onSetMarker: () => void;
   onClearMarker: () => void;
   onInspectBase: () => void;
+  onClear?: () => void;
+  hidden?: boolean;
 }): ReactNode {
   const stats = row === null ? [] : selectedStats(row, snapshot);
+  if (hidden) {
+    return null;
+  }
   return (
     <aside className="selected-item" data-testid="selected-item">
       <div className="selected-header">
         <b data-testid="selected-item-name">{row?.name ?? "No selection"}</b>
         <span data-testid="selected-item-type">{row === null ? "" : kindLabel(row.kind)}</span>
+        {onClear !== undefined ? (
+          <button
+            type="button"
+            className="selected-item-close"
+            data-testid="selected-item-close"
+            aria-label="Deselect"
+            onClick={onClear}
+          >
+            <X size={16} />
+          </button>
+        ) : null}
       </div>
       <div data-testid="selected-item-distance">
         {row === null ? "" : formatDistance(row.distance)}

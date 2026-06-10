@@ -319,28 +319,34 @@ async function inspectTouchUi(url: string): Promise<Record<string, unknown>> {
       throw new Error(`Touch target under 44px: ${JSON.stringify(boost)}`);
     }
 
-    // Safe areas: the neocom buttons clear the simulated notch; the HUD cluster clears
-    // the home indicator.
-    const neocomButton = await page.locator("[data-testid^='neocom-']").first().boundingBox();
-    if (neocomButton === null || neocomButton.x < 47) {
-      throw new Error(`Neocom does not clear the notch: ${JSON.stringify(neocomButton)}`);
+    // No permanent chrome on touch: header and sidebar must be GONE; the hamburger
+    // (clearing the simulated notch) summons the window launcher as a drawer.
+    if ((await page.getByTestId("top-rail").count()) !== 0) {
+      throw new Error("Top rail must not render on touch devices.");
+    }
+    if ((await page.getByTestId("neocom").count()) !== 0) {
+      throw new Error("Neocom must not render on touch devices before the menu opens.");
+    }
+    const menuButton = await page.getByTestId("touch-menu").boundingBox();
+    if (menuButton === null || menuButton.x < 47) {
+      throw new Error(`Menu button does not clear the notch: ${JSON.stringify(menuButton)}`);
     }
     const hud = await page.getByTestId("hud-cluster").boundingBox();
     if (hud === null || hud.y + hud.height > 390 - 21 + 1) {
       throw new Error(`HUD cluster under the home indicator: ${JSON.stringify(hud)}`);
     }
 
-    // Windows open as full-screen sheets: at least 90% of the width between the rails,
-    // top below the top rail.
+    // Hamburger -> drawer -> scanner opens as a near-fullscreen sheet.
+    await page.getByTestId("touch-menu").tap();
+    await page.waitForSelector("[data-testid='neocom']");
     await page.getByTestId("neocom-scanner").tap();
     await page.waitForSelector("[data-testid='window-scanner']");
-    const sheet = await page.getByTestId("window-scanner").boundingBox();
-    const topRail = await page.getByTestId("top-rail").boundingBox();
-    if (sheet === null || topRail === null) {
-      throw new Error("Sheet/top-rail bounds missing.");
+    if ((await page.getByTestId("neocom").count()) !== 0) {
+      throw new Error("Drawer must close after launching a window.");
     }
-    if (sheet.width < 0.8 * 844 || sheet.y < topRail.y + topRail.height - 8) {
-      throw new Error(`Scanner is not a sane sheet: ${JSON.stringify({ sheet, topRail })}`);
+    const sheet = await page.getByTestId("window-scanner").boundingBox();
+    if (sheet === null || sheet.width < 0.85 * 844 || sheet.y > 60) {
+      throw new Error(`Scanner is not a sane sheet: ${JSON.stringify({ sheet })}`);
     }
     const landscapeShot = resolve("screenshots", "haystack-e2e-touch-landscape.png");
     await page.screenshot({ path: landscapeShot });

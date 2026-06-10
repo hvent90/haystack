@@ -1707,8 +1707,8 @@ tr:focus-visible {
 
 .app-shell.touch-ui .window-frame {
   position: absolute !important;
-  left: calc(52px + var(--safe-left)) !important;
-  top: calc(52px + var(--safe-top)) !important;
+  left: calc(8px + var(--safe-left)) !important;
+  top: calc(8px + var(--safe-top)) !important;
   right: calc(8px + var(--safe-right)) !important;
   bottom: calc(8px + var(--safe-bottom)) !important;
   width: auto !important;
@@ -1730,10 +1730,17 @@ tr:focus-visible {
   height: 36px;
 }
 
+/* The neocom is a drawer on touch: summoned by the hamburger, anchored under it,
+   scrollable (seven 44px buttons outgrow a 390px-tall landscape phone). */
 .app-shell.touch-ui .neocom {
-  width: calc(52px + var(--safe-left));
-  /* Seven window buttons at 44px outgrow a 390px-tall landscape phone — scroll. */
+  top: calc(58px + var(--safe-top));
+  bottom: calc(8px + var(--safe-bottom));
+  left: calc(8px + var(--safe-left));
+  width: 56px;
+  padding: 6px;
+  border: 1px solid rgb(135 208 189 / 30%);
   overflow-y: auto;
+  z-index: 9500;
 }
 
 .app-shell.touch-ui .neocom button {
@@ -1765,10 +1772,70 @@ tr:focus-visible {
 /* Selected-item actions move to the top right (under the rail, clear of the right
    stick zone's resting area and the edge button column). */
 .app-shell.touch-ui .selected-item {
-  top: calc(60px + var(--safe-top));
+  top: calc(8px + var(--safe-top));
   right: calc(74px + var(--safe-right));
   bottom: auto;
   width: 250px;
+}
+
+.selected-item-close {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  margin-left: auto;
+  place-items: center;
+  border: 1px solid var(--border-soft);
+  background: rgb(24 24 22 / 72%);
+  color: var(--text-primary);
+}
+
+/* Touch: thumb-sized close targets on the floating info cards. */
+.app-shell.touch-ui [data-testid="showinfo-close"] {
+  min-width: 40px;
+  min-height: 36px;
+}
+
+/* Hamburger window-launcher toggle (replaces the rail + sidebar on touch). */
+.touch-menu-btn {
+  position: absolute;
+  /* Below the window layer (z 100+): an open sheet owns the screen — close it first. */
+  z-index: 90;
+  top: calc(8px + var(--safe-top));
+  left: calc(8px + var(--safe-left));
+  display: grid;
+  width: 46px;
+  height: 44px;
+  place-items: center;
+  border: 1px solid var(--border-cyan);
+  background: rgb(14 15 14 / 74%);
+  color: var(--text-primary);
+  backdrop-filter: blur(8px);
+}
+
+.touch-menu-btn.active {
+  border-color: rgb(135 208 189 / 70%);
+  color: var(--accent-cyan);
+}
+
+.touch-menu-btn b {
+  position: absolute;
+  right: -5px;
+  top: -5px;
+  min-width: 16px;
+  padding: 1px 4px;
+  border: 1px solid var(--status-danger);
+  background: rgb(97 35 42 / 92%);
+  color: #ffe4df;
+  font-size: 10px;
+}
+
+.touch-error-pill {
+  position: absolute;
+  z-index: 9300;
+  top: calc(10px + var(--safe-top));
+  left: 50%;
+  max-width: 60vw;
+  transform: translateX(-50%);
 }
 
 .app-shell.touch-ui .selected-item button,
@@ -1843,7 +1910,7 @@ tr:focus-visible {
 .touch-zone {
   position: absolute;
   z-index: 1;
-  top: calc(56px + var(--safe-top));
+  top: 0;
   bottom: 0;
   width: 44%;
   touch-action: none;

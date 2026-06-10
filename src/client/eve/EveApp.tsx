@@ -4,6 +4,7 @@ import type {
   ReactNode,
 } from "react";
 import { StrictMode, useEffect, useMemo, useRef, useState } from "react";
+import { Menu as MenuIcon } from "lucide-react";
 import type {
   Asteroid,
   CharacterCard,
@@ -224,6 +225,9 @@ export function EveApp(): ReactNode {
   const touchFlightRef = useRef(createTouchFlightState());
   // Capability probe is stable for the session (see mobile.ts).
   const touchUi = useMemo(() => isTouchDevice(), []);
+  // Touch chrome: the window launcher lives behind a hamburger instead of a
+  // permanent sidebar (screen space feedback from on-device testing).
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   // Active touch points on the world stage for third-person orbit/pinch gestures.
   const touchOrbitRef = useRef<Map<number, { x: number; y: number }>>(new Map());
   const lastFlightActiveRef = useRef(false);
@@ -939,20 +943,58 @@ export function EveApp(): ReactNode {
           races a delayed dispose(scene) against the reused renderer (see main.tsx). The HUD,
           rails, and windows are plain React and keep StrictMode's effect-cleanup checks. */}
       <StrictMode>
-        <TopRail
-          snapshot={snapshot}
-          myShip={myShip}
-          flightMode={flightMode}
-          throttle={effectiveThrottle}
-          cruiseLock={cruiseLock}
-          error={error}
-        />
-        <Neocom
-          layout={layout}
-          unreadComms={unreadComms}
-          onToggle={toggleWindow}
-          onReset={resetLayout}
-        />
+        {/* Touch chrome: no permanent header/sidebar — the screen belongs to the world.
+            A single hamburger toggles the window launcher as a drawer; rail data the
+            pilot actually needs in flight (heat/speed/throttle) already lives in the
+            HUD cluster. Desktop keeps the full rail + neocom unchanged. */}
+        {touchUi ? (
+          <>
+            <button
+              type="button"
+              className={`touch-menu-btn ${mobileMenuOpen ? "active" : ""}`}
+              data-testid="touch-menu"
+              aria-label="Menu"
+              aria-expanded={mobileMenuOpen}
+              onClick={() => setMobileMenuOpen((open) => !open)}
+            >
+              <MenuIcon size={22} />
+              {unreadComms > 0 && !mobileMenuOpen ? <b>{unreadComms}</b> : null}
+            </button>
+            {mobileMenuOpen ? (
+              <Neocom
+                layout={layout}
+                unreadComms={unreadComms}
+                onToggle={(key) => {
+                  toggleWindow(key);
+                  setMobileMenuOpen(false);
+                }}
+                onReset={resetLayout}
+              />
+            ) : null}
+            {error !== null ? (
+              <div className="touch-error-pill error-pill" data-testid="error-pill">
+                {error}
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <TopRail
+              snapshot={snapshot}
+              myShip={myShip}
+              flightMode={flightMode}
+              throttle={effectiveThrottle}
+              cruiseLock={cruiseLock}
+              error={error}
+            />
+            <Neocom
+              layout={layout}
+              unreadComms={unreadComms}
+              onToggle={toggleWindow}
+              onReset={resetLayout}
+            />
+          </>
+        )}
 
         <div className="window-layer">
           {windowDefinitions.map((definition) => {
@@ -1084,7 +1126,11 @@ export function EveApp(): ReactNode {
             onCamera={toggleViewMode}
           />
         ) : null}
+        {/* Touch: the panel only exists while something IS selected (an empty
+            "No selection" box is wasted thumb space) and carries a deselect X. */}
         <SelectedItemPanel
+          hidden={touchUi && selectedRow === null}
+          {...(touchUi ? { onClear: () => setSelection(null) } : {})}
           row={selectedRow}
           snapshot={snapshot}
           markerActive={waypoint !== null}

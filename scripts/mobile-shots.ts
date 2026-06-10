@@ -81,7 +81,8 @@ try {
   await page.screenshot({ path: resolve(outDir, "landscape-sticks-held.png") });
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
 
-  // Scanner window as a full-screen sheet.
+  // Scanner window as a full-screen sheet (hamburger summons the launcher drawer).
+  await page.getByTestId("touch-menu").tap();
   await page.getByTestId("neocom-scanner").tap();
   await Bun.sleep(800);
   await page.screenshot({ path: resolve(outDir, "landscape-scanner-sheet.png") });
