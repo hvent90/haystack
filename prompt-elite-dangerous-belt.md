@@ -7,7 +7,7 @@ Your mission has two phases that you carry end-to-end:
 1. **Research** how Elite Dangerous' asteroid environments actually look and feel — hard numbers wherever they exist, reference imagery everywhere else.
 2. **Implement** that look and feel in our belt, so that flying through it feels like cruising through an Elite Dangerous ring: the spacing, the size mix, the rock shapes and shading, the dust and light, the sense of scale as rocks slide past the canopy.
 
-The end goal is not a checklist of matched constants — it's that a side-by-side of our cockpit footage and ED cockpit footage reads as the same *kind* of place.
+The end goal is not a checklist of matched constants — it's that a side-by-side of our cockpit footage and ED cockpit footage reads as the same _kind_ of place.
 
 ## Phase 1 — Research (do this first, write it down)
 
@@ -20,7 +20,7 @@ Critical distinction to resolve early — ED has two different asteroid environm
 
 Anchor the research on planetary rings, but document both so we make the choice deliberately.
 
-For each environment, dig for (with sources cited, and confidence labels — *measured*, *community-estimated*, *eyeballed from footage*):
+For each environment, dig for (with sources cited, and confidence labels — _measured_, _community-estimated_, _eyeballed from footage_):
 
 - **Asteroid size range and distribution.** Smallest pebbles rendered, typical minable rock size, largest rocks. Is the mix power-law-ish? What sizes dominate the visual field from the cockpit?
 - **Spacing and density.** Typical distance between neighboring rocks inside a ring (players have estimated this; ring inner/outer radii and mass are in the system map — you can derive rough number density). How many rocks are visible at once? At what distance do rocks fade in/out?
@@ -48,10 +48,10 @@ Commit early and often on `ed-belt/impl`.
 
 - `src/shared/belt/field.ts` — background-rock derivation: `RADIUS_MIN = 55` / `RADIUS_MAX = 355` m with an `N(>r) ∝ r⁻²` power law, density sampling, `BELT_P_MAX = 0.85` rocks/cell at peak.
 - `src/shared/belt/format.ts` — bake decode, `BELT_WORLD_SCALE`, hero radius law (`100·d^0.75`, up to ~2 km rocks).
-- `src/server/field.ts` — `cellSize = 1130` m grid (this *is* the spacing floor), `HAYSTACK_RENDERED_LIMIT`.
+- `src/server/field.ts` — `cellSize = 1130` m grid (this _is_ the spacing floor), `HAYSTACK_RENDERED_LIMIT`.
 - `src/server/belt-bake.ts` — `HAYSTACK_BELT_PRESET`, `HAYSTACK_BELT_DENSITY` runtime multiplier (density changes without re-baking).
 - `src/client/eve/gpu/kernels/render-node.ts` — rock material (flat `#6f6a60`, roughness 0.96), per-rock tumble rates, instance scaling.
-- `src/client/eve/components/WorldView.tsx` — LOD geometry ladder (dodeca→icosa→octa→tetra: our rocks are *very* low-poly platonic solids today — likely the single biggest look gap vs ED's lumpy sculpted rocks).
+- `src/client/eve/components/WorldView.tsx` — LOD geometry ladder (dodeca→icosa→octa→tetra: our rocks are _very_ low-poly platonic solids today — likely the single biggest look gap vs ED's lumpy sculpted rocks).
 - `src/client/eve/lighting.ts` — fog (`#03040a`, near 9 km / far 18 km), sun direction/color, shadow tiers.
 - `src/client/eve/gpu/cull-cpu.ts` — LOD distance bands `[4, 9, 13]` km, max draw 18 km.
 - `src/client/eve/components/BeltFarField.tsx` — far-field haze annulus + speckle cloud.

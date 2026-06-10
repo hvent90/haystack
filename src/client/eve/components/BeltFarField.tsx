@@ -18,6 +18,7 @@ import {
 
 import type { Vector3 } from "../../../shared/types";
 import type { BeltField } from "../../../shared/belt/field";
+import { BELT_VERTICAL_SQUASH } from "../../../shared/belt/format";
 import { activeBeltField } from "../field-core";
 import { flightRenderStore } from "../renderStore";
 import { toScene } from "../vector";
@@ -131,8 +132,9 @@ function buildAssets(belt: BeltField): FarFieldAssets {
   hazeMat.fog = false;
   const d = texture(tex, uv()).r;
   const camDist = sub(positionWorld, cameraPosition).length();
-  // Fade in past the derive bubble (~25 km) and slightly with extreme distance.
-  const nearFade = smoothstep(float(22), float(95), camDist);
+  // Fade in just past the detailed-rock draw bubble (MAX_DRAW_SCENE 11 km), so the haze
+  // sheet picks up where individual rocks dissolve into the fog — the ED impostor shell.
+  const nearFade = smoothstep(float(12), float(60), camDist);
   const hazeColor = mix(vec3(0.32, 0.36, 0.45), vec3(0.78, 0.72, 0.6), clamp(d.mul(1.6), 0, 1));
   hazeMat.colorNode = vec4(hazeColor, d.mul(0.13).mul(nearFade));
   const haze = new THREE.Mesh(hazeGeo, hazeMat);
@@ -155,8 +157,10 @@ function buildAssets(belt: BeltField): FarFieldAssets {
     }
     const r = rMin + ((ir + rng()) / nr) * (rMax - rMin);
     const theta = ((it + rng()) / ntheta) * Math.PI * 2 - Math.PI;
-    // Vertical: triangular-ish distribution inside ±zMax, denser at the midplane.
-    const zv = (rng() + rng() - 1) * zMax * 0.8;
+    // Vertical: triangular-ish distribution inside ±zMax, denser at the midplane,
+    // compressed by the same squash the real rock slab uses (format.ts) so the far
+    // belt reads as the SAME thin sheet the player is flying inside.
+    const zv = ((rng() + rng() - 1) * zMax * 0.8) / BELT_VERTICAL_SQUASH;
     const o = placed * 3;
     pts[o] = (r * Math.cos(theta) * worldScale) / SCENE;
     pts[o + 1] = (zv * worldScale) / SCENE;
@@ -172,7 +176,7 @@ function buildAssets(belt: BeltField): FarFieldAssets {
   });
   speckMat.fog = false;
   const speckDist = sub(positionWorld, cameraPosition).length();
-  const speckFade = smoothstep(float(28), float(120), speckDist);
+  const speckFade = smoothstep(float(13), float(60), speckDist);
   speckMat.colorNode = vec4(vec3(0.5, 0.5, 0.53), speckFade.mul(0.2));
   speckMat.sizeNode = clamp(speckDist.mul(0.004), float(1.0), float(3.2));
   const speckles = new THREE.Points(speckGeo, speckMat);

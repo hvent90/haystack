@@ -81,15 +81,16 @@ export const shadowSoftRadius = 1;
 export const shadowBubbleFadeNear = 5;
 export const shadowBubbleFadeFar = 8;
 
-// Distance fog: a gentle far extinction toward the background colour (NOT a hard cutoff).
-// Tightened from the old 30/90 to fully extinguish rocks by the render distance, so the
-// per-chunk distance cull (WorldView MAX_DRAW_SCENE) drops only rocks that have already
-// faded to the background — no visible pop as chunks page out. Near 9 km stays clear, so
-// the gameplay-relevant near field is untouched, and the default-play 2000-rock field
-// (~9 km ball) sits inside the near plane so its look is essentially unchanged.
-export const fogColor = "#03040a";
-export const fogNear = 9;
-export const fogFar = 18;
+// Distance fog: a gentle far extinction toward the background colour (NOT a hard cutoff),
+// fully extinguishing rocks by the render distance so the distance cull (MAX_DRAW_SCENE)
+// drops only already-faded rocks. ED-ring tuning (research doc §5): detailed rocks live
+// in a ~5-11 km bubble dissolving into dust haze, so near 3.5 km / far 11 km — the
+// far half of the visible field reads as rocks sinking into ring dust. The colour is
+// warm-dark (rocky-ring dust) instead of the old blue-dark; WorldView's scene background
+// is the SAME colour so the fade-out lands exactly on the backdrop.
+export const fogColor = "#080706";
+export const fogNear = 3.5;
+export const fogFar = 11;
 
 // Rotate the canonical camera-forward axis (0, 0, -1) by an orientation quaternion.
 // Used to aim the flashlight (and anything else that needs the ship's facing).

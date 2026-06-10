@@ -17,12 +17,15 @@ import {
 } from "../lighting";
 
 export const LOD_COUNT = 4;
-// Upper NEAREST-distance (dist - radius, scene units) per band, carried over from the
-// legacy per-chunk cull (WorldView LOD_BAND_SCENE): dodeca -> icosa -> octa -> tetra.
-export const LOD_BANDS_SCENE = [4, 9, 13] as const;
+// Upper NEAREST-distance (dist - radius, scene units) per band. ED-ring tuning: the
+// dense 530 m-spaced field packs ~8x more rocks per km³ than the old grid, so the
+// detail bands tighten with the draw distance (icosa² -> icosa¹ -> icosa⁰ -> octa).
+export const LOD_BANDS_SCENE = [2.5, 5, 8] as const;
 // Per-rock draw distance (scene units): a rock whose nearest point is beyond this is not
-// drawn (the fog has fully extinguished it well before — fogFar is 18).
-export const MAX_DRAW_SCENE = 18;
+// drawn (the fog has fully extinguished it well before — fogFar is 11). ED renders
+// detailed ring rocks in a ~5-10 km bubble (research doc §3); beyond it the far-field
+// haze + speckles take over.
+export const MAX_DRAW_SCENE = 11;
 export const METERS_PER_SCENE_UNIT = 1000;
 
 // Shadow-caster keep radius (scene units): rocks whose nearest point is within this

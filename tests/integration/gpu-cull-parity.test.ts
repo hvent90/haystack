@@ -83,14 +83,15 @@ describe("cullCPU", () => {
     const planes = extractFrustumPlanes(projScreen(camera));
     const origin = { x: 7000, y: 20, z: 250 };
 
-    // Slot layout (positions in METERS, absolute; origin-relative scene = (p-origin)/1000):
+    // Slot layout (positions in METERS, absolute; origin-relative scene = (p-origin)/1000).
+    // Distances calibrated to the ED-ring bands LOD_BANDS_SCENE = [2.5, 5, 8], draw 11:
     // 0: dead slot (radius 0)            -> culled
-    // 1: 2 units ahead                   -> band 0
-    // 2: 6 units ahead                   -> band 1
-    // 3: 11 units ahead                  -> band 2
-    // 4: 16 units ahead                  -> band 3
+    // 1: 1.5 units ahead                 -> band 0
+    // 2: 4 units ahead                   -> band 1
+    // 3: 6.5 units ahead                 -> band 2
+    // 4: 10 units ahead                  -> band 3
     // 5: 30 units ahead (beyond draw)    -> culled
-    // 6: 6 units BEHIND the camera       -> KEPT, band 1 (off-frustum but inside the
+    // 6: 4 units BEHIND the camera       -> KEPT, band 1 (off-frustum but inside the
     //    shadow-caster bubble — the shadow depth pass needs off-screen up-sun casters)
     // 7: 17.5 units BEHIND the camera    -> culled (off-frustum, outside the bubble)
     const ahead = new Vector3(0, 0.1, -1).normalize();
@@ -102,12 +103,12 @@ describe("cullCPU", () => {
     });
     const rocks = [
       { ...mk(2, 0), r: 0 },
-      mk(2, 200),
-      mk(6, 200),
-      mk(11, 200),
-      mk(16, 200),
+      mk(1.5, 200),
+      mk(4, 200),
+      mk(6.5, 200),
+      mk(10, 200),
       mk(30, 200),
-      mk(-6, 200),
+      mk(-4, 200),
       mk(-17.5, 200),
     ];
     const pos = new Float32Array(rocks.length * 4);
@@ -131,11 +132,12 @@ describe("cullCPU", () => {
     const planes = extractFrustumPlanes(projScreen(camera));
     const origin = { x: 0, y: 0, z: 0 };
     const ahead = new Vector3(0, 0.1, -1).normalize();
-    // Center at 4.2 units with a 0.3-unit (300m) radius -> nearest 3.9 -> band 0.
+    // Center at 2.6 units (past the 2.5 band edge) with a 0.3-unit (300m) radius ->
+    // nearest 2.3 -> band 0.
     const pos = new Float32Array(4);
-    pos[0] = ahead.x * 4200;
-    pos[1] = ahead.y * 4200;
-    pos[2] = ahead.z * 4200;
+    pos[0] = ahead.x * 2600;
+    pos[1] = ahead.y * 2600;
+    pos[2] = ahead.z * 2600;
     pos[3] = 300;
     const result = cullCPU(pos, 1, origin, planes);
     expect([...result.lists[0]!]).toEqual([0]);
