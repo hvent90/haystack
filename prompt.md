@@ -1,131 +1,82 @@
-# Handoff — GPU-Resident Asteroid Field (WebGPU migration) — **COMPLETE**
+# Task: Asteroids shadowing other asteroids
 
-**Status: every un-gated architecture step (1–7) is built and device-verified.** This doc was the
-working handoff; it now records the completed state. The deep references remain:
+I'm building haystack, a multiplayer space game (Three.js/R3F on WebGPU, bun, 1 unit = 1 km). I want the asteroid field to read as a real, physically-lit deep field: rocks visibly casting sun shadows on each other — nearby rocks with crisp per-pixel shadows, and the far field (out to tens of thousands of rocks) still mutually shadowing so the depth reads. The end state I care about: I fly through the field and see asteroids darken each other from the sun's direction, at every distance, at 60 fps, and it looks good.
 
-- `docs/gpu-asteroids-architecture.md` — the **authoritative end-state architecture** (WebGPU-only, no WebGL
-  fallback ever). Build order was its **Section 7 (steps 1–9)**.
-- `docs/gpu-asteroids-impl-log.md` — the **detailed implementation log**: every gate run, actual output,
-  commit hashes, decisions, device-caught bugs (7 of them), and the honesty record.
+Your job is to take this from wherever it currently is to **done and visually verified**, end to end.
 
-**Branch:** `gpu-asteroids/impl` (off `ralph/client-render-100k`, which is off `main`). Tracked tree is clean.
-**Never** push, open a PR, or merge to main without being asked.
-**Completed:** 2026-06-09 (sessions 1–2 in the impl log).
+## Context you should read first
 
----
+- `docs/superpowers/specs/2026-06-07-asteroid-inter-shadowing-design.md` — the approved design
+  (two-tier: per-instance sun-occlusion scalar for the deep field + a near-camera shadow-map
+  bubble). **Caveat:** this doc was written against the old WebGL renderer, two days before the
+  WebGPU migration landed. Treat its _intent and mechanism_ (the two tiers, the occlusion march,
+  the brightness/density coupling, the testing ideas) as authoritative; treat its _file-level
+  instructions_ (onBeforeCompile chunk patching, near/far InstancedMesh split, etc.) as obsolete
+  where the new architecture already solved the same problem differently.
+- `docs/gpu-asteroids-architecture.md` and `docs/gpu-asteroids-impl-log.md` — the current
+  GPU-resident architecture (branch `gpu-asteroids/impl`) and the honest record of what was built
+  and what bugs only showed up on-device.
+- Pieces of this feature already exist in some form: a sun-occlusion march
+  (`src/client/eve/sun-occlusion.ts`, computed in the field worker), an `aSunlit` value carried
+  per instance, a `receivedShadowNode` blend in `src/client/eve/gpu/kernels/render-node.ts`, and
+  shadow-light setup in `SceneLighting.tsx`. **Do not assume any of it actually works visually.**
+  Part of your job is to determine what's real: whether the shadow map actually receives the
+  GPU-driven asteroids (indirect draws + custom positionNode and the depth pass are a classic
+  silent-failure pair), whether `aSunlit` produces visible inter-shadowing in the live game, and
+  whether the tuning (march depth vs. field density) makes the deep field look right rather than
+  uniformly black or uniformly lit. Diagnose first with your own eyes (screenshots), then fix or
+  build what's missing.
 
-## TL;DR of the final state
+## Hard constraints
 
-The game boots on WebGPU as the main app. The asteroid field is fully GPU-resident: `base` is CPU-authored
-(bit-exact with the server derive, §3.2) and ring-streamed incrementally (id→slot reconcile, sub-range
-uploads); per frame the overlay compute writes `pos = base + bounded wobble + capped gravity-well pull +
-hard-capped collision offset`; a GPU cull/LOD pass compacts visible slots into per-LOD lists drawn by FOUR
-`drawIndirect` calls (GPU-written instance counts, zero CPU in the cull); rocks tumble (Rodrigues
-position+normal rotation); the TSL post stack (ScanPulse with the re-derived floating-origin basis → bloom →
-ACES) is live; inter-asteroid collisions run first-class through the shared binner (27-cell deferred-apply
-narrow phase, restitution, Nc==0 gating) — all cosmetic-tier, every displacement hard-capped inside the
-radius+1400 m mine slack. 60 fps locked on Apple Metal with everything on; production-build movement bench:
-721/721 frames at 16.7 ms across 13 cell crossings.
+- Never change server authority, the wire protocol, or gameplay state. Gameplay reads `base`;
+  only the renderer reads `pos`. `base` stays CPU-authored (parity gates guard this).
+- WebGPU only — never reintroduce a WebGL path. Steps 8 (promotion netcode) and 9 (froxels) of
+  the architecture are hard-gated; don't build them.
+- Zero-ambient vacuum look is intentional: a fully shadowed face goes to true black. Don't add
+  ambient light to "fix" darkness.
+- Shadow cost must stay decoupled from total rock count and the 60 fps budget must hold.
+- Never push, open a PR, or merge without being asked. Commit locally as you go with clear
+  messages.
 
-**Steps 8 (promotion authority netcode) and 9 (froxel volumetrics) remain correctly UN-BUILT per the hard
-gates and the ratified cosmetic-only decisions (§9.1).**
+## Verification (this is where past sessions won or lost)
 
-## The standing gates (all green, re-runnable)
+- GPU bugs hide from CPU tests — seven were device-caught in this codebase. Close every loop on
+  a real device: `bun run verify` (one pre-existing `server.test.ts:921` failure is the honest
+  baseline), `bun run verify:gpu` (on-device gates; `CHROME_PATH=<system Chrome>` for real Metal
+  instead of SwiftShader), `bun run verify:gpu-live[:prod]` (live game screenshots + frame
+  stats), `bun run bench:gpu-cross[:prod]` (movement bench). Dawn errors are JS-silent — always
+  read the captured browser console.
+- Perf claims must cite the `:prod` harnesses (dev-mode react instrumentation fabricates stalls)
+  — but the user plays in dev mode, so a dev-only hitch is still a real bug.
+- "It compiles and the blend node exists" is not done. Done means screenshots from the live game
+  showing inter-asteroid shadows near (crisp) and far (per-rock), no acne, no pop at the
+  near/far handoff, and the deep field varied rather than a black or bright wall. Add a
+  repeatable gate for this so it can't silently regress.
+- Before reporting progress, audit each claim against a tool result from this session. Only
+  report work you can point to evidence for; if something is not yet verified, say so. If tests
+  fail, say so with the output.
+- Establish a method for checking your own work as you build; periodically verify with
+  fresh-context subagents against the design's goals rather than trusting your own summary of
+  what you did.
 
-```bash
-bun run verify            # typecheck + format + 115 integration tests
-                          #   (+1 pre-existing server.test.ts:921 failure, NOT ours — see impl log)
-bun run verify:gpu        # 6 on-device gates: base round-trip, binner scan+scatter, cull/LOD,
-                          #   overlay bound (wobble+wells), collisions vs dense belt
-                          #   PASS on SwiftShader AND real Metal (CHROME_PATH=<chrome>)
-bun run verify:gpu-live   # live game: 2K screenshots (HUD-on + HUD-off field/scan), console,
-                          #   perf trace, 60fps frame stats, V-key ScanPulse visual gate
-bun run verify:gpu-live:prod   # same against the PRODUCTION build (vite build + preview)
-bun run bench:gpu-cross[:prod] # movement bench: forces cell crossings, per-cross stats,
-                          #   optional CDP trace (CROSS_TRACE=1) / V8 profile (CROSS_PROFILE=1)
-```
+## Working style
 
-## What the original open work became (all closed)
-
-1. **"158 ms hitch per cell-crossing" — misattributed, root-caused, fixed.** It was the one-time
-   first-paint SYNCHRONOUS derive (the worker was bypassed on first field), not a per-cross cost. Fixed:
-   boot derive goes through the worker; step-4 ring streaming (incremental id→slot reconcile + sub-range
-   uploads) replaced the full 50k repack. Live gate: `fieldDeriveMs` 164.8 → 9.4, `worstCellCrossFrameMs`
-   174.1 → 20.0.
-2. **"42.9 ms React task" — dev-mode artifact.** react-dom development's performance-track props diffing
-   over the 50k array (plus the GC storm it causes) produced 1.0–1.8 s stalls in the DEV harness only.
-   Production: zero frames over 33 ms. Perf claims must cite the `:prod` harnesses.
-3. **Step 2 (TSL post stack + ScanPulse)** — live, with the §5 trap handled (player-distance basis
-   re-derived from depth + camera world matrix; the player IS the scene origin; NOT `-getViewZ`) and a
-   screenshot gate (idle vs mid-pulse teal counts).
-4. **Cleanup** — legacy WebGL path deleted (AsteroidChunk/patchAsteroidShader/createAsteroidMaterial/
-   field-chunks.ts), AudioContext teardown guard (0 warnings), 404 URLs logged, HUD-off captures,
-   trace-analysis/ gitignored.
-5. **Step 4 remainder** — GPU cull/LOD + indirect draws + TSL aSunlit two-tier shadow (`receivedShadowNode`
-   blend, sun-occlusion march computed in the field worker and cache-primed). `setIndirect` works on three
-   0.177.
-6. **Step 6** — per-rock tumble + K=6 deterministic gravity wells (pull hard-capped at 320 m).
-7. **Step 7** — first-class cosmetic collisions (see impl log for the bound reconciliation).
-
-## HARD GATES — still in force
-
-- **Step 8 (promotion authority netcode) — GATED.** §9.1 decisions were ratified cosmetic-only. Do not
-  build unless a human reverses Decision #1.
-- **Step 9 (froxel volumetric lighting) — future/additive.** Do not build it.
-- **Never change server authority, the wire protocol, or gameplay STATE.** Gameplay reads `base`; only the
-  renderer reads `pos`. `base` is CPU-authored, never a GPU `frac(sin)` kernel (the parity gates guard it).
-- **Never reintroduce a WebGL path.**
-
-## ENVIRONMENT GOTCHAS (unchanged, still load-bearing)
-
-- WebGPU needs a SECURE CONTEXT (`localhost`/`127.0.0.1`/https) — absent on `about:blank`/LAN IPs.
-- Headless WebGPU: bundled Playwright Chromium = SwiftShader; `CHROME_PATH=<system Chrome>` = real Metal.
-- three is pinned `^0.177` — `setIndirect`/`IndirectStorageBufferAttribute`/`receivedShadowNode`/
-  `transformNormalToView` all work; `bloom` is in `three/addons`, NOT `three/tsl`.
-- GPU bugs hide from CPU tests — SEVEN were device-caught (see the impl log's honesty record), including:
-  WebGPU's default 8-storage-buffers-per-stage limit, a storage/atomic read as a TSL Loop `end` emitting
-  empty WGSL, and nested TSL Loops silently corrupting cross-scope loop-variable references (WGSL
-  shadowing). Always close the loop with `verify:gpu`/`verify:gpu-live`.
-- Tests/CLI run under `bun`; `tsconfig` strict; code under `scripts/` is NOT typechecked.
-- The `verify` script exits 1 on the pre-existing `server.test.ts:921` failure (renderedLimit bump fallout,
-  commit `71b8596`) — the honest baseline is "all pass except that one".
-
-## KEY FILE MAP (final)
-
-```
-src/client/eve/gpu/
-  buffers.ts           # MAX_RESIDENT + instancedArray buffers (base/pos/packAttr/slotMeta) + backing helpers
-  base-derive.ts       # CPU derive -> buffer images (incl. aSunlit in packAttr.w); seed/sub-range uploads
-  ring-stream.ts       # step-4 ring streaming: incremental id->slot reconcile + dirty ranges
-  wells.ts             # step-6 gravity wells: deterministic derivation + bounded pull (CPU mirror)
-  cull-cpu.ts          # step-4 CPU spec: frustum planes + distance cull + LOD banding
-  collide-cpu.ts       # step-7 CPU spec: deferred narrow phase + capped apply
-  binner-cpu.ts        # step-5 CPU spec: tiled Blelloch scan + scatter
-  capability.ts        # hasWebGPU/assertWebGPU (refuses non-WebGPU)
-  renderer-factory.ts  # async R3F WebGPU gl factory + StrictMode double-init guard
-  verify-gpu.ts        # the 6 on-device gates
-  verify-entry.ts      # DOM entry for gpu-verify.html
-  kernels/
-    overlay.ts         # pos = base + wobble + well pull + collision offset; setGravityWells
-    render-node.ts     # LOD material: positionNode via compacted lists, tumble, aSunlit shadow
-    cull.ts            # clearCull/cull/publishCounts + per-LOD indirect args
-    collide.ts         # collision pipeline: binner instance + narrow + apply (+ collOffset/collVel)
-    binner.ts          # TSL count/scan/scatter (now with itemActive predicate)
-src/client/eve/components/ScenePostProcessing.tsx  # step-2 TSL post stack (ScanPulse+bloom+ACES)
-src/client/eve/components/WorldView.tsx            # the game Canvas: ring effect + per-frame dispatches
-src/client/eve/field-worker.ts                     # off-thread derive + pack + sunlit march
-src/client/eve/field-derivation.ts                 # worker-first derive (incl. boot), sunlit cache prime
-scripts/bench/gpu-verify-run.mjs                   # runner for verify:gpu
-scripts/bench/gpu-live-loop.mjs                    # runner for verify:gpu-live (+ GPU_LIVE_PROD/HUD)
-scripts/bench/gpu-cross-bench.mjs                  # movement bench (+ CROSS_TRACE / CROSS_PROFILE)
-```
-
-Server parity anchors (do not break): `src/client/eve/field-core.ts` (`deriveVirtualField`),
-`src/server/field.ts`, `src/server/sim.ts` (`mineDeposit`, `ASTEROIDS_FINGERPRINT`),
-`src/shared/ship-motion.ts`.
-
-## If you pick this up next
-
-The architecture's remaining items are the two gated steps (8, 9 — need a human decision) and optional
-hardening: a 100k-field movement bench (`GPU_LIVE_LIMIT=100000 bun run bench:gpu-cross:prod`), 2-substep
-collisions (§4.4), and an in-game authored dense belt (the gate-level belt already validates the kernels).
+- You are operating autonomously over a long trajectory. When you have enough information to
+  act, act. Don't re-litigate the approved design direction or ask permission for reversible
+  steps that follow from this task. Pause only for destructive actions, real scope changes, or
+  input only the user can provide — and if blocked, say exactly what you need.
+- The look is the deliverable, and tuning is expected work, not a bug: the design doc explains
+  that march depth, rock size, and density jointly set how dark the deep field gets. Iterate
+  with screenshots until it reads well. Asteroid size/density are yours to adjust if the field
+  doesn't read.
+- Don't add features, refactors, or abstractions beyond what the task requires.
+- Known device-bug patterns worth respecting (from the impl log): the 8-storage-buffers-per-
+  stage default limit; TSL `Loop` with a storage/atomic read as the loop end emitting empty
+  WGSL; nested TSL loops corrupting cross-scope variables (flatten and `.toVar()`); cosmetic
+  GPU motion must be a smooth function of time, never a per-frame hash.
+- Keep notes: append decisions, gate outputs, and device-caught surprises to
+  `docs/gpu-asteroids-impl-log.md` as you go, one honest entry per work session — the log's
+  value is that it records what actually happened, including failures.
+- Final summary: write it for someone who saw none of the work. Lead with the outcome in plain
+  sentences, attach the evidence (screenshots, gate output), then anything you need from me.

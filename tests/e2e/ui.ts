@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { chromium, type Browser, type Page } from "playwright";
 
 import type { Pilot, WorldSnapshot } from "../../src/shared/types";
-import { assert, captureTraffic, count, pollUntil } from "./helpers";
+import { assert, captureTraffic, count, pollUntil, webgpuLaunchOptions } from "./helpers";
 
 const serverPort = 8801;
 const clientPort = 5201;
@@ -45,7 +45,7 @@ try {
     body: JSON.stringify({ mode: "pocket" }),
   });
 
-  browser = await chromium.launch();
+  browser = await chromium.launch(webgpuLaunchOptions);
   const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
   const traffic = captureTraffic(page);
   const url = new URL(clientUrl);

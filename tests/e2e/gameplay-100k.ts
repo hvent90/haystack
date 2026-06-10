@@ -25,7 +25,7 @@ import { chromium, type Browser, type Page } from "playwright";
 
 import type { Pilot, Ship, WorldSnapshot } from "../../src/shared/types";
 import type { RenderStatsSnapshot } from "../../src/client/eve/render-stats";
-import { assert, count, pollUntil } from "./helpers";
+import { assert, count, pollUntil, webgpuLaunchOptions } from "./helpers";
 
 const serverPort = 8802;
 const clientPort = 5202;
@@ -88,7 +88,7 @@ try {
     (ship) => ship.velocity.x >= 3.9,
   );
 
-  browser = await chromium.launch();
+  browser = await chromium.launch(webgpuLaunchOptions);
   const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
   const url = new URL(clientUrl);
   url.searchParams.set("pilotId", probe.id);
@@ -108,14 +108,15 @@ try {
     stats.derivedAsteroidCount >= renderLimit,
     `derived ${stats.derivedAsteroidCount} rocks, expected >= ${renderLimit}`,
   );
-  assert(stats.submittedInstanceCount > 0, "some asteroids are submitted while facing the field");
+  // Under the GPU indirect-draw field (docs/gpu-asteroids-architecture.md §7), culling
+  // and instance submission happen on-GPU, so the CPU-side submittedInstanceCount /
+  // asteroidDrawCalls accumulators stay 0. The observable signals that the field is
+  // really rendering are the whole-frame renderer totals; per-instance cull correctness
+  // is gated on-device by `bun run verify:gpu` (cull/LOD GPU-vs-CPU).
+  assert(stats.renderedTriangles > 0, "the field submits triangles while facing the rocks");
   assert(
-    stats.submittedInstanceCount < stats.derivedAsteroidCount,
-    `culling is real: submitted ${stats.submittedInstanceCount} must be < derived ${stats.derivedAsteroidCount}`,
-  );
-  assert(
-    stats.asteroidDrawCalls > 0 && stats.asteroidDrawCalls < 400,
-    `draw calls are a small bounded constant, got ${stats.asteroidDrawCalls}`,
+    stats.drawCalls > 0 && stats.drawCalls < 10000,
+    `draw calls are a bounded constant, got ${stats.drawCalls}`,
   );
 
   // 2) Multiplayer remote-ship sync surfaced in the client chrome.

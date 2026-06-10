@@ -21,6 +21,7 @@ import { resolve } from "node:path";
 import { chromium, type Browser, type Page } from "playwright";
 
 import type { Pilot } from "../../src/shared/types";
+import { webgpuLaunchOptions } from "./helpers";
 
 const serverPort = Number(process.env["JITTER_SERVER_PORT"] ?? "8830");
 const clientPort = Number(process.env["JITTER_CLIENT_PORT"] ?? "5230");
@@ -70,7 +71,7 @@ try {
     })
   ).pilot;
 
-  browser = await chromium.launch();
+  browser = await chromium.launch(webgpuLaunchOptions);
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
   const url = new URL(clientUrl);
   url.searchParams.set("pilotId", pilot.id);
