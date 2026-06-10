@@ -27,6 +27,17 @@ import { squaredAxis, stickRadiusPx, stickVector, type TouchFlightState } from "
 // camera gestures (drag/pinch, handled on the world stage), per the camera scoping in
 // the mobile design. The button clusters stay in both views.
 
+// Pointer capture keeps a stick tracking when the thumb wanders off its zone; some
+// environments (synthesized events in e2e, older Safari) reject the call for pointer
+// ids they do not consider active — the stick still works, only un-captured.
+function tryCapturePointer(element: Element, pointerId: number): void {
+  try {
+    element.setPointerCapture(pointerId);
+  } catch {
+    // Non-capturing stick is acceptable.
+  }
+}
+
 type StickVisual = {
   originX: number;
   originY: number;
@@ -109,7 +120,7 @@ export function TouchFlightControls({
     if (pointerBySide.current[side] !== null) {
       return;
     }
-    event.currentTarget.setPointerCapture(event.pointerId);
+    tryCapturePointer(event.currentTarget, event.pointerId);
     pointerBySide.current[side] = event.pointerId;
     originBySide.current[side] = { x: event.clientX, y: event.clientY };
     state.pointers += 1;
@@ -146,7 +157,7 @@ export function TouchFlightControls({
   }
 
   function holdStart(event: ReactPointerEvent<HTMLButtonElement>, apply: () => void): void {
-    event.currentTarget.setPointerCapture(event.pointerId);
+    tryCapturePointer(event.currentTarget, event.pointerId);
     state.pointers += 1;
     apply();
   }
