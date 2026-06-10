@@ -18,6 +18,9 @@ const BUILT_IN_PRESETS: Record<string, FroxelTuning> = {
     flashStrength: 1,
     mix: 1,
     fadeStart: 17,
+    densityRampLo: 0.1,
+    densityRampHi: 0.22,
+    densityRampTarget: 0.9,
   },
   Claustrophobic: {
     sigmaScale: 1.75,
@@ -29,6 +32,9 @@ const BUILT_IN_PRESETS: Record<string, FroxelTuning> = {
     flashStrength: 1,
     mix: 1,
     fadeStart: 8,
+    densityRampLo: 0.1,
+    densityRampHi: 0.22,
+    densityRampTarget: 0.9,
   },
 };
 
@@ -462,6 +468,81 @@ export function FogSettingsWindow(): ReactNode {
             />
           </label>
           <div className="fog-readout">Fog ends at {effective.fadeStart.toFixed(1)} km</div>
+        </div>
+      </div>
+
+      <div className="fog-section">
+        <h3>Density Ramp</h3>
+        <div className="fog-control">
+          <label title="Density threshold where ramp starts (gap/in-band boundary)">
+            Ramp Lo (0–0.5)
+            <input
+              type="range"
+              min="0"
+              max="0.5"
+              step="0.01"
+              value={effective.densityRampLo}
+              onChange={(e) => updateTuning({ densityRampLo: parseFloat(e.target.value) })}
+              onKeyDown={fieldProps.stopPropagation}
+            />
+            <input
+              type="number"
+              min="0"
+              max="0.5"
+              step="0.01"
+              value={effective.densityRampLo.toFixed(2)}
+              onChange={(e) => updateTuning({ densityRampLo: parseFloat(e.target.value) || 0 })}
+              onKeyDown={fieldProps.stopPropagation}
+            />
+          </label>
+        </div>
+
+        <div className="fog-control">
+          <label title="Density threshold where ramp ends (full remapping)">
+            Ramp Hi (0–0.5)
+            <input
+              type="range"
+              min="0"
+              max="0.5"
+              step="0.01"
+              value={effective.densityRampHi}
+              onChange={(e) => updateTuning({ densityRampHi: parseFloat(e.target.value) })}
+              onKeyDown={fieldProps.stopPropagation}
+            />
+            <input
+              type="number"
+              min="0"
+              max="0.5"
+              step="0.01"
+              value={effective.densityRampHi.toFixed(2)}
+              onChange={(e) => updateTuning({ densityRampHi: parseFloat(e.target.value) || 0 })}
+              onKeyDown={fieldProps.stopPropagation}
+            />
+          </label>
+        </div>
+
+        <div className="fog-control">
+          <label title="Target density value (remapping goal in-band)">
+            Ramp Target (0–1)
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.01"
+              value={effective.densityRampTarget}
+              onChange={(e) => updateTuning({ densityRampTarget: parseFloat(e.target.value) })}
+              onKeyDown={fieldProps.stopPropagation}
+            />
+            <input
+              type="number"
+              min="0"
+              max="1"
+              step="0.01"
+              value={effective.densityRampTarget.toFixed(2)}
+              onChange={(e) => updateTuning({ densityRampTarget: parseFloat(e.target.value) || 0 })}
+              onKeyDown={fieldProps.stopPropagation}
+            />
+          </label>
         </div>
       </div>
 

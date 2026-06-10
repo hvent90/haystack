@@ -25,7 +25,11 @@
 //              of slice z. The apply lookup at distance d interpolates fz = zOfDistance(d)-1
 //              (identity (0,0,0,1) below the first slice's far edge).
 
-import { remapBeltDensity } from "../../../shared/belt/field";
+import {
+  BELT_DENSITY_RAMP_HI,
+  BELT_DENSITY_RAMP_LO,
+  BELT_DENSITY_RAMP_TARGET,
+} from "../../../shared/belt/field";
 
 // --- grid dimensions (§2.5 — committed schema) ---------------------------------------
 export const FROXEL_W = 160;
@@ -260,6 +264,10 @@ export type FroxelMediumParams = {
   ambient: number;
   // Distance (km) where the fog begins to fade. Defaults to FROXEL_FADE_START (17).
   fadeStart?: number;
+  // Fog-only density ramp overrides (defaults match shared belt constants).
+  densityRampLo?: number;
+  densityRampHi?: number;
+  densityRampTarget?: number;
   // Phase-2 lights; omitted/null = ambient-only medium (the phase-1 behaviour).
   lights?: FroxelLightParams | null;
 };
@@ -334,18 +342,34 @@ export function froxelCenterWorldMeters(
 
 // Per-slice extinction sigma_t (1/km) at a froxel: baked density × scale + floor, eased
 // out over the far handoff band so the medium never ends on a hard shell. The density
-// runs through the SAME contrast ramp as rock placement (shared/belt/field.ts
-// remapBeltDensity) so the milk thickens exactly where the rocks do.
+// Fog-only density ramp (mirrors shared remapBeltDensity but with tunable parameters).
+function remapDensityFog(d: number, rampLo: number, rampHi: number, rampTarget: number): number {
+  let t = (d - rampLo) / (rampHi - rampLo);
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const s = t * t * (3 - 2 * t);
+  const ramped = d + (rampTarget - d) * s;
+  return ramped > d ? ramped : d;
+}
+
+// runs through a fog-side density ramp (can be overridden; defaults match shared remapBeltDensity
+// so rocks and fog stay in sync by default).
 export function froxelSigmaT(
   density01: number,
   dist: number,
   sigmaScale: number,
   sigmaFloor: number,
   fadeStart = FROXEL_FADE_START,
+  densityRampLo: number = BELT_DENSITY_RAMP_LO,
+  densityRampHi: number = BELT_DENSITY_RAMP_HI,
+  densityRampTarget: number = BELT_DENSITY_RAMP_TARGET,
 ): number {
   const t = Math.min(1, Math.max(0, (dist - fadeStart) / (FROXEL_FAR - fadeStart)));
   const fade = 1 - t * t * (3 - 2 * t);
-  return (remapBeltDensity(density01) * sigmaScale + sigmaFloor) * fade;
+  return (
+    (remapDensityFog(density01, densityRampLo, densityRampHi, densityRampTarget) * sigmaScale +
+      sigmaFloor) *
+    fade
+  );
 }
 
 // scatter: per-slice (inScatter.rgb, transmittance.a) for every froxel, into `out`
@@ -367,7 +391,16 @@ export function froxelScatterCPU(
         const c = froxelCenterWorldMeters(x, y, z, p);
         // c is anchor-relative; the density bake is absolute-polar around the planet.
         const d = g === null ? 0 : sampleDensity(g, c.x + anchor.x, c.y + anchor.y, c.z + anchor.z);
-        const sigmaT = froxelSigmaT(d, c.dist, p.sigmaScale, p.sigmaFloor, p.fadeStart);
+        const sigmaT = froxelSigmaT(
+          d,
+          c.dist,
+          p.sigmaScale,
+          p.sigmaFloor,
+          p.fadeStart,
+          p.densityRampLo,
+          p.densityRampHi,
+          p.densityRampTarget,
+        );
         const trans = Math.exp(-sigmaT * sliceLen);
         let lr = p.ambient;
         let lg = p.ambient;

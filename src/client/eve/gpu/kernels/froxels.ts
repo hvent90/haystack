@@ -55,12 +55,7 @@ import {
   type ShaderNodeObject,
 } from "three/tsl";
 
-import {
-  BELT_DENSITY_RAMP_HI,
-  BELT_DENSITY_RAMP_LO,
-  BELT_DENSITY_RAMP_TARGET,
-  type BeltField,
-} from "../../../../shared/belt/field";
+import type { BeltField } from "../../../../shared/belt/field";
 import {
   FROXEL_COUNT,
   FROXEL_D,
@@ -151,6 +146,10 @@ export type FroxelTuning = {
   mix: number;
   // Distance (km) where the fog fades to transparent (falloff). Default 17 km.
   fadeStart: number;
+  // Fog-only density ramp overrides (defaults match shared belt constants, fog-side only).
+  densityRampLo: number;
+  densityRampHi: number;
+  densityRampTarget: number;
 };
 
 // The "ED milk" tuning (hv-approved 2026-06-10): warm rocky-ring dust at Elite
@@ -180,6 +179,9 @@ export const FROXEL_DEFAULTS: FroxelTuning = {
   flashStrength: 1,
   mix: 1,
   fadeStart: 17,
+  densityRampLo: 0.1,
+  densityRampHi: 0.22,
+  densityRampTarget: 0.9,
 };
 
 const uSigmaScale = uniform(FROXEL_DEFAULTS.sigmaScale);
@@ -192,6 +194,9 @@ const uSunStrength = uniform(FROXEL_DEFAULTS.sunStrength);
 const uHgG = uniform(FROXEL_DEFAULTS.hgG);
 const uFroxelMix = uniform(FROXEL_DEFAULTS.mix);
 const uFadeStart = uniform(FROXEL_DEFAULTS.fadeStart);
+const uDensityRampLo = uniform(FROXEL_DEFAULTS.densityRampLo);
+const uDensityRampHi = uniform(FROXEL_DEFAULTS.densityRampHi);
+const uDensityRampTarget = uniform(FROXEL_DEFAULTS.densityRampTarget);
 
 // Apply tuning (defaults overlaid with the WorldView debug-override object, if any) —
 // called once per frame from the render loop, same pattern as the shadow-tier switches.
@@ -206,6 +211,9 @@ export function applyFroxelTuning(override: Partial<FroxelTuning> | null): void 
   flashTuningStrength = t.flashStrength;
   uFroxelMix.value = t.mix;
   uFadeStart.value = t.fadeStart;
+  uDensityRampLo.value = t.densityRampLo;
+  uDensityRampHi.value = t.densityRampHi;
+  uDensityRampTarget.value = t.densityRampTarget;
 }
 
 // --- the ship flashlight (analytic spot cone, scene units) -------------------------------
@@ -396,15 +404,12 @@ function farFade(dist: FloatNode): FloatNode {
   return smoothstep(uFadeStart, float(FROXEL_FAR), dist).oneMinus();
 }
 
-// Density contrast ramp (mirrors shared/belt/field.ts remapBeltDensity, which
-// froxels-cpu.froxelSigmaT applies in f64): identity in the gaps, smoothstep snap to
-// the ramp target in-band, identity again above the target. Keeps the fog thickening
-// in lockstep with rock placement.
+// Density contrast ramp (mirrors froxels-cpu remapDensityFog with tunable parameters):
+// identity in the gaps, smoothstep snap to the ramp target in-band, identity again above
+// the target. Fog-side only; rock placement always uses shared constants.
 function remapDensityTSL(d: FloatNode): FloatNode {
   const ramped = d.add(
-    float(BELT_DENSITY_RAMP_TARGET)
-      .sub(d)
-      .mul(smoothstep(float(BELT_DENSITY_RAMP_LO), float(BELT_DENSITY_RAMP_HI), d)),
+    uDensityRampTarget.sub(d).mul(smoothstep(uDensityRampLo, uDensityRampHi, d)),
   );
   return max(d, ramped);
 }
