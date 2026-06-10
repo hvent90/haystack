@@ -21,8 +21,8 @@ import type { Pilot } from "../../src/shared/types";
 // touch-derived pointer events (pointerType "touch", valid pointer ids for capture) —
 // page.dispatchEvent would synthesize untrusted events that setPointerCapture rejects.
 
-const serverPort = 8807;
-const clientPort = 5207;
+const serverPort = 8815;
+const clientPort = 5215;
 const dbPath = resolve(tmpdir(), `haystack-touch-${Date.now()}.sqlite`);
 const serverUrl = `http://127.0.0.1:${serverPort}`;
 const clientUrl = `http://127.0.0.1:${clientPort}`;
@@ -67,22 +67,34 @@ try {
     })
   ).pilot;
 
-  browser = await chromium.launch(webgpuLaunchOptions);
-  const context = await browser.newContext({
-    viewport: VIEW,
-    deviceScaleFactor: 3,
-    hasTouch: true,
-    isMobile: true,
-  });
-  const page = await context.newPage();
   const url = new URL(clientUrl);
   url.searchParams.set("pilotId", pilot.id);
   // Deterministic touch-UI activation: headless capability emulation of
   // (any-pointer: fine) is inconsistent across Chromium builds.
   url.searchParams.set("touch", "1");
-  await page.goto(url.toString(), { waitUntil: "networkidle" });
-  await page.waitForSelector("[data-testid='haystack-app']", { timeout: 15000 });
-  const cdp = await context.newCDPSession(page);
+
+  // Headless Chromium intermittently comes up with synthesized-touch dispatch DEAD for
+  // the lifetime of the page (Input.dispatchTouchEvent accepted but no events reach the
+  // renderer — observed on ~half of launches regardless of settle time or retries).
+  // Validate dispatch with a probe gesture right after boot and relaunch the browser
+  // until we get a working one; everything downstream then runs on real touch events.
+  let session: { page: Page; cdp: CDPSession } | null = null;
+  for (let attempt = 1; attempt <= 5 && session === null; attempt += 1) {
+    if (browser !== null) {
+      await browser.close();
+    }
+    browser = await chromium.launch(webgpuLaunchOptions);
+    const candidate = await bootTouchPage(browser, url.toString());
+    if (candidate !== null) {
+      session = candidate;
+    } else {
+      console.error(`touch dispatch dead in browser launch ${attempt}; relaunching`);
+    }
+  }
+  if (session === null) {
+    throw new Error("Synthesized touch dispatch never came up across 5 browser launches.");
+  }
+  const { page, cdp } = session;
 
   await verifyTouchUiRenders(page);
   const throttleResult = await verifyThrottleGesture(page, cdp);
@@ -114,6 +126,57 @@ try {
   }
 }
 
+// Boot the app in a fresh touch-emulating context and PROVE synthesized touch dispatch
+// works (a probe touch on the left zone must spawn the stick). Returns null when this
+// browser launch came up with dead touch dispatch.
+async function bootTouchPage(
+  browserInstance: Browser,
+  url: string,
+): Promise<{ page: Page; cdp: CDPSession } | null> {
+  const context = await browserInstance.newContext({
+    viewport: VIEW,
+    deviceScaleFactor: 3,
+    hasTouch: true,
+    isMobile: true,
+  });
+  const page = await context.newPage();
+  await page.goto(url, { waitUntil: "networkidle" });
+  await page.waitForSelector("[data-testid='haystack-app']", { timeout: 15000 });
+  // First frames rendered (the __probe writer runs in WorldView's useFrame) — gestures
+  // dispatched mid-boot race the overlay mount + SwiftShader pipeline warmup.
+  await page.waitForFunction(
+    () => (window as unknown as { __probe?: { owned?: unknown } }).__probe?.owned !== undefined,
+    undefined,
+    { timeout: 30000 },
+  );
+  // The in-world target brackets are pointer-events:auto islands that track moving
+  // rocks — under Chrome's touch-target adjustment they magnetize synthesized touches
+  // away from the stick zones nondeterministically (the nearest-32 set densely covers
+  // a phone viewport). They are not under test here; make them inert so stick/orbit
+  // gestures hit the surfaces this suite is actually about.
+  await page.addStyleTag({
+    content: ".bracket-layer, .bracket-layer * { pointer-events: none !important; }",
+  });
+  const cdp = await context.newCDPSession(page);
+  try {
+    await touchUntilStickSpawns(
+      page,
+      cdp,
+      (avoid) => canvasPoint(page, 220, Math.floor(VIEW.width * 0.42), avoid),
+      "touch-stick-left",
+    );
+  } catch {
+    await context.close();
+    return null;
+  }
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await page.waitForSelector("[data-testid='touch-stick-left']", {
+    state: "detached",
+    timeout: 3000,
+  });
+  return { page, cdp };
+}
+
 async function verifyTouchUiRenders(page: Page): Promise<void> {
   for (const testId of [
     "touch-controls",
@@ -143,16 +206,17 @@ async function verifyTouchUiRenders(page: Page): Promise<void> {
 // Hold a full-deflection upward left-stick drag and prove sustained forward motion
 // through prediction with no snap-backs (the prediction.ts tolerance pattern).
 async function verifyThrottleGesture(page: Page, cdp: CDPSession): Promise<unknown> {
-  const start = { x: 180, y: 300 };
   const initialZ = await ownedZ(page);
   const correctionsBefore = await predictionCorrections(page);
 
-  await cdp.send("Input.dispatchTouchEvent", {
-    type: "touchStart",
-    touchPoints: [{ x: start.x, y: start.y, id: 1 }],
-  });
-  // Stick must spawn where the thumb landed.
-  await page.waitForSelector("[data-testid='touch-stick-left']", { timeout: 3000 });
+  // Probe for a clean point inside the LEFT stick zone (44% of width, minus the edge
+  // button column) on every attempt — brackets/HUD islands move as the world streams.
+  const start = await touchUntilStickSpawns(
+    page,
+    cdp,
+    (avoid) => canvasPoint(page, 220, Math.floor(VIEW.width * 0.42), avoid),
+    "touch-stick-left",
+  );
   const stickBox = await page.getByTestId("touch-stick-left").boundingBox();
   if (stickBox === null) {
     throw new Error("Left stick did not render a bounding box.");
@@ -221,15 +285,16 @@ async function verifyThrottleGesture(page: Page, cdp: CDPSession): Promise<unkno
 
 // Hold a leftward right-stick drag and prove the ship's orientation quaternion moves.
 async function verifyRotationGesture(page: Page, cdp: CDPSession): Promise<unknown> {
-  // Above the bottom-center HUD cluster — a touch there belongs to the HUD, not the zone.
-  const start = { x: 640, y: 180 };
   const before = await ownedQuat(page);
 
-  await cdp.send("Input.dispatchTouchEvent", {
-    type: "touchStart",
-    touchPoints: [{ x: start.x, y: start.y, id: 1 }],
-  });
-  await page.waitForSelector("[data-testid='touch-stick-right']", { timeout: 3000 });
+  // Clean point inside the RIGHT stick zone (clear of the right button column and the
+  // bottom-right audio pill), re-probed per attempt.
+  const start = await touchUntilStickSpawns(
+    page,
+    cdp,
+    (avoid) => canvasPoint(page, Math.ceil(VIEW.width * 0.6), VIEW.width - 120, avoid),
+    "touch-stick-right",
+  );
   await cdp.send("Input.dispatchTouchEvent", {
     type: "touchMove",
     touchPoints: [{ x: start.x - 70, y: start.y, id: 1 }],
@@ -339,23 +404,88 @@ async function verifyThirdPersonGestures(page: Page, cdp: CDPSession): Promise<u
   };
 }
 
+// Touch down until the stick visual appears, lifting and re-placing on a FRESHLY
+// PROBED point each attempt: target brackets track world objects, so a point that was
+// clean a second ago can have a touch-adjustment magnet under it once the ship drifts
+// (each bracket is an interactive island Chrome snaps touches onto). Returns the point
+// that worked, with the touch still held.
+async function touchUntilStickSpawns(
+  page: Page,
+  cdp: CDPSession,
+  pickPoint: (avoid: { x: number; y: number }[]) => Promise<{ x: number; y: number }>,
+  stickTestId: string,
+): Promise<{ x: number; y: number }> {
+  const failed: { x: number; y: number }[] = [];
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const point = await pickPoint(failed);
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [{ x: point.x, y: point.y, id: 1 }],
+    });
+    try {
+      await page.waitForSelector(`[data-testid='${stickTestId}']`, { timeout: 3000 });
+      return point;
+    } catch {
+      failed.push(point);
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await Bun.sleep(500);
+    }
+  }
+  throw new Error(`${stickTestId} never spawned after 5 touch attempts.`);
+}
+
 // A viewport point whose hit-test target is the WebGPU canvas (not a HUD overlay).
 // Scans a coarse grid across the upper-middle of the view, leaving 100px margins for
 // edge button columns and rails. The pinch in verifyThirdPersonGestures needs ~140px
 // of horizontal clearance around the returned point; canvas hit areas are large, so a
 // point chosen here keeps its neighborhood on canvas in practice.
-async function canvasPoint(page: Page): Promise<{ x: number; y: number }> {
-  const found = await page.evaluate(({ width, height }) => {
-    for (let y = 100; y <= height - 120; y += 30) {
-      for (let x = 160; x <= width - 160; x += 40) {
+async function canvasPoint(
+  page: Page,
+  minX = 160,
+  maxX = VIEW.width - 160,
+  avoid: { x: number; y: number }[] = [],
+): Promise<{ x: number; y: number }> {
+  const found = await page.evaluate(
+    ({ height, minX: lo, maxX: hi, avoid: skip }) => {
+      // Stage surfaces: the bare canvas (third person) or a stick zone (first person,
+      // where the zones overlay the canvas). Anything else is a HUD island — and
+      // Chrome's TOUCH TARGET ADJUSTMENT will snap a touch onto a nearby interactive
+      // element (buttons, target brackets, panels), so the WHOLE ±56px neighborhood
+      // must be stage surface, not just the point itself. Bracket positions vary per
+      // pilot spawn, which is exactly why fixed gesture pixels were flaky.
+      const isStage = (x: number, y: number): boolean => {
         const target = document.elementFromPoint(x, y);
-        if (target instanceof HTMLCanvasElement) {
-          return { x, y };
+        return (
+          target instanceof HTMLCanvasElement ||
+          (target instanceof HTMLElement && target.classList.contains("touch-zone"))
+        );
+      };
+      for (let y = 130; y <= height - 130; y += 24) {
+        for (let x = lo; x <= hi; x += 24) {
+          // Points near previously failed attempts are skipped — some views park an
+          // unidentifiable touch-eater over parts of the zone.
+          if (skip.some((p) => Math.hypot(p.x - x, p.y - y) < 90)) {
+            continue;
+          }
+          if (
+            isStage(x, y) &&
+            isStage(x - 56, y) &&
+            isStage(x + 56, y) &&
+            isStage(x, y - 56) &&
+            isStage(x, y + 56) &&
+            isStage(x - 40, y - 40) &&
+            isStage(x + 40, y - 40) &&
+            isStage(x - 40, y + 40) &&
+            isStage(x + 40, y + 40)
+          ) {
+            return { x, y };
+          }
         }
       }
-    }
-    return null;
-  }, VIEW);
+      return null;
+    },
+    { height: VIEW.height, minX, maxX, avoid },
+  );
   if (found === null) {
     throw new Error("No canvas-targeted point found in the viewport.");
   }

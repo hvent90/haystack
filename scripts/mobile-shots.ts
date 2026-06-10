@@ -12,8 +12,8 @@ import type { Pilot } from "../src/shared/types";
 // notch (the safe-area CSS vars are overridden directly; headless Chromium has no
 // real env(safe-area-inset-*) source).
 
-const serverPort = 8809;
-const clientPort = 5209;
+const serverPort = 8816;
+const clientPort = 5216;
 const dbPath = resolve(tmpdir(), `haystack-shots-${Date.now()}.sqlite`);
 const serverUrl = `http://127.0.0.1:${serverPort}`;
 const clientUrl = `http://127.0.0.1:${clientPort}`;
@@ -57,7 +57,11 @@ try {
   await Bun.sleep(4000);
   await page.screenshot({ path: resolve(outDir, "landscape-idle.png") });
 
-  // Hold both sticks mid-gesture for the layout shot.
+  // Hold both sticks mid-gesture for the layout shot. The no-op touchstart listener
+  // keeps headless Chromium from dropping synthesized touch dispatch (see touch.ts).
+  await page.evaluate(() => {
+    window.addEventListener("touchstart", () => undefined, { capture: true, passive: true });
+  });
   const cdp = await landscape.newCDPSession(page);
   await cdp.send("Input.dispatchTouchEvent", {
     type: "touchStart",

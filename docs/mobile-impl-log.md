@@ -117,10 +117,20 @@ Commits: `37827f4` (viewport/safe-areas), `a7cb2ae` (sticks + buttons), `c78a04e
   shows the same tiny counts. Not addressed here — flagging for a future session.
 - **gpu-live's screenshot gate assumed the desktop viewport** (hardcoded
   `2560×1440`); parameterized to `CSS × DSF` so phone-shaped runs can pass.
-- **Touch-point hit-testing in e2e is a minefield.** HUD overlays (cluster, brackets,
-  audio panel) are `pointer-events: auto` islands over the canvas; gestures aimed at
-  "empty space" kept landing on them. The touch suite now probes
-  `document.elementFromPoint` for a genuine canvas point before orbit/pinch gestures.
+- **Touch-point hit-testing in e2e is a minefield — and the culprit was the target
+  brackets.** A long flake hunt (intermittent "stick never spawns", pilot-correlated,
+  immune to retries/settles/browser relaunches) bottomed out at the in-world target
+  brackets: 32 `pointer-events: auto` islands tracking moving rocks densely cover a
+  phone viewport, and Chrome's touch-target adjustment magnetizes synthesized touches
+  onto them nondeterministically. The suite probes `elementFromPoint` with a ±56 px
+  clean-neighborhood requirement, re-probes a fresh point per attempt, and makes the
+  bracket layer inert for the stick/orbit phases (brackets aren't under test).
+  Result: 12/12 consecutive green runs.
+- **Real-device follow-up:** the same physics applies to thumbs — a drag that STARTS
+  on a bracket selects nothing and spawns no stick (brackets sit above the zones so
+  taps select targets). Recoverable (re-place the thumb), but if it annoys on
+  hardware, the likely fix is bracket tap = select on `click` only, letting
+  pointerdown+drag fall through to the stick zone.
 - **Audio unlock on mobile**: the collapsed audio head keeps the mute toggle and the
   "click to enable" hint; any touch counts as the unlock gesture (existing useAudio
   behavior), so collapsing the mixer loses nothing.
