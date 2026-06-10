@@ -91,7 +91,7 @@ function sanitizeWindowState(state: WindowState): WindowState {
     y: finiteOr(state.y, reservedTop),
     width: finiteOr(state.width, 300),
     height: finiteOr(state.height, 240),
-    open: state.open !== false,
+    open: state.open === true,
     minimized: state.minimized === true,
     z: finiteOr(state.z, 1),
   };
