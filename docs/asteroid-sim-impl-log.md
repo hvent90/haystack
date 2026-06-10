@@ -269,3 +269,72 @@ fieldDiagnostic, both belt-aware).
   NOISE-RELATIVE thresholds (live tiers measure 3.6–4.7×/2.1–2.9× the identical-state
   noise floor; dead ≈ 1×) — fraction-of-baseLit floors assumed a size distribution and
   broke twice. All gates re-green (verify 140/140, verify:gpu-live:prod PASS).
+
+## Session 2 — Elite Dangerous ring feel (ed-belt/impl)
+
+Research first: docs/research/elite-dangerous-belt-reference.md (sourced, confidence-
+labeled; headline numbers: ED rings are a ~2-4 km slab at ~5-10 rocks/km³ / 300-500 m
+spacing; cockpit dominated by 50-300 m lumpy-potato rocks from a ~6-mesh library; dust
+fog limits in-plane visibility; detailed rocks in a 5-10 km bubble, sprite impostors to
+~20-25 km).
+
+### Levers that mattered for the ED feel (in order of impact)
+
+1. **Spatial structure (shared constants, no re-bake).** BELT_CELL_SIZE 1130→530 m
+   raised the 1-rock-per-cell density ceiling 0.59→5.7 rocks/km³; BELT_VERTICAL_SQUASH
+   22 (new) compresses the bake's ±90 km torus to ~±4 km across grid + density sampling
+   - hero decode (heroes squash with the slab or 90% of them clip out of the grid);
+     RADIUS_MIN 55→20 m. Measured at spawn: NN median 486 m (p10 294) — on ED's number.
+     BELT_CELL_KEY_BASE 8192→16384 for the finer grid. The thin slab is ALSO the perf
+     trick: ED density inside an 11 km draw ball is only ~7k drawn candidates because the
+     slab clips the ball.
+2. **Rock geometry: per-instance displacement beats more meshes.** LOD ladder
+   dodeca/icosa/octa/tetra → icosa²/icosa¹/icosa⁰/octa; the material radially scales
+   each vertex by 3 fixed-frequency sine octaves phased per rock (packAttr.z), 0.62-1.0
+   inward-only (visual never exceeds the collision radius). Every rock unique at zero
+   memory; fixed frequencies keep the ED "small mesh library" family resemblance.
+   Normals from screen-space derivatives (free, follow displacement + tumble; faceted
+   reads as ED's low-detail rocks). All verts unit-length on every icosa level, so one
+   displacement function gives matching silhouettes across LOD bands.
+3. **Visibility model: fog + impostor shell.** Fog 9/18 → 3.5/11 km, blue-dark →
+   warm dust #080706 (scene background matched); MAX_DRAW 18→11 km; LOD bands
+   [4,9,13]→[2.5,5,8]. New camera-local impostor shell: ~20k deterministic points in
+   8 km world tiles (no swimming; rebuilt when ship strays >12 km), density-gated by
+   sampleDensity, fading 9-13 in / 38-52 km out — the ED sprite shell.
+4. **Edge-on artifacts are the killers.** Three separate "razor line across the
+   eye-line" sources inside the slab: the zero-thickness haze annulus (fix: fade within
+   2 km of the plane), midplane-peaked speckle distribution (fix: uniform vertical),
+   and far-side global speckles collapsing onto one pixel row (fix: distance-extinguish
+   them when the camera is in-slab — which is also ED's physical model: ring dust
+   limits in-plane visibility). Lit-vs-dark asymmetry: haze dims 0.35x from below.
+5. **Tumble + palette: minor but cheap.** 0.05-0.30 → 0.01-0.12 rad/s + ~4% fast
+   spinners (ED: 1-5 min/rev, rare tens-of-seconds); flat #6f6a60 → per-instance
+   mix(#544e45, #7f786d).
+
+### What didn't matter / failed
+
+- The haze annulus as a mid-range sheet: 1024² texels over a 2,750 km annulus is a flat
+  smear from 15 km up — granularity must come from points (shell), haze only lifts the
+  floor (alpha 0.1, was 0.13).
+- Triangular-vs-uniform vertical speckle distribution did nothing for the eye-line
+  line at >100 km (the slab subtends <1 px regardless); the fix was extinction.
+
+### Fixture recalibrations (deliberate)
+
+- collision.test.ts: cross-check ball 200→2500 rocks (obstacle sweep box ⊂ derive ball
+  at 8x density); sample heights moved inside the slab (y=16 km is legitimately empty
+  space now).
+- gpu-cull-parity.test.ts: synthetic distances re-pinned to bands [2.5,5,8]/11.
+- gpu-live-loop.mjs shadow floors: tier1/tier2 ratios 0.18/0.10 → 0.045/0.028 of
+  baseLit (+2.5x/1.8x noise). Geometry, not regression: the 38°-elevation sun exits a
+  ±4 km slab within ~5 km (little rock-on-rock shadowing vs the ±90 km cloud), and
+  tier2 acts beyond 8 km where the 3.5/11 fog has eaten ~80% of rock contrast. A/B
+  diag screenshots confirm both tiers alive.
+
+### Gates on the shipped look
+
+verify 143/143; verify:gpu ALL PASS (belt round-trip bit-identical over 14,907 rocks);
+verify:gpu-live:prod PASS — frames p95 16.7 ms / max 16.8 / ~60 fps, scan gate PASS,
+shadow gate PASS (tier1 166 / tier2 130 / noise 63 / baseLit 2100). Captures:
+screenshots/ed-iter7-{cruise,plane,hero}.png + ed-iter6-above.png vs ED reference,
+DMed for approval. Server boots 59.1M expected rocks; spawn band NN median 486 m.

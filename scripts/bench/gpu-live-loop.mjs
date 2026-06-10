@@ -460,17 +460,21 @@ try {
     shadowGate.pass =
       shadowGate.noise < 600 &&
       // The scene must hold a meaningful lit field at all (legacy hash ≈ 15500 lit
-      // samples; belt-bake band ≈ 7800 — the belt is genuinely sparser than the old
-      // 1-rock-per-cell field, so the tier floors below are RELATIVE to baselineLit
-      // rather than absolute pixel counts).
-      shadowGate.baselineLit > 4000 &&
+      // samples; belt-bake band ≈ 7800; ED-ring field ≈ 3500 — smaller rocks (20 m
+      // floor vs 55 m) and the tighter 11 km draw shrink total lit pixel area, so the
+      // tier floors below are RELATIVE to baselineLit rather than absolute counts).
+      shadowGate.baselineLit > 2000 &&
       // Each tier darkens (alive) but not everything (not a black wall). Measured
       // healthy ratios vs baselineLit: legacy tier1 ≈ 0.53 / tier2 ≈ 0.15; belt 1M bake
-      // tier1 ≈ 0.22 / tier2 ≈ 0.13. An all-dark regression ≈ 1.0 and fails the upper
-      // bounds; a dead tier fails the floors.
-      shadowGate.tier1Darkened > Math.max(0.18 * shadowGate.baselineLit, 3 * shadowGate.noise) &&
+      // tier1 ≈ 0.22 / tier2 ≈ 0.13; ED-ring slab tier1 ≈ 0.066 / tier2 ≈ 0.040. The
+      // ED drop is geometry, not regression: a ±4 km slab lets the 38°-elevation sun
+      // exit the rock layer within ~5 km (few rocks behind any caster to catch its
+      // shadow vs the old ±90 km cloud), and tier2 acts beyond 8 km where the 3.5/11
+      // fog has already extinguished ~80% of rock contrast. An all-dark regression
+      // ≈ 1.0 and fails the upper bounds; a dead tier fails the floors.
+      shadowGate.tier1Darkened > Math.max(0.045 * shadowGate.baselineLit, 2.5 * shadowGate.noise) &&
       shadowGate.tier1Darkened < 0.8 * shadowGate.baselineLit &&
-      shadowGate.tier2Darkened > Math.max(0.1 * shadowGate.baselineLit, 3 * shadowGate.noise) &&
+      shadowGate.tier2Darkened > Math.max(0.028 * shadowGate.baselineLit, 1.8 * shadowGate.noise) &&
       shadowGate.tier2Darkened < 0.4 * shadowGate.baselineLit &&
       // The production blend keeps individually lit rocks (varied, not a black wall).
       shadowGate.blendLit > 0.4 * shadowGate.baselineLit;
