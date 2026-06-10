@@ -179,3 +179,34 @@ existence roll amplifies any cross-engine Math.sin ULP drift (probability ~1e-16
 accepted); streamedFieldToken is test-pinned reference API with no production consumer
 (virtual field is fully client-derived; server production consumers are virtualScanHits +
 fieldDiagnostic, both belt-aware).
+
+## Session 1 — 1M default run results (the definitive bake)
+
+- Sim: 1,000,000 particles, 8000 inner-belt orbits (1540 veil orbits), 75 min wall on 10
+  shards. 972,472 alive / 27,531 removed.
+- Histogram (runs/default/plots/kirkwood-histogram.png): deep 2:1 chasm at a=1.89 with a
+  surviving outer ringlet beyond it, sharp narrow 3:1 notch at 1.442, 7:3 dip, 4:1 family
+  spike, ~dozen visible Hirayama-style family towers, moon-truncated edges.
+- `beltsim validate runs/default`: ALL PASS — gap notch/flank 2:1 = 0.258, 3:1 = 0.608
+  (young gap at 1540 perturber orbits; metric measures the notch at its own ~0.4% width,
+  thresholds documented in validate.py), power-law slope −2.523 vs target −2.5, family
+  a-dispersion 0.048× Poisson over 100 families.
+- Bake: 3.20 MB compressed total (density 2.66 MB at 1024×1024×8, heroes 457 KB ×30k,
+  flow 82 KB, zones 39 B, meta 847 B). **Tile-pyramid decision: NOT taken** — the whole
+  artifact is one cached ~3 MB fetch, far below the threshold where slippy-map tiles pay
+  for their complexity. Revisit only if bake resolution grows ~10×.
+- Zone detection reworked to 3 levels (dense band / sparse fringe / void) — eccentricity
+  smears a-space gaps in physical radius, so radial pockets are band/fringe/void and the
+  azimuthal richness lives in the 2D density.
+- Shipped to public/belt/default. Server boots with totalAsteroids ≈ 134.1M.
+- Gates on the shipped bake: bun run verify 140/140; verify:gpu ALL PASS;
+  verify:gpu-live:prod PASS (frames p95 16.7 ms, 60.1 fps; scan gate; shadow gate floors
+  made RELATIVE to measured baselineLit — belt band ≈ 7.4k lit samples vs legacy ≈ 15.5k,
+  tiers alive at 0.22/0.13 ratios, all-dark upper bounds retained); bench:gpu-cross:prod
+  median 16.7 / p99 16.8 / max 33.2 ms, over33 = 0 over 9 crossings, derive ≈ 7.5 ms.
+- Captures (screenshots/): belt-default-{close,region,belt}.png at 1920×1080 vs
+  belt-hash-baseline-*.png. Visual verdict: the hash field is an unstructured uniform
+  soup at every scale; the belt shows family clumps and arcs at belt scale, band/lane
+  structure + far-field granularity at region scale, and varied rock sizes incl. ~2 km
+  heroes at close scale. The failure mode the design conversation feared (formulaic
+  noise) is visibly absent.
