@@ -20,6 +20,7 @@ export type PreviewPanel = {
 
 export type PreviewOpts = {
   preset: string;
+  outName: string; // output file stem (defaults to preset name)
   caption: string; // headline drawn on the sheet (preset + params)
   panels: PreviewPanel[];
   panelWidth: number;
@@ -65,8 +66,15 @@ async function renderPanel(
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x05070c);
 
+  // key light from behind the camera's shoulder so the panel's subject is lit
+  // (a fixed sun leaves any camera looking sunward with all-shadow rocks)
+  const back = new THREE.Vector3(
+    panel.camPos.x - panel.lookAt.x,
+    panel.camPos.y - panel.lookAt.y,
+    panel.camPos.z - panel.lookAt.z,
+  ).normalize();
   const sun = new THREE.DirectionalLight(0xfff4e0, 2.6);
-  sun.position.set(0.6, 0.8, 0.4);
+  sun.position.set(back.x + 0.45, back.y + 0.8, back.z + 0.1);
   scene.add(sun);
   scene.add(new THREE.AmbientLight(0x3a4a66, 0.5));
 
@@ -167,7 +175,7 @@ export async function renderFieldPreview(opts: PreviewOpts): Promise<PreviewShot
     }
     caption(ctx, opts.caption, 14, 24, 19);
     shots.push({
-      name: opts.preset,
+      name: opts.outName,
       dataUrl: sheet.toDataURL("image/png"),
       rockCount: panels.reduce((sum, p) => sum + p.rockCount, 0),
     });
@@ -180,7 +188,7 @@ export async function renderFieldPreview(opts: PreviewOpts): Promise<PreviewShot
       ctx.drawImage(p.canvas, 0, 0);
       caption(ctx, `${opts.caption}  ·  ${p.panel.label}  ·  ${p.rockCount} rocks`, 14, 26);
       shots.push({
-        name: `${opts.preset}-${p.panel.label.replace(/[^a-z0-9]+/gi, "-")}`,
+        name: `${opts.outName}-${p.panel.label.replace(/[^a-z0-9]+/gi, "-")}`,
         dataUrl: single.toDataURL("image/png"),
         rockCount: p.rockCount,
       });

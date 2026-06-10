@@ -221,22 +221,7 @@ function clusterAt(
   ky: number,
   kz: number,
 ): ClusterSpec | null {
-  const totalWeight = preset.archetypes.reduce((sum, a) => sum + a.weight, 0);
-  if (totalWeight <= 0) {
-    return null;
-  }
-  const roll = u01(hash4(geo.seed, kx, ky, kz, S_ARCH));
-  // roll over [0,1): archetypes stacked first, "none" fills the remainder
-  let acc = 0;
-  let chosen: ArchetypeParams | null = null;
-  for (const entry of preset.archetypes) {
-    acc += entry.weight;
-    if (roll < acc) {
-      chosen = entry.params;
-      break;
-    }
-  }
-  if (chosen === null) {
+  if (preset.archetypes.length === 0) {
     return null;
   }
   const coarseSize = preset.clusterCells * geo.cellSize;
@@ -248,6 +233,25 @@ function clusterAt(
     y: geo.originOffset + (ky + 0.25 + 0.5 * jy) * coarseSize,
     z: geo.originOffset + (kz + 0.25 + 0.5 * jz) * coarseSize,
   };
+  // Macro gates cluster EXISTENCE, not cluster intensity: thick belt regions
+  // grow more clusters, voids grow none, and every cluster that does exist is
+  // fully formed (multiplying intensities instead left faint half-clusters
+  // everywhere and crisp ones nowhere).
+  const macroHere = macroDensity(geo, preset.macro, center);
+  const roll = u01(hash4(geo.seed, kx, ky, kz, S_ARCH));
+  // roll over [0,1): macro-scaled archetypes stacked first, "none" = remainder
+  let acc = 0;
+  let chosen: ArchetypeParams | null = null;
+  for (const entry of preset.archetypes) {
+    acc += entry.weight * macroHere;
+    if (roll < acc) {
+      chosen = entry.params;
+      break;
+    }
+  }
+  if (chosen === null) {
+    return null;
+  }
   const radT = u01(hash4(geo.seed, kx, ky, kz, S_CLUSTER_RAD));
   const radius =
     coarseSize * (chosen.radiusFrac[0] + (chosen.radiusFrac[1] - chosen.radiusFrac[0]) * radT);
@@ -512,7 +516,9 @@ export function rocksInCell(
     }
   }
 
-  const expected = macro * (preset.baseDensity + drive);
+  // base scatter follows macro density; cluster rocks come at full strength
+  // (their existence was already macro-gated at cluster creation)
+  const expected = macro * preset.baseDensity + drive;
   if (expected <= 0) {
     return [];
   }

@@ -63,8 +63,8 @@ export const ringArc: ArchetypeParams = {
 export const drift: ArchetypeParams = {
   name: "drift",
   kind: "drift",
-  countScale: 0.5,
-  radiusFrac: [0.5, 0.8],
+  countScale: 1.1,
+  radiusFrac: [0.6, 1.0],
   sharpness: 0.05,
   radius: { kind: "uniform", min: 60, max: 280 },
   spinRange: [0.02, 0.08],
@@ -117,16 +117,16 @@ export const soloDrift = soloPreset(drift, 0.25);
 // clusters mix pockets/filaments with occasional sheets and ring arcs.
 export const beltV1: FieldPreset = {
   name: "belt-v1",
-  macro: { wavelength: 18000, octaves: 2, voidThreshold: 0.38, gamma: 1.6, floor: 0.04 },
+  macro: { wavelength: 24000, octaves: 2, voidThreshold: 0.45, gamma: 1.8, floor: 0.05 },
   clusterCells: 3,
   archetypes: [
-    { params: pocket, weight: 0.1 },
-    { params: filament, weight: 0.08 },
-    { params: sheet, weight: 0.04 },
-    { params: ringArc, weight: 0.03 },
-    { params: drift, weight: 0.3 },
+    { params: pocket, weight: 0.16 },
+    { params: filament, weight: 0.12 },
+    { params: sheet, weight: 0.06 },
+    { params: ringArc, weight: 0.05 },
+    { params: drift, weight: 0.45 },
   ],
-  baseDensity: 0.05,
+  baseDensity: 0.25,
   maxRocksPerCell: 8,
 };
 

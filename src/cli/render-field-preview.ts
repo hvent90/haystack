@@ -134,6 +134,7 @@ async function main(): Promise<void> {
   const { panels, framing } = buildPanels(presetName);
   const opts: PreviewOpts = {
     preset: presetName,
+    outName: arg("name") ?? presetName,
     caption: note.length > 0 ? `${presetName} — ${note}` : presetName,
     panels,
     panelWidth: Number(arg("width") ?? 1100),
