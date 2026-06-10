@@ -258,6 +258,8 @@ export type FroxelMediumParams = {
   // Isotropic ambient in-scatter: albedo tint × strength.
   albedo: { x: number; y: number; z: number };
   ambient: number;
+  // Distance (km) where the fog begins to fade. Defaults to FROXEL_FADE_START (17).
+  fadeStart?: number;
   // Phase-2 lights; omitted/null = ambient-only medium (the phase-1 behaviour).
   lights?: FroxelLightParams | null;
 };
@@ -339,8 +341,9 @@ export function froxelSigmaT(
   dist: number,
   sigmaScale: number,
   sigmaFloor: number,
+  fadeStart = FROXEL_FADE_START,
 ): number {
-  const t = Math.min(1, Math.max(0, (dist - FROXEL_FADE_START) / (FROXEL_FAR - FROXEL_FADE_START)));
+  const t = Math.min(1, Math.max(0, (dist - fadeStart) / (FROXEL_FAR - fadeStart)));
   const fade = 1 - t * t * (3 - 2 * t);
   return (remapBeltDensity(density01) * sigmaScale + sigmaFloor) * fade;
 }
@@ -364,7 +367,7 @@ export function froxelScatterCPU(
         const c = froxelCenterWorldMeters(x, y, z, p);
         // c is anchor-relative; the density bake is absolute-polar around the planet.
         const d = g === null ? 0 : sampleDensity(g, c.x + anchor.x, c.y + anchor.y, c.z + anchor.z);
-        const sigmaT = froxelSigmaT(d, c.dist, p.sigmaScale, p.sigmaFloor);
+        const sigmaT = froxelSigmaT(d, c.dist, p.sigmaScale, p.sigmaFloor, p.fadeStart);
         const trans = Math.exp(-sigmaT * sliceLen);
         let lr = p.ambient;
         let lg = p.ambient;

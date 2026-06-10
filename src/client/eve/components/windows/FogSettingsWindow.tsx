@@ -284,6 +284,32 @@ export function FogSettingsWindow(): ReactNode {
       </div>
 
       <div className="fog-section">
+        <h3>Falloff</h3>
+        <div className="fog-control">
+          <label>
+            Fade Start (0–24 km)
+            <input
+              type="range"
+              min="0"
+              max="24"
+              step="0.1"
+              value={effective.fadeStart}
+              onChange={(e) => updateTuning({ fadeStart: parseFloat(e.target.value) })}
+            />
+            <input
+              type="number"
+              min="0"
+              max="24"
+              step="0.1"
+              value={effective.fadeStart.toFixed(1)}
+              onChange={(e) => updateTuning({ fadeStart: parseFloat(e.target.value) || 0 })}
+            />
+          </label>
+          <div className="fog-readout">Fog ends at {effective.fadeStart.toFixed(1)} km</div>
+        </div>
+      </div>
+
+      <div className="fog-section">
         <h3>Other</h3>
         <div className="fog-control">
           <label>

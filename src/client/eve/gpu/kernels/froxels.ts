@@ -64,7 +64,6 @@ import {
 import {
   FROXEL_COUNT,
   FROXEL_D,
-  FROXEL_FADE_START,
   FROXEL_FAR,
   FROXEL_H,
   FROXEL_LOG_RATIO,
@@ -150,6 +149,8 @@ export type FroxelTuning = {
   flashStrength: number;
   // 0 = froxel composite off (passthrough), 1 = fully applied.
   mix: number;
+  // Distance (km) where the fog fades to transparent (falloff). Default 17 km.
+  fadeStart: number;
 };
 
 // The "ED milk" tuning (hv-approved 2026-06-10): warm rocky-ring dust at Elite
@@ -178,6 +179,7 @@ export const FROXEL_DEFAULTS: FroxelTuning = {
   hgG: 0.3,
   flashStrength: 1,
   mix: 1,
+  fadeStart: 17,
 };
 
 const uSigmaScale = uniform(FROXEL_DEFAULTS.sigmaScale);
@@ -189,6 +191,7 @@ const uAmbient = uniform(FROXEL_DEFAULTS.ambient);
 const uSunStrength = uniform(FROXEL_DEFAULTS.sunStrength);
 const uHgG = uniform(FROXEL_DEFAULTS.hgG);
 const uFroxelMix = uniform(FROXEL_DEFAULTS.mix);
+const uFadeStart = uniform(FROXEL_DEFAULTS.fadeStart);
 
 // Apply tuning (defaults overlaid with the WorldView debug-override object, if any) —
 // called once per frame from the render loop, same pattern as the shadow-tier switches.
@@ -202,6 +205,7 @@ export function applyFroxelTuning(override: Partial<FroxelTuning> | null): void 
   uHgG.value = t.hgG;
   flashTuningStrength = t.flashStrength;
   uFroxelMix.value = t.mix;
+  uFadeStart.value = t.fadeStart;
 }
 
 // --- the ship flashlight (analytic spot cone, scene units) -------------------------------
@@ -389,7 +393,7 @@ function sampleDensityTSL(world: ShaderNodeObject<THREE.Node>): FloatNode {
 
 // Far-handoff ease-out for sigma_t (mirrors froxels-cpu.froxelSigmaT's fade).
 function farFade(dist: FloatNode): FloatNode {
-  return smoothstep(float(FROXEL_FADE_START), float(FROXEL_FAR), dist).oneMinus();
+  return smoothstep(uFadeStart, float(FROXEL_FAR), dist).oneMinus();
 }
 
 // Density contrast ramp (mirrors shared/belt/field.ts remapBeltDensity, which
