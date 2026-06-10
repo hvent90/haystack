@@ -99,9 +99,7 @@ try {
   await page.waitForSelector("[data-testid='haystack-app']", { timeout: 30000 });
   // Close every open window so the screenshots show the 3D scene, not the UI layout.
   await page.evaluate(() => {
-    for (const button of document.querySelectorAll<HTMLButtonElement>(
-      "[data-testid$='-close']",
-    )) {
+    for (const button of document.querySelectorAll<HTMLButtonElement>("[data-testid$='-close']")) {
       button.click();
     }
   });
