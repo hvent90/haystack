@@ -1,0 +1,53 @@
+{
+  "name": "smoke",
+  "seed": 7,
+  "moons": [
+    {
+      "name": "korr",
+      "mass": 0.0008,
+      "a": 0.62,
+      "e": 0.005
+    },
+    {
+      "name": "veil",
+      "mass": 0.0025,
+      "a": 3.0,
+      "e": 0.03,
+      "inc": 0.005
+    }
+  ],
+  "belt": {
+    "n_particles": 30000,
+    "a_min": 1.0,
+    "a_max": 2.0,
+    "e_sigma": 0.03,
+    "inc_sigma": 0.015
+  },
+  "families": {
+    "count": 12,
+    "particle_fraction": 0.3,
+    "dv_over_vorb_min": 0.001,
+    "dv_over_vorb_max": 0.008,
+    "inject_window": [0.15, 0.995]
+  },
+  "integration": {
+    "n_orbits": 3000,
+    "dt_fraction": 0.05,
+    "cull_every_orbits": 40,
+    "e_max": 0.85,
+    "r_bounds": [0.25, 6.0]
+  },
+  "bake": {
+    "nr": 256,
+    "ntheta": 256,
+    "nz": 8,
+    "r_min": 0.5,
+    "r_max": 3.25,
+    "z_max": 0.09,
+    "hero_count": 2000,
+    "size_slope": 2.5,
+    "size_d_min": 1.0,
+    "size_d_max": 60.0,
+    "density_scale": 1.0
+  }
+}
