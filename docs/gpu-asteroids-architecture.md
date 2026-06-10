@@ -36,11 +36,11 @@ Three end-state properties define the architecture:
    ~1-rock-per-1130 m density (where rocks essentially never overlap) is **manufactured local density**:
    sparse gravity wells (Section 4.3) and authored dense belts.
 
-3. **Froxel volumetric lighting stays reachable.** The TSL post substrate (Section 5), MRT normal+depth,
-   readable depth, the `vec4`-SoA accumulator convention, and the shared count→scan→scatter binner all exist
-   for independently-required reasons (the WebGPU renderer and first-class collisions) and are exactly what a
-   froxel pass needs. The froxel prerequisites fall out of the architecture at near-zero added cost
-   (Section 6).
+3. **Froxel volumetric lighting is BUILT** (step 9, 2026-06-10). The TSL post substrate (Section 5), MRT
+   normal+depth, readable depth, the `vec4`-SoA accumulator convention, and the shared count→scan→scatter
+   binner all exist for independently-required reasons (the WebGPU renderer and first-class collisions) and
+   are exactly what the froxel pass consumes. See Section 6 for the as-built design
+   (`src/client/eve/gpu/kernels/froxels.ts`, CPU spec `froxels-cpu.ts`).
 
 ### 1.2 The two load-bearing guarantees
 
@@ -64,21 +64,24 @@ mutate uniforms (dt, originMeters, viewProj, gridOrigin, frameCounter)
   ├─ on cell-cross: genFieldOverlay re-seed crossed ring slabs   (overlay only; base uploaded — see §3.2)
   ├─ integrate/overlay step  (bounded wobble + quaternion spin + sparse K-well gravity)
   ├─ ── SHARED BINNER (count → scan → scatter), WORLD-SPACE instance ──  (collision broad phase)
-  ├─ collision narrow phase  (27-cell deferred-apply pushout + impulse, 1–2 substeps)
-  ├─ collision apply  (each lane writes only dp[i]/dv[i])
+  ├─ collision narrow phase  (27-cell deferred-apply pushout + impulse, 1–2 substeps; Nc==0-gated)
+  ├─ collision apply  (each lane writes only dp[i]/dv[i]; Nc==0-gated)
   ├─ GPU cull/LOD compaction → per-LOD IndirectStorageBufferAttribute
+  ├─ froxelScatter  (per-froxel: baked-density medium + up-sun rock-shadow march + flashlight cone)
+  ├─ froxelIntegrate  (in-place front-to-back Z prefix per X/Y column)
   │
   └─ render:
        scenePass + MRT(output, normal, [depth])
          → ScanPulse TSL node (samples MRT normal + depth)
-         → [future] froxelApply node            ← attaches HERE, before bloom
+         → froxelComposite node (depth-aware trilinear froxelAccum lookup; color·T + inScatter)
          → bloom()
          → renderOutput() / ACES tonemap
 ```
 
-The collision world grid is built **every frame before** the (future) froxel pass; froxels _read_ the world
-grid for volumetric rock shadows. Reading the grid does not reshape the collision grid to a frustum — the
-two stay separate instances (Section 6).
+The collision world grid is built **every frame before** the froxel pass (the binner half runs
+unconditionally; narrow+apply keep the Nc==0 gate); froxels _read_ the world grid for volumetric rock
+shadows. Reading the grid does not reshape the collision grid to a frustum — the two stay separate
+instances (Section 6).
 
 ---
 
@@ -137,11 +140,12 @@ tax the collision narrow-phase hot path (which wants the cell index recomputed i
 | `dp`   | `instancedArray(Nc,'vec4')` | positional correction xyz + contact count w. **Each lane writes ONLY its own `dp[i]`** (no atomics). |
 | `dv`   | `instancedArray(Nc,'vec4')` | velocity impulse, same single-owner rule.                                                            |
 
-### 2.5 Froxel-ready buffer (future; schema committed now)
+### 2.5 Froxel buffer (IMPLEMENTED — kernels/froxels.ts)
 
-| Buffer        | Type                                                       | Contents                        |
-| ------------- | ---------------------------------------------------------- | ------------------------------- |
-| `froxelAccum` | `instancedArray(160*90*64,'vec4')` index `z*W*H + y*W + x` | inScatter.rgb + transmittance.a |
+| Buffer         | Type                                                       | Contents                                                                                                             |
+| -------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `froxelAccum`  | `instancedArray(160*90*64,'vec4')` index `z*W*H + y*W + x` | inScatter.rgb + transmittance.a (per-slice after scatter; CUMULATIVE-to-slice-far-edge after the in-place integrate) |
+| `densityWords` | `instancedArray(2097152,'uint')` `.setPBO(true)`           | the baked belt density, full 1024·1024·8 uint8 packed 4 bytes/word (8.4 MB), CPU-uploaded once per bake              |
 
 `vec4`-SoA is the project-wide convention, chosen so it survives a `Storage3DTexture`-unavailable path and
 shares the `pos`/`velMass` storage-buffer toolchain. The `Storage3DTexture` fallback is a legitimate
@@ -428,10 +432,42 @@ refuses to start with an unsupported-browser message. There is no second renderi
 
 ---
 
-## 6. Froxel volumetric-lighting readiness
+## 6. Froxel volumetric lighting (IMPLEMENTED — step 9, 2026-06-10)
 
-The architecture stays compatible with a future froxel volumetric-lighting pass at near-zero added cost. The
-enabling substrate exists for independently-required end-state reasons.
+The froxel pass is built: `froxelScatter → froxelIntegrate` join the single per-frame compute submission and
+`froxelComposite` sits in the TSL post chain after ScanPulse, before bloom. Files:
+`src/client/eve/gpu/kernels/froxels.ts` (TSL kernels + composite + tuning uniforms),
+`src/client/eve/gpu/froxels-cpu.ts` (the f64 executable spec), `tests/integration/gpu-froxels.test.ts`
+(spec pins), and a `verifyFroxels` device gate in `verify:gpu` (GPU vs CPU on identical read-back inputs).
+The enabling substrate existed for independently-required end-state reasons, as designed below.
+
+**As built (deltas from the original sketch, all deliberate):**
+
+- **Z slices are log shells of RADIAL camera distance** (`length(viewPos)`, NEAR 0.05 → FAR 24 scene units,
+  ~11.7%/slice), not view `-z` — the composite re-derives the same metric from depth, so the depth-aware
+  lookup is exact by construction and floating-origin-safe (the `-getViewZ` trap, §5). The far handoff eases
+  σ_t out over 17→24 km; the haze annulus (fading in 22+ km) owns the distance. The old 9–18 km linear fog
+  band is retired; what remains of scene fog is a narrow 14.5–18 km draw-distance dissolve over the
+  `MAX_DRAW_SCENE` cull (whose math is untouched).
+- **The medium reads the baked density directly** (polar trilinear, theta-wrapped, full bake resolution as a
+  packed-u32 storage buffer — NOT a 3D texture: `textureSample` in a compute stage is fragment-only WGSL).
+  σ_t = density·sigmaScale + a tiny uniform floor; in-scatter = albedo · (ambient + sun + flashlight) ·
+  (1 − sliceT).
+- **The sun march is the `computeSunlit` port** (§6.3) with half-cell (384 m) steps over ~5.4 km and a
+  consecutive-cell dedupe, reading the collision grid via `cellStart`/`cellCount`/`sortedItems` over live
+  `pos`. ACCEPTED DELTA: it visits only cells the up-sun ray passes through (computeSunlit sweeps 27
+  neighbours per layer) — a rock in an off-path cell can clip the penumbra cone and be missed, soft
+  under-shadowing at ~1/14th the bandwidth. Pinned by an explicit test.
+- **No froxel binner instance.** The reserved §2.3 froxel `cellIndexOf` re-instantiation is NOT used: with
+  two lights (no light culling, §6.3's own argument) and the shadow march reading the WORLD grid, nothing
+  needs rocks binned into view-space cells. The binner stays shared-kernel-ready if that changes.
+- **Lights:** sun analytic + Henyey-Greenstein (g≈0.45 forward) gated by the march transmittance; OWN-ship
+  flashlight as an analytic spot cone in scene space (pose pushed by `ShipFlashlight` each frame; the fake
+  additive beam cone is retired for the own ship). Remote flashlights keep their cheap cones — not
+  volumetric, per the two-lights rule.
+- **Tuning uniforms** (`sigmaScale/sigmaFloor/albedo/ambient/sunStrength/hgG/flashStrength/mix`) with live
+  `__HAYSTACK_RENDER_DEBUG__.froxel({...})` overrides; capture harness
+  `scripts/bench/froxel-captures.mjs` shoots the spawn/dense/void/edge/up-sun/shaft/beam vantages.
 
 ### 6.1 Why the prerequisites already exist
 

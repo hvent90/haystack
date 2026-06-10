@@ -91,6 +91,14 @@ import {
 } from "../gpu/buffers";
 import { markRangesForUpload } from "../gpu/base-derive";
 import { FieldRingStream, mergeDirtyToRanges } from "../gpu/ring-stream";
+import {
+  applyFroxelTuning,
+  ensureFroxelDensity,
+  froxelCamWorld,
+  froxelProjInv,
+  makeFroxelPipeline,
+} from "../gpu/kernels/froxels";
+import { activeBeltField } from "../field-core";
 import { BeltFarField } from "./BeltFarField";
 // NOTE: the WebGL @react-three/postprocessing stack (ScanPulse + Bloom + ACES) cannot run under
 // WebGPURenderer; it is removed here and ported to the three-native TSL PostProcessing in step 2.
@@ -228,11 +236,7 @@ export function WorldView({
                 />
               ))}
             {viewMode === "third" ? (
-              <LocalShipMesh
-                fallbackOrientation={myShip.orientation}
-                navLightsOn={navLightsOn}
-                flashlightOn={flashlightOn}
-              />
+              <LocalShipMesh fallbackOrientation={myShip.orientation} navLightsOn={navLightsOn} />
             ) : null}
           </group>
         </ConditionalListenerRig>
@@ -1303,6 +1307,10 @@ function InstancedAsteroids({
   // Step 7: the collision pipeline + the deterministic wells that manufacture its density.
   const collision = useMemo(() => makeCollisionPipeline(), []);
   const wells = useMemo(() => deriveGravityWells(), []);
+  // Step 9: the froxel volumetric pipeline (scatter -> integrate; §6.5). View-space,
+  // rebuilt every frame, cosmetic-only — writes nothing the physics/cull pipeline reads.
+  // It READS the collision binner's world grid for the up-sun rock-shadow march (§6.3).
+  const froxel = useMemo(() => makeFroxelPipeline(collision.binner.buffers), [collision]);
 
   // Ring-stream base/packAttr/slotMeta from the app's already-derived field (the worker +
   // reconcile output) on each visible-set change — a CPU derive + buffer SUB-RANGE write,
@@ -1347,9 +1355,15 @@ function InstancedAsteroids({
     projScreen.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     lod.pipeline.updatePlanes(projScreen);
     gl.compute(genFieldOverlay);
-    // Collisions (§3.4 Nc==0 gate): only worth binning when a gravity well's clump can
-    // reach the near-window — the native field never overlaps. Skips the ENTIRE broad +
-    // narrow graph (and its fixed clear/scan floor) when no well is in range.
+    // The collision WORLD GRID is now built every frame (§1.3): the froxel sun-shadow
+    // march reads it, so the binner half runs unconditionally over the resident set.
+    const snapped = snapGridOrigin(origin);
+    gridOrigin.value.set(snapped.x, snapped.y, snapped.z);
+    for (const kernel of collision.binnerDispatches) {
+      gl.compute(kernel);
+    }
+    // Collision RESOLVE keeps the §3.4 Nc==0 gate: narrow+apply only when a gravity
+    // well's clump can reach the near-window — the native field never overlaps.
     const half = COLLISION_WINDOW_METERS / 2;
     const reach = half + WELL_SIGMA_METERS * 3;
     const collisionActive = wells.some((well) => {
@@ -1359,16 +1373,24 @@ function InstancedAsteroids({
       return dx * dx + dy * dy + dz * dz < reach * reach;
     });
     if (collisionActive) {
-      const snapped = snapGridOrigin(origin);
-      gridOrigin.value.set(snapped.x, snapped.y, snapped.z);
       collisionDt.value = Math.min(delta, 1 / 30); // fixed-ish dt, refocus-clamped (§4.4)
-      for (const kernel of collision.dispatches) {
+      for (const kernel of collision.resolveDispatches) {
         gl.compute(kernel);
       }
     }
     gl.compute(lod.pipeline.clearCull);
     gl.compute(lod.pipeline.cull);
     gl.compute(lod.pipeline.publishCounts);
+    // Froxel volumetrics (§6.5): upload the baked density once the async bake fetch lands
+    // (until then the medium is the sigmaFloor breath only), refresh the camera basis +
+    // tuning uniforms, and scatter+integrate into froxelAccum for this frame's composite.
+    ensureFroxelDensity(activeBeltField());
+    applyFroxelTuning(getRenderDebugControls().froxel);
+    froxelProjInv.value.copy(camera.projectionMatrixInverse);
+    froxelCamWorld.value.copy(camera.matrixWorld);
+    for (const kernel of froxel.dispatches) {
+      gl.compute(kernel);
+    }
   });
 
   if (asteroids.length === 0) {
@@ -1522,11 +1544,9 @@ function OtherShipMesh({
 function LocalShipMesh({
   fallbackOrientation,
   navLightsOn,
-  flashlightOn,
 }: {
   fallbackOrientation: { x: number; y: number; z: number; w: number };
   navLightsOn: boolean;
-  flashlightOn: boolean;
 }): ReactNode {
   const groupRef = useRef<Object3D>(null);
 
@@ -1548,7 +1568,9 @@ function LocalShipMesh({
         <meshStandardMaterial color="#b54f57" roughness={0.7} />
       </mesh>
       {navLightsOn ? <ShipNavLights /> : null}
-      {flashlightOn ? <FlashlightBeamCone /> : null}
+      {/* The fake additive beam cone is retired for the OWN ship: the froxel volumetric
+          flashlight (kernels/froxels.ts) renders the real scattering beam in third person.
+          Remote ships keep the cone — their flashlights are not volumetric (2-light rule). */}
     </group>
   );
 }

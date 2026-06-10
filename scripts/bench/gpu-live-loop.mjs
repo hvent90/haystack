@@ -426,6 +426,12 @@ try {
         const dbg = window.__HAYSTACK_RENDER_DEBUG__;
         dbg.lookDir(d);
         dbg.shadowTiers(t1, t2);
+        // Froxel fog OFF for the shadow A/B: the gate isolates the two SHADOW tiers, and
+        // the volumetric medium (extinction dims lit faces below the 90-lum baseline cut,
+        // in-scatter lifts blacks above 18) would otherwise swamp both thresholds — the
+        // post-froxel baseline collapsed 15k -> 470 lit samples. The froxel pass has its
+        // own device gate (verify:gpu verifyFroxels).
+        dbg.froxel({ mix: 0 });
       },
       [downSun, tier1, tier2],
     );
@@ -459,19 +465,19 @@ try {
     };
     shadowGate.pass =
       shadowGate.noise < 600 &&
-      // The scene must hold a meaningful lit field at all (legacy hash ≈ 15500 lit
-      // samples; belt-bake band ≈ 7800; ED-ring field ≈ 3500 — smaller rocks (20 m
-      // floor vs 55 m) and the tighter 11 km draw shrink total lit pixel area, so the
-      // tier floors below are RELATIVE to baselineLit rather than absolute counts).
+      // The scene must hold a meaningful lit field at all (history: legacy hash field
+      // ≈ 15500 lit / tier1 0.53 / tier2 0.15; belt 1M bake pre-power-law ≈ 7800 /
+      // 0.22 / 0.13; power-law main ≈ 3008 / 0.184 / 0.098; ED-ring slab ≈ 2100-3500 /
+      // 0.066 / 0.040 — smaller rocks (20 m floor) + the tighter 11 km draw shrink lit
+      // pixel area, so floors are RELATIVE to baselineLit rather than absolute counts).
       shadowGate.baselineLit > 2000 &&
-      // Each tier darkens (alive) but not everything (not a black wall). Measured
-      // healthy ratios vs baselineLit: legacy tier1 ≈ 0.53 / tier2 ≈ 0.15; belt 1M bake
-      // tier1 ≈ 0.22 / tier2 ≈ 0.13; ED-ring slab tier1 ≈ 0.066 / tier2 ≈ 0.040. The
-      // ED drop is geometry, not regression: a ±4 km slab lets the 38°-elevation sun
+      // Each tier darkens (alive) but not everything (not a black wall). The ED-slab
+      // ratios are geometry, not regression: a ±4 km slab lets the 38°-elevation sun
       // exit the rock layer within ~5 km (few rocks behind any caster to catch its
-      // shadow vs the old ±90 km cloud), and tier2 acts beyond 8 km where the 3.5/11
-      // fog has already extinguished ~80% of rock contrast. An all-dark regression
-      // ≈ 1.0 and fails the upper bounds; a dead tier fails the floors.
+      // shadow vs the old ±90 km cloud), and tier2 acts beyond 8 km where the draw
+      // dissolve has already eaten most rock contrast. The A/B runs at froxel mix 0,
+      // so these floors measure the unfogged image. A dead tier measures ≈ 1x noise;
+      // an all-dark regression ≈ 1.0 still trips the upper bounds.
       shadowGate.tier1Darkened > Math.max(0.045 * shadowGate.baselineLit, 2.5 * shadowGate.noise) &&
       shadowGate.tier1Darkened < 0.8 * shadowGate.baselineLit &&
       shadowGate.tier2Darkened > Math.max(0.028 * shadowGate.baselineLit, 1.8 * shadowGate.noise) &&
@@ -487,6 +493,7 @@ try {
     const dbg = window.__HAYSTACK_RENDER_DEBUG__;
     dbg.lookDir(null);
     dbg.shadowTiers(true, true);
+    dbg.froxel(null);
   });
 
   // --- Write all artifacts ---

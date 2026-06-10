@@ -81,15 +81,15 @@ export const shadowSoftRadius = 1;
 export const shadowBubbleFadeNear = 5;
 export const shadowBubbleFadeFar = 8;
 
-// Distance fog: a gentle far extinction toward the background colour (NOT a hard cutoff),
-// fully extinguishing rocks by the render distance so the distance cull (MAX_DRAW_SCENE)
-// drops only already-faded rocks. ED-ring tuning (research doc §5): detailed rocks live
-// in a ~5-11 km bubble dissolving into dust haze, so near 3.5 km / far 11 km — the
-// far half of the visible field reads as rocks sinking into ring dust. The colour is
-// warm-dark (rocky-ring dust) instead of the old blue-dark; WorldView's scene background
-// is the SAME colour so the fade-out lands exactly on the backdrop.
+// RETIRED as atmosphere (froxel volumetrics, architecture §6): the old linear fog band
+// is superseded by the froxel participating medium, whose extinction follows the baked
+// belt density (thick in clumps, clear in voids). What remains here is ONLY a narrow
+// draw-distance dissolve: the GPU cull retires rocks at MAX_DRAW_SCENE (11 km in the
+// ED-ring tuning, cull-cpu.ts), and in a near-void the structured medium is too thin to
+// hide that pop, so the last 3 km blend to the background colour (warm rocky-ring dust,
+// matched by WorldView's scene background).
 export const fogColor = "#080706";
-export const fogNear = 3.5;
+export const fogNear = 8;
 export const fogFar = 11;
 
 // Rotate the canonical camera-forward axis (0, 0, -1) by an orientation quaternion.
