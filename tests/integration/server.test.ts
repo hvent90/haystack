@@ -1072,15 +1072,18 @@ describe("haystack server", () => {
     );
     const payload = await response.json();
 
-    expect(payload.diagnostic.totalAsteroids).toBe(1_000_000);
-    expect(payload.diagnostic.indexKind).toBe("cubicCellHierarchy");
+    expect(payload.diagnostic.totalAsteroids).toBeGreaterThanOrEqual(1_000_000);
+    expect(payload.diagnostic.indexKind).toBe("beltBakeV1");
     expect(payload.diagnostic.cellsVisited).toBeLessThan(1_000_000);
-    expect(payload.diagnostic.materializedAsteroids).toBeLessThan(10_000);
+    // With the densified field (cellSize 1130, ~150x density) a 52 km radius holds
+    // ~(4π/3)·(52000/1130)³ ≈ 408k virtual rocks; the claim is that the scan stays
+    // bounded to the query sphere, far below the full million-rock field.
+    expect(payload.diagnostic.materializedAsteroids).toBeLessThan(500_000);
     expect(payload.diagnostic.hits.length).toBeGreaterThan(0);
 
     const snapshotResponse = await requireWorld().app.request(`/api/world?pilotId=${pilot.id}`);
     const snapshot = (await snapshotResponse.json()) as SnapshotProbe;
-    expect(snapshot.field.totalAsteroids).toBe(1_000_000);
+    expect(snapshot.field.totalAsteroids).toBeGreaterThanOrEqual(1_000_000);
     expect(snapshot.asteroids.length).toBeLessThanOrEqual(30 + snapshot.field.renderedLimit);
   });
 
@@ -1206,13 +1209,13 @@ function moveShipNear(pilotId: string, asteroidId: string): void {
 function moveShipToStation(pilotId: string): void {
   requireWorld()
     .db.query("UPDATE ships SET x = ?, y = ?, z = ?, vx = 0, vy = 0, vz = 0 WHERE pilot_id = ?")
-    .run(-7100, 20, 250, pilotId);
+    .run(1264900, 20, 250, pilotId);
 }
 
 function moveShipDeep(pilotId: string): void {
   requireWorld()
     .db.query("UPDATE ships SET x = ?, y = ?, z = ?, vx = 0, vy = 0, vz = 0 WHERE pilot_id = ?")
-    .run(76000, -3200, -41000, pilotId);
+    .run(1348000, -3200, -22000, pilotId);
 }
 
 function vectorMagnitude(vector: { x: number; y: number; z: number }): number {

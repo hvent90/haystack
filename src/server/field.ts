@@ -6,6 +6,15 @@ import type {
   ScanHit,
   Vector3,
 } from "../shared/types";
+import {
+  type BeltField,
+  beltCellCoords,
+  deriveBeltField,
+  makeBeltField,
+  queryBeltAsteroids,
+} from "../shared/belt/field";
+import { beltFieldInfo } from "../shared/belt/format";
+import { beltDensityScale, beltPresetName, fieldMode, loadBeltBakeSync } from "./belt-bake";
 
 type Cell = {
   x: number;
@@ -32,7 +41,77 @@ function renderedLimit(): number {
 const originOffset = -(cellsPerAxis * cellSize) / 2;
 const minerals: Mineral[] = ["nickel", "waterIce", "cobalt", "silicates", "platinum", "xenotime"];
 
+// --- belt mode (the default structure source; docs/asteroid-sim-impl-log.md) ----------
+//
+// Structure comes from the beltsim bake committed under public/belt/<preset>/: heroes,
+// density, zones, flow. Derivation lives in src/shared/belt/field.ts and is shared
+// bit-for-bit with the client. The legacy seeded-hash field below stays available as the
+// pure-noise baseline (HAYSTACK_FIELD=hash) and as a fallback when artifacts are absent.
+
+const beltField: BeltField | null = (() => {
+  if (fieldMode() !== "belt") {
+    return null;
+  }
+  const bake = loadBeltBakeSync(beltPresetName(), cellSize);
+  if (bake === null) {
+    console.warn(
+      `[field] belt bake "${beltPresetName()}" not found under public/belt/ — ` +
+        "falling back to the legacy hash field",
+    );
+    return null;
+  }
+  return makeBeltField(bake, fieldSeed, beltDensityScale());
+})();
+
+// Expected virtual-rock population of the belt: integrate the baked density (polar texel
+// volume in field-cell units x probability). Computed once at boot; informational.
+const beltTotalAsteroids: number = (() => {
+  if (beltField === null) {
+    return 0;
+  }
+  const { meta, worldScale } = beltField.bake;
+  const { nr, ntheta, nz, rMin, rMax, zMax } = meta.density;
+  const density = beltField.bake.density;
+  const dr = (rMax - rMin) / nr;
+  const dtheta = (2 * Math.PI) / ntheta;
+  const dz = (2 * zMax) / nz;
+  const cellVolume = cellSize * cellSize * cellSize;
+  let texelSum = 0;
+  // Sum density per r-ring first (texel volume depends only on r).
+  const perRing = new Float64Array(nr);
+  for (let ir = 0; ir < nr; ir += 1) {
+    let s = 0;
+    const base = ir * ntheta * nz;
+    for (let i = 0; i < ntheta * nz; i += 1) {
+      s += density[base + i]!;
+    }
+    perRing[ir] = s;
+  }
+  for (let ir = 0; ir < nr; ir += 1) {
+    const rMid = rMin + (ir + 0.5) * dr;
+    const texelVolumeWorld = rMid * dr * dtheta * dz * worldScale * worldScale * worldScale;
+    texelSum += (perRing[ir]! / 255) * beltField.pPeak * (texelVolumeWorld / cellVolume);
+  }
+  return Math.round(texelSum);
+})();
+
+// The loaded belt derivation (null in legacy hash mode) — handed to consumers that need
+// the shared belt math with the server's own bake (ship collision).
+export function serverBeltField(): BeltField | null {
+  return beltField;
+}
+
 export function fieldSummary(): FieldSummary {
+  if (beltField !== null) {
+    return {
+      totalAsteroids: beltTotalAsteroids,
+      seed: fieldSeed,
+      cellSize,
+      indexKind: "beltBakeV1",
+      renderedLimit: renderedLimit(),
+      belt: { ...beltFieldInfo(beltField.bake, beltDensityScale()), preset: beltPresetName() },
+    };
+  }
   return {
     totalAsteroids: cellsPerAxis * cellsPerAxis * cellsPerAxis,
     seed: fieldSeed,
@@ -47,6 +126,9 @@ export function queryVirtualAsteroids(
   radius: number,
   limit = renderedLimit(),
 ): QueryResult {
+  if (beltField !== null) {
+    return queryBeltAsteroids(beltField, origin, radius, limit);
+  }
   const boundedRadius = Math.max(cellSize, Math.min(radius, cellSize * 120));
   const min = worldToCell({
     x: origin.x - boundedRadius,
@@ -86,7 +168,7 @@ export function queryVirtualAsteroids(
 
 // Per-cell cache of the streamed field. The virtual field is global and fully
 // deterministic, so the nearest-`renderedLimit` rocks are a pure function of the
-// query cell — compute the (otherwise expensive) cubic cell scan once per cell and
+// query cell — compute the (otherwise expensive) cell scan once per cell and
 // reuse it. Bounded (LRU) so a roaming fleet can't grow it without limit.
 //
 // INVARIANT: cached arrays and their Asteroid objects are SHARED across peers and
@@ -100,8 +182,11 @@ const streamedFieldCacheLimit = 64;
 // is a pure function of the cell. This keeps the set byte-identical across ticks (the
 // 30Hz world-stream delta no longer re-sends the static field every frame as the ship
 // drifts within a cell) and changes only when the ship crosses a cell boundary.
+//
+// In belt mode sparse regions (gaps, the inner void) legitimately return fewer than
+// `renderedLimit` rocks — emptiness is the terrain.
 export function streamedFieldAsteroids(position: Vector3): Asteroid[] {
-  const cell = worldToCell(position);
+  const cell = fieldCellOf(position);
   const limit = renderedLimit();
   const key = streamFieldKey(cell, limit);
   const cached = streamedFieldCache.get(key);
@@ -112,7 +197,10 @@ export function streamedFieldAsteroids(position: Vector3): Asteroid[] {
     streamedFieldCache.set(key, cached);
     return cached;
   }
-  const asteroids = queryVirtualAsteroids(cellCenter(cell), 520000, limit).asteroids;
+  const asteroids =
+    beltField !== null
+      ? deriveBeltField(beltField, beltCellCenter(cell), limit)
+      : queryVirtualAsteroids(cellCenter(cell), 520000, limit).asteroids;
   if (streamedFieldCache.size >= streamedFieldCacheLimit) {
     const oldest = streamedFieldCache.keys().next().value;
     if (oldest !== undefined) {
@@ -121,6 +209,14 @@ export function streamedFieldAsteroids(position: Vector3): Asteroid[] {
   }
   streamedFieldCache.set(key, asteroids);
   return asteroids;
+}
+
+function fieldCellOf(position: Vector3): Cell {
+  if (beltField !== null) {
+    const { cx, cy, cz } = beltCellCoords(beltField, position);
+    return { x: cx, y: cy, z: cz };
+  }
+  return worldToCell(position);
 }
 
 function streamFieldKey(cell: Cell, limit: number): string {
@@ -132,7 +228,7 @@ function streamFieldKey(cell: Cell, limit: number): string {
 // world stream can detect "field unchanged this tick" without serializing the
 // nearest-`renderedLimit` (up to 100k) rock array. Mirrors the LRU cache key exactly.
 export function streamedFieldToken(position: Vector3): string {
-  return streamFieldKey(worldToCell(position), renderedLimit());
+  return streamFieldKey(fieldCellOf(position), renderedLimit());
 }
 
 function cellCenter(cell: Cell): Vector3 {
@@ -140,6 +236,15 @@ function cellCenter(cell: Cell): Vector3 {
     x: originOffset + cell.x * cellSize + cellSize / 2,
     y: originOffset + cell.y * cellSize + cellSize / 2,
     z: originOffset + cell.z * cellSize + cellSize / 2,
+  };
+}
+
+function beltCellCenter(cell: Cell): Vector3 {
+  const geo = beltField!.bake.geo;
+  return {
+    x: geo.originXY + cell.x * geo.cellSize + geo.cellSize / 2,
+    y: geo.originXY + cell.y * geo.cellSize + geo.cellSize / 2,
+    z: geo.originZ + cell.z * geo.cellSize + geo.cellSize / 2,
   };
 }
 
@@ -178,6 +283,8 @@ export function fieldDiagnostic(origin: Vector3, radius: number, limit: number):
     hits: virtualScanHits(origin, 1.2, radius, limit),
   };
 }
+
+// --- legacy hash field (the pure-noise baseline; HAYSTACK_FIELD=hash) -----------------
 
 function virtualAsteroidAt(cell: Cell): Asteroid {
   const seed = hashCell(cell);

@@ -1,4 +1,8 @@
-import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type {
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+  ReactNode,
+} from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   Asteroid,
@@ -79,8 +83,17 @@ import {
   replaceOwnedShip,
 } from "./prediction";
 import { FieldDeriver, withDerivedField } from "./field-derivation";
+import { ensureBeltBake } from "./belt-bake-loader";
+import { activeBeltField, beltReady } from "./field-core";
 import { getRenderDebugControls, renderStats } from "./render-stats";
 import { flightRenderStore } from "./renderStore";
+import {
+  loadViewMode,
+  orbitCamera,
+  saveOrbitDistance,
+  saveViewMode,
+  type ViewMode,
+} from "./cameraStore";
 import type {
   ChatChannel,
   ContextMenuState,
@@ -152,6 +165,8 @@ export function EveApp(): ReactNode {
   const [error, setError] = useState<string | null>(null);
   const [unreadComms, setUnreadComms] = useState(0);
   const [flightMode, setFlightMode] = useState<FlightMode>("cursor");
+  // Camera view (what you see) is independent of flight mode (what the mouse controls).
+  const [viewMode, setViewMode] = useState<ViewMode>(() => loadViewMode());
   const [throttle, setThrottle] = useState(0);
   const [keyboardThrottle, setKeyboardThrottle] = useState(0);
   const [cruiseLock, setCruiseLock] = useState(false);
@@ -172,6 +187,7 @@ export function EveApp(): ReactNode {
   const heldKeysRef = useRef<Set<string>>(new Set());
   const stageRef = useRef<HTMLDivElement | null>(null);
   const flightModeRef = useRef<FlightMode>("cursor");
+  const viewModeRef = useRef<ViewMode>(viewMode);
   const mouseDeflectionRef = useRef<Vector3>({ x: 0, y: 0, z: 0 });
   const flightInputScaleRef = useRef(flightInputScaleMax);
   const flightStateRef = useRef({ throttle: 0, cruiseLock: false });
@@ -468,11 +484,18 @@ export function EveApp(): ReactNode {
     }
 
     function wheel(event: WheelEvent): void {
-      if (flightModeRef.current !== "flight") {
+      if (flightModeRef.current === "flight") {
+        event.preventDefault();
+        setFlightInputScaleByWheel(event.deltaY);
         return;
       }
-      event.preventDefault();
-      setFlightInputScaleByWheel(event.deltaY);
+      // Third person + cursor mode: the wheel zooms the orbit camera. Only over the
+      // stage/canvas so UI lists still scroll, and never touching flightInputScale.
+      if (viewModeRef.current === "third" && isStageSurface(event.target)) {
+        event.preventDefault();
+        orbitCamera.zoomBy(event.deltaY);
+        saveOrbitDistance(orbitCamera.distance);
+      }
     }
 
     function blur(): void {
@@ -535,6 +558,12 @@ export function EveApp(): ReactNode {
         if (event.code === "KeyV") {
           event.preventDefault();
           setScanNonce((nonce) => nonce + 1);
+          return;
+        }
+        // Camera view toggle (C — V was already taken by the scan pulse above).
+        if (event.code === "KeyC") {
+          event.preventDefault();
+          toggleViewMode();
           return;
         }
       }
@@ -797,6 +826,7 @@ export function EveApp(): ReactNode {
       className="app-shell"
       data-testid="haystack-app"
       data-flight-mode={flightMode}
+      data-view-mode={viewMode}
       data-flight-input-scale={flightInputScale.toFixed(4)}
       data-throttle={effectiveThrottle.toFixed(2)}
       data-owned-x={myShip.position.x.toFixed(3)}
@@ -818,14 +848,16 @@ export function EveApp(): ReactNode {
         selected={selection}
         waypoint={waypoint}
         flightMode={flightMode}
+        viewMode={viewMode}
         mouseDeflection={mouseDeflection}
         flightInputScale={flightInputScale}
         flashlightOn={flashlightOn}
+        navLightsOn={navLightsOn}
         scanNonce={scanNonce}
         stageRef={stageRef}
         onSelect={selectTarget}
         onContextMenu={openContextMenu}
-        onRequestFlightLock={requestFlightLock}
+        onStagePointerDown={handleStagePointerDown}
         audioContext={audio.unlocked ? audio.engine.getContext() : null}
         audioVolume={spatialMasterVolume(audio.mix)}
       />
@@ -945,6 +977,7 @@ export function EveApp(): ReactNode {
         myShip={myShip}
         canUse={canUse}
         flightMode={flightMode}
+        viewMode={viewMode}
         throttle={effectiveThrottle}
         cruiseLock={cruiseLock}
         flashlightOn={flashlightOn}
@@ -1097,6 +1130,17 @@ export function EveApp(): ReactNode {
   // collisions exactly like the server. The seeded set arrives on the same wire paths as
   // the field deriver's setSeeded — call this wherever that is called.
   function seedCollisionEnvironment(field: FieldSummary, asteroids: Asteroid[]): void {
+    // Belt fields: prediction collides against the SAME bake-derived rocks as the server,
+    // so the registered bake must exist first. Until it loads, prediction runs without
+    // obstacles (a few boot frames; the server still resolves authoritatively) and this
+    // re-runs itself once the bake registers.
+    if (field.belt !== undefined && !beltReady(field)) {
+      void ensureBeltBake(field).then(() => {
+        collisionEnvKeyRef.current = null;
+        seedCollisionEnvironment(field, asteroids);
+      });
+      return;
+    }
     const seeded = asteroids.filter((asteroid) => !asteroid.id.startsWith("v-"));
     const key = `${field.seed}:${field.cellSize}:${field.totalAsteroids}:${seeded
       .map((asteroid) => asteroid.id)
@@ -1113,6 +1157,7 @@ export function EveApp(): ReactNode {
           position: asteroid.position,
           radius: asteroid.radius,
         })),
+        activeBeltField(),
       ),
     );
   }
@@ -1300,6 +1345,58 @@ export function EveApp(): ReactNode {
       );
     }
     return true;
+  }
+
+  function toggleViewMode(): void {
+    const next: ViewMode = viewModeRef.current === "first" ? "third" : "first";
+    viewModeRef.current = next;
+    setViewMode(next);
+    saveViewMode(next);
+  }
+
+  // Pointer-down on the world stage. First person (or third person while locked):
+  // unchanged — a canvas click requests pointer lock. Third person + cursor mode:
+  // left-drag orbits the camera; a click that never moves past the threshold still
+  // re-locks, so the "click the canvas to fly" habit keeps working. Pointer-downs on
+  // HUD/UI elements never reach the orbit (their event target is not the stage/canvas).
+  function handleStagePointerDown(event: ReactPointerEvent<HTMLDivElement>): void {
+    if (!(event.target === event.currentTarget || event.target instanceof HTMLCanvasElement)) {
+      return;
+    }
+    if (flightModeRef.current === "flight") {
+      return;
+    }
+    if (viewModeRef.current !== "third" || event.button !== 0) {
+      requestFlightLock();
+      return;
+    }
+    event.preventDefault();
+    const start = { x: event.clientX, y: event.clientY };
+    const last = { x: event.clientX, y: event.clientY };
+    let engaged = false;
+    const move = (moveEvent: PointerEvent): void => {
+      if (!engaged) {
+        engaged = Math.hypot(moveEvent.clientX - start.x, moveEvent.clientY - start.y) > 4;
+      }
+      if (engaged) {
+        // Orbit writes only to the camera store — never mouseDeflectionRef, never a
+        // FlightInputCommand. The ship keeps flying on its current inputs.
+        orbitCamera.orbitBy(moveEvent.clientX - last.x, moveEvent.clientY - last.y);
+      }
+      last.x = moveEvent.clientX;
+      last.y = moveEvent.clientY;
+    };
+    const finish = (finishEvent: PointerEvent): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      if (!engaged && finishEvent.type === "pointerup") {
+        requestFlightLock();
+      }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
   }
 
   function requestFlightLock(): void {
@@ -1609,6 +1706,14 @@ export function EveApp(): ReactNode {
 
 function messageFrom(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown error";
+}
+
+// True when an event hit the bare world stage or the WebGPU canvas (not HUD/UI).
+function isStageSurface(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLCanvasElement ||
+    (target instanceof HTMLElement && target.classList.contains("world-stage"))
+  );
 }
 
 // ~10.5Hz minimum interval between React snapshot commits. The 30Hz world stream is

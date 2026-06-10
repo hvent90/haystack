@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import type { CSSProperties, ReactNode } from "react";
 import type { Ship, Vector3 } from "../../../shared/types";
+import type { ViewMode } from "../cameraStore";
 import type { FlightMode } from "../types";
 import { meters, vectorMagnitude } from "../vector";
 
@@ -16,6 +17,7 @@ export function HudCluster({
   myShip,
   canUse,
   flightMode,
+  viewMode,
   throttle,
   cruiseLock,
   flashlightOn,
@@ -30,6 +32,7 @@ export function HudCluster({
   myShip: Ship;
   canUse: boolean;
   flightMode: FlightMode;
+  viewMode: ViewMode;
   throttle: number;
   cruiseLock: boolean;
   flashlightOn: boolean;
@@ -212,6 +215,18 @@ export function HudCluster({
         >
           <kbd>L</kbd> nav lights {navLightsOn ? "on" : "off"}
         </span>
+        <span
+          className={viewMode === "third" ? "hud-keybind on" : "hud-keybind"}
+          data-testid="hud-keybind-camera"
+          data-view-mode={viewMode}
+        >
+          <kbd>C</kbd> camera {viewMode === "third" ? "3rd person" : "1st person"}
+        </span>
+        {viewMode === "third" && flightMode === "cursor" ? (
+          <span className="hud-keybind" data-testid="hud-keybind-orbit">
+            <kbd>drag</kbd> orbit <kbd>scroll</kbd> zoom
+          </span>
+        ) : null}
       </div>
     </section>
   );

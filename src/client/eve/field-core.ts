@@ -1,4 +1,12 @@
 import type { Asteroid, FieldSummary, Mineral, Vector3 } from "../../shared/types";
+import {
+  type BeltField,
+  deriveBeltField,
+  makeBeltField,
+  pocketForZone,
+  zoneAtRadius,
+} from "../../shared/belt/field";
+import type { BeltBake } from "../../shared/belt/format";
 
 // Pure, dependency-free reconstruction of the deterministic virtual asteroid field.
 //
@@ -16,6 +24,43 @@ import type { Asteroid, FieldSummary, Mineral, Vector3 } from "../../shared/type
 // (sub-nanometre) and never a correctness issue.
 
 const MINERALS: Mineral[] = ["nickel", "waterIce", "cobalt", "silicates", "platinum", "xenotime"];
+
+// --- belt mode -------------------------------------------------------------------------
+//
+// When the server publishes a belt-bake field (FieldSummary.belt), structure comes from
+// the shared belt derivation (src/shared/belt/field.ts) over artifacts fetched from
+// public/belt/<preset>/ (belt-bake-loader.ts). The bake is registered here once per
+// realm (main thread and the field worker each register their own copy of the same
+// bytes), after which every derive below routes through it.
+
+let activeBelt: BeltField | null = null;
+let activeBeltPreset: string | null = null;
+
+export function setActiveBeltBake(bake: BeltBake, field: FieldSummary): void {
+  if (field.belt === undefined) {
+    throw new Error("setActiveBeltBake: field summary has no belt block");
+  }
+  if (bake.geo.cellsXY !== field.belt.cellsXY || bake.geo.cellsZ !== field.belt.cellsZ) {
+    throw new Error(
+      `belt bake grid ${bake.geo.cellsXY}x${bake.geo.cellsZ} != server ` +
+        `${field.belt.cellsXY}x${field.belt.cellsZ} — artifact/preset mismatch`,
+    );
+  }
+  activeBelt = makeBeltField(bake, field.seed, field.belt.densityScale);
+  activeBeltPreset = field.belt.preset;
+}
+
+export function activeBeltField(): BeltField | null {
+  return activeBelt;
+}
+
+// True when derives for this field summary can run now (legacy fields always can; belt
+// fields need their bake registered first).
+export function beltReady(field: FieldSummary): boolean {
+  return (
+    field.belt === undefined || (activeBelt !== null && activeBeltPreset === field.belt.preset)
+  );
+}
 
 function hashCell(seed: number, x: number, y: number, z: number): number {
   return seed + x * 73856093 + y * 19349663 + z * 83492791;
@@ -65,6 +110,18 @@ export function cellCoords(
   position: Vector3,
   field: FieldSummary,
 ): { cx: number; cy: number; cz: number } {
+  if (field.belt !== undefined) {
+    // Belt grids are non-cubic; geometry comes from the summary's belt block alone so
+    // cell-cross detection works even before the bake bytes are registered.
+    const cellSize = field.cellSize;
+    const originXY = -(field.belt.cellsXY * cellSize) / 2;
+    const originZ = -(field.belt.cellsZ * cellSize) / 2;
+    return {
+      cx: clampCell(Math.floor((position.x - originXY) / cellSize), field.belt.cellsXY),
+      cy: clampCell(Math.floor((position.y - originXY) / cellSize), field.belt.cellsXY),
+      cz: clampCell(Math.floor((position.z - originZ) / cellSize), field.belt.cellsZ),
+    };
+  }
   const geo = geometryOf(field);
   return {
     cx: clampCell(Math.floor((position.x - geo.originOffset) / geo.cellSize), geo.cellsPerAxis),
@@ -101,6 +158,15 @@ function virtualAsteroidAt(geo: FieldGeometry, cx: number, cy: number, cz: numbe
 // nearest `renderedLimit` (the limit-th rock is closer than any unscanned cell) or spans
 // the whole field. This is O(rendered) rather than the server's old O(field) full scan.
 export function deriveVirtualField(position: Vector3, field: FieldSummary): Asteroid[] {
+  if (field.belt !== undefined) {
+    if (!beltReady(field)) {
+      throw new Error(
+        `deriveVirtualField: belt bake "${field.belt.preset}" not registered ` +
+          "(callers must gate on beltReady / ensureBeltBake first)",
+      );
+    }
+    return deriveBeltField(activeBelt!, position, Math.max(1, field.renderedLimit));
+  }
   const geo = geometryOf(field);
   const last = geo.cellsPerAxis - 1;
   const cx = clampCell(
@@ -256,10 +322,17 @@ export function unpackField(
     const cellKey = cellKeyOf(cx, cy, cz);
     let asteroid = reuse?.get(cellKey);
     if (asteroid === undefined) {
+      const x = positions[i * 3]!;
+      const y = positions[i * 3 + 1]!;
+      // Belt rocks carry zone-driven pockets (a function of the rock's radial position);
+      // legacy rocks keep the coordinate-band pockets. Both are pure recomputes, so the
+      // unpacked object deep-equals the original derive.
+      const pocket =
+        activeBelt !== null ? pocketForZone(zoneAtRadius(activeBelt, x, y)) : pocketForCell(cx);
       asteroid = {
         id: `v-${cx}-${cy}-${cz}`,
-        pocket: pocketForCell(cx),
-        position: { x: positions[i * 3]!, y: positions[i * 3 + 1]!, z: positions[i * 3 + 2]! },
+        pocket,
+        position: { x, y, z: positions[i * 3 + 2]! },
         radius: scalars[i * 3]!,
         signature: scalars[i * 3 + 1]!,
         mineralRichness: scalars[i * 3 + 2]!,

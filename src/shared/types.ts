@@ -93,12 +93,27 @@ export type Structure = {
   discovered: boolean;
 };
 
+// Published by the server when the field's structure source is a belt bake
+// (beltsim sim->bake artifacts under public/belt/<preset>/). The client uses it to fetch
+// the matching artifacts and reconstruct the IDENTICAL grid; pMax/densityScale are the
+// runtime density knobs (cheap to change: no re-sim, no re-bake).
+export type BeltFieldInfo = {
+  preset: string;
+  formatVersion: number;
+  worldScale: number; // meters per normalized sim unit
+  pMax: number; // rocks per field cell where baked density peaks (u8 = 255)
+  densityScale: number; // global density multiplier
+  cellsXY: number; // field grid cells per x/y axis (non-cubic: belt is quasi-2D)
+  cellsZ: number;
+};
+
 export type FieldSummary = {
   totalAsteroids: number;
   seed: number;
   cellSize: number;
-  indexKind: "cubicCellHierarchy";
+  indexKind: "cubicCellHierarchy" | "beltBakeV1";
   renderedLimit: number;
+  belt?: BeltFieldInfo;
 };
 
 export type ChatMessage = {

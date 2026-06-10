@@ -11,7 +11,9 @@ import {
   type CollisionSphere,
 } from "../../src/shared/collision";
 import { deriveVirtualField } from "../../src/client/eve/field-core";
-import { fieldSummary } from "../../src/server/field";
+import { fieldSummary, serverBeltField } from "../../src/server/field";
+import { loadBeltBakeSync } from "../../src/server/belt-bake";
+import { setActiveBeltBake } from "../../src/client/eve/field-core";
 import {
   applyShipCommandForPrediction,
   integrateShipTick,
@@ -20,6 +22,13 @@ import {
 import type { FlightInputCommand, Ship, Vector3 } from "../../src/shared/types";
 
 const field = fieldSummary();
+// Belt mode: client-side derives (deriveVirtualField) need the bake registered, the
+// same artifacts the server loaded from public/belt/.
+if (field.belt !== undefined) {
+  const bake = loadBeltBakeSync(field.belt.preset, field.cellSize);
+  if (bake === null) throw new Error("belt bake artifacts missing");
+  setActiveBeltBake(bake, field);
+}
 
 function emptyEnvironment() {
   return makeShipCollisionEnvironment(null, []);
@@ -64,13 +73,13 @@ function nearestDerivedRock(origin: Vector3): { position: Vector3; radius: numbe
 describe("shared ship collision", () => {
   test("virtual obstacle derivation matches the parity-gated field math exactly", () => {
     const samples: Vector3[] = [
-      { x: -7100, y: 20, z: 250 },
-      { x: 0, y: 0, z: 0 },
-      { x: 12345, y: -23456, z: 34567 },
-      { x: -56499, y: 56499, z: -56499 },
+      { x: 1264900, y: 20, z: 250 },
+      { x: 1250000, y: 1200, z: 8000 },
+      { x: 1348000, y: -3200, z: -22000 },
+      { x: 1454000, y: 16000, z: 24000 },
     ];
     for (const origin of samples) {
-      const env = makeShipCollisionEnvironment(field, []);
+      const env = makeShipCollisionEnvironment(field, [], serverBeltField());
       const obstacles = env.obstaclesForSegment(origin, origin);
       expect(obstacles.length).toBeGreaterThan(0);
       const derived = deriveVirtualField(origin, { ...field, renderedLimit: 200 });
@@ -128,9 +137,9 @@ describe("shared ship collision", () => {
   });
 
   test("integrateShipTick with a collision environment stops a ship flying into a virtual rock", () => {
-    const origin: Vector3 = { x: -7100, y: 20, z: 250 };
+    const origin: Vector3 = { x: 1264900, y: 20, z: 250 };
     const rock = nearestDerivedRock(origin);
-    const env = makeShipCollisionEnvironment(field, []);
+    const env = makeShipCollisionEnvironment(field, [], serverBeltField());
 
     // Start outside the rock and fly straight at its center at 200 m/s.
     const startDistance = rock.radius + SHIP_COLLISION_RADIUS + 400;
@@ -171,9 +180,9 @@ describe("shared ship collision", () => {
   });
 
   test("prediction and server integrate identically through a collision", () => {
-    const origin: Vector3 = { x: -7100, y: 20, z: 250 };
+    const origin: Vector3 = { x: 1264900, y: 20, z: 250 };
     const rock = nearestDerivedRock(origin);
-    const env = makeShipCollisionEnvironment(field, []);
+    const env = makeShipCollisionEnvironment(field, [], serverBeltField());
     const command: FlightInputCommand = {
       kind: "flight",
       throttle: 1,
@@ -333,7 +342,7 @@ describe("shared ship collision", () => {
       expect(response.status).toBe(201);
       const row = db.query("SELECT pilot_id FROM ships").get() as { pilot_id: string };
 
-      const origin: Vector3 = { x: -7100, y: 20, z: 250 };
+      const origin: Vector3 = { x: 1264900, y: 20, z: 250 };
       const rock = nearestDerivedRock(origin);
       const approach = rock.radius + SHIP_COLLISION_RADIUS + 600;
       const direction = {
@@ -432,7 +441,7 @@ describe("shared ship collision", () => {
         z: number;
       }>;
       expect(ships).toHaveLength(3);
-      const spawnCenter: Vector3 = { x: -7100, y: 20, z: 250 };
+      const spawnCenter: Vector3 = { x: 1264900, y: 20, z: 250 };
       for (let i = 0; i < ships.length; i += 1) {
         const ship = ships[i]!;
         // Near the station spawn (mining/scan distances unaffected)...

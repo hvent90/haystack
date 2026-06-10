@@ -8,6 +8,7 @@
 // coupling.
 
 import type { FieldSummary, Vector3 } from "../../shared/types";
+import { ensureBeltBake } from "./belt-bake-loader";
 import { deriveVirtualField, packField, type PackedField } from "./field-core";
 import { sunlitForId } from "./sun-occlusion";
 
@@ -38,8 +39,12 @@ type WorkerScope = {
 
 const ctx = self as unknown as WorkerScope;
 
-ctx.onmessage = (event) => {
+ctx.onmessage = async (event) => {
   const { reqId, key, position, field } = event.data;
+  // Belt fields need the bake artifacts before the first derive. The fetch happens once
+  // per worker lifetime (ensureBeltBake is idempotent) and the deriver holds at most one
+  // request in flight, so awaiting here just delays the first response a little.
+  await ensureBeltBake(field);
   const asteroids = deriveVirtualField(position, field);
   const packed = packField(asteroids);
   const sunlit = new Float64Array(asteroids.length);

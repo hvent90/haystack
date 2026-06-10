@@ -1,5 +1,11 @@
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode, RefObject } from "react";
+import type {
+  CSSProperties,
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+  ReactNode,
+  RefObject,
+} from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AdditiveBlending,
@@ -28,6 +34,7 @@ import { flightInputScaleMax, flightInputScaleMin } from "../constants";
 import { clamp, formatDistance, toScene, vectorMagnitude } from "../vector";
 import { sameSelection } from "../overview";
 import { flightRenderStore } from "../renderStore";
+import { cameraBlendSec, chaseHeightRatio, orbitCamera, type ViewMode } from "../cameraStore";
 import {
   flashlightColor,
   fogColor,
@@ -124,14 +131,16 @@ export function WorldView({
   selected,
   waypoint,
   flightMode,
+  viewMode,
   mouseDeflection,
   flightInputScale,
   flashlightOn,
+  navLightsOn,
   scanNonce,
   stageRef,
   onSelect,
   onContextMenu,
-  onRequestFlightLock,
+  onStagePointerDown,
   audioContext,
   audioVolume,
 }: {
@@ -148,14 +157,16 @@ export function WorldView({
   selected: Selection | null;
   waypoint: Waypoint | null;
   flightMode: FlightMode;
+  viewMode: ViewMode;
   mouseDeflection: { x: number; y: number; z: number };
   flightInputScale: number;
   flashlightOn: boolean;
+  navLightsOn: boolean;
   scanNonce: number;
   stageRef: RefObject<HTMLDivElement | null>;
   onSelect: (selection: Selection) => void;
   onContextMenu: (event: ReactMouseEvent<HTMLElement>, target: Selection | null) => void;
-  onRequestFlightLock: () => void;
+  onStagePointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
   audioContext: AudioContext | null;
   audioVolume: number;
 }): ReactNode {
@@ -169,11 +180,7 @@ export function WorldView({
     <div
       className={`world-stage ${flightMode === "flight" ? "flight-mode" : "cursor-mode"}`}
       ref={stageRef}
-      onPointerDown={(event) => {
-        if (event.target === event.currentTarget || event.target instanceof HTMLCanvasElement) {
-          onRequestFlightLock();
-        }
-      }}
+      onPointerDown={onStagePointerDown}
       onContextMenu={(event) => onContextMenu(event, null)}
     >
       <Canvas
@@ -183,7 +190,7 @@ export function WorldView({
         camera={{ position: [0, 0.12, 0], fov: 68, near: 0.01, far: 20000 }}
         dpr={[1, 1.5]}
       >
-        <RenderDriver fallbackShip={myShip} />
+        <RenderDriver fallbackShip={myShip} viewMode={viewMode} flightMode={flightMode} />
         <SceneProjection
           rows={bracketRows}
           myShip={myShip}
@@ -220,16 +227,27 @@ export function WorldView({
                   audioContext={audioContext}
                 />
               ))}
+            {viewMode === "third" ? (
+              <LocalShipMesh
+                fallbackOrientation={myShip.orientation}
+                navLightsOn={navLightsOn}
+                flashlightOn={flashlightOn}
+              />
+            ) : null}
           </group>
         </ConditionalListenerRig>
         <ScenePostProcessing scanNonce={scanNonce} />
       </Canvas>
-      <div
-        className="reticle"
-        data-testid="hud-reticle"
-        data-angular-stable={angularStable}
-        data-angular-speed-degrees-per-second={((angularSpeed * 180) / Math.PI).toFixed(2)}
-      />
+      {/* The reticle marks the cockpit view axis; in third person the camera axis is not
+          the nose (orbit mode especially), so it is hidden rather than projected. */}
+      {viewMode === "first" ? (
+        <div
+          className="reticle"
+          data-testid="hud-reticle"
+          data-angular-stable={angularStable}
+          data-angular-speed-degrees-per-second={((angularSpeed * 180) / Math.PI).toFixed(2)}
+        />
+      ) : null}
       <FlightInputScaleMeter scale={flightInputScale} />
       <FlightVectorLayer
         velocityPoint={screenPoints["velocity"]}
@@ -1058,18 +1076,43 @@ function SelectionArrowLayer({ arrow }: { arrow: SelectionArrow | null }): React
 }
 
 // First child in the scene: advances the render store once per frame (must run
-// before any consumer samples it), drives the first-person camera from the
-// smoothed owned orientation, and exposes the rendered origin for measurement.
-function RenderDriver({ fallbackShip }: { fallbackShip: Ship }): null {
+// before any consumer samples it), drives the camera from the smoothed owned
+// orientation, and exposes the rendered origin for measurement. The camera has three
+// poses — first-person cockpit, third-person chase (pointer locked), and third-person
+// orbit (cursor free, EVE-style) — and every pose change eases from the camera's
+// current transform over cameraBlendSec so no transition snaps. This stays the single
+// writer of the camera transform per frame.
+function RenderDriver({
+  fallbackShip,
+  viewMode,
+  flightMode,
+}: {
+  fallbackShip: Ship;
+  viewMode: ViewMode;
+  flightMode: FlightMode;
+}): null {
   const cockpit = useMemo(() => new ThreeVector3(0, 0.12, 0), []);
-  const cockpitWorld = useMemo(() => new ThreeVector3(), []);
   const quaternion = useMemo(() => new ThreeQuaternion(), []);
   // Pitch the camera 90° up about its right axis (R_x(+90°)), used only by the
   // benchmark's faceAway control to look straight along world +Y into the void
   // above the lifted camera. See the faceAway block below.
   const lookUp = useMemo(() => new ThreeQuaternion(Math.SQRT1_2, 0, 0, Math.SQRT1_2), []);
   const lookTarget = useMemo(() => new ThreeVector3(), []);
+  const targetPos = useMemo(() => new ThreeVector3(), []);
+  const targetQuat = useMemo(() => new ThreeQuaternion(), []);
+  const fromPos = useMemo(() => new ThreeVector3(), []);
+  const fromQuat = useMemo(() => new ThreeQuaternion(), []);
+  // Chase direction in ship space: behind (+Z) and above, scaled by the orbit distance
+  // so the wheel zoom persists between cursor-mode orbiting and locked chase flight.
+  const chaseDir = useMemo(() => new ThreeVector3(0, chaseHeightRatio, 1).normalize(), []);
+  const orbitLook = useMemo(() => new Matrix4(), []);
+  const worldUp = useMemo(() => new ThreeVector3(0, 1, 0), []);
+  const sceneOrigin = useMemo(() => new ThreeVector3(0, 0, 0), []);
   const infoArmed = useRef(false);
+  const poseSignatureRef = useRef<string | null>(null);
+  const blendRef = useRef(1);
+  const modeRef = useRef({ viewMode, flightMode });
+  modeRef.current = { viewMode, flightMode };
 
   useFrame(({ camera, gl }, delta) => {
     // renderer.info auto-resets on every internal render() call, and the
@@ -1084,13 +1127,59 @@ function RenderDriver({ fallbackShip }: { fallbackShip: Ship }): null {
     gl.info.reset();
 
     flightRenderStore.advance(delta);
+    const { viewMode: view, flightMode: mode } = modeRef.current;
     const orientation = flightRenderStore.hasOwned()
       ? flightRenderStore.ownedRenderQuaternion()
       : fallbackShip.orientation;
     quaternion.set(orientation.x, orientation.y, orientation.z, orientation.w).normalize();
-    cockpitWorld.copy(cockpit).applyQuaternion(quaternion);
-    camera.position.copy(cockpitWorld);
-    camera.quaternion.copy(quaternion);
+
+    if (view === "third" && mode === "cursor") {
+      // EVE-style orbit: a world-frame yaw/pitch/distance around the ship (always the
+      // scene origin under the floating origin), cursor visible, fully decoupled from
+      // ship state — the ship keeps flying on its current inputs while you look around.
+      orbitCamera.offsetInto(targetPos);
+      orbitLook.lookAt(targetPos, sceneOrigin, worldUp);
+      targetQuat.setFromRotationMatrix(orbitLook);
+    } else if (view === "third") {
+      // Chase: behind/above the ship in ship space, view axis parallel to the nose so
+      // mouse steering reads exactly as it does in first person.
+      targetPos.copy(chaseDir).multiplyScalar(orbitCamera.distance).applyQuaternion(quaternion);
+      targetQuat.copy(quaternion);
+    } else {
+      targetPos.copy(cockpit).applyQuaternion(quaternion);
+      targetQuat.copy(quaternion);
+    }
+
+    const signature = `${view}:${mode}`;
+    const previous = poseSignatureRef.current;
+    if (previous === null) {
+      poseSignatureRef.current = signature;
+    } else if (previous !== signature) {
+      // Ease every pose change from the camera's current transform. Unlocking out of
+      // chase also adopts the chase angles so the orbit starts where the camera is
+      // (distance is kept — the persisted zoom survives lock/unlock round trips).
+      fromPos.copy(camera.position);
+      fromQuat.copy(camera.quaternion);
+      blendRef.current = 0;
+      if (previous === "third:flight" && signature === "third:cursor") {
+        orbitCamera.seedAnglesFromOffset(camera.position.x, camera.position.y, camera.position.z);
+        orbitCamera.offsetInto(targetPos);
+        orbitLook.lookAt(targetPos, sceneOrigin, worldUp);
+        targetQuat.setFromRotationMatrix(orbitLook);
+      }
+      poseSignatureRef.current = signature;
+    }
+
+    if (blendRef.current < 1) {
+      blendRef.current = Math.min(1, blendRef.current + delta / cameraBlendSec);
+      const t = blendRef.current;
+      const eased = t * t * (3 - 2 * t);
+      camera.position.lerpVectors(fromPos, targetPos, eased);
+      camera.quaternion.slerpQuaternions(fromQuat, targetQuat, eased);
+    } else {
+      camera.position.copy(targetPos);
+      camera.quaternion.copy(targetQuat);
+    }
     const debug = getRenderDebugControls();
     // Benchmark-only shadow-tier A/B switches (1 = on; 0 forces the term to fully lit).
     shadowTier1Enable.value = debug.shadowTier1 ? 1 : 0;
@@ -1099,9 +1188,9 @@ function RenderDriver({ fallbackShip }: { fallbackShip: Ship }): null {
       // Benchmark-only orientation override: look along a fixed world direction (the world
       // group is only translated, never rotated, so scene direction == world direction).
       lookTarget.set(
-        cockpitWorld.x + debug.lookDir.x,
-        cockpitWorld.y + debug.lookDir.y,
-        cockpitWorld.z + debug.lookDir.z,
+        camera.position.x + debug.lookDir.x,
+        camera.position.y + debug.lookDir.y,
+        camera.position.z + debug.lookDir.z,
       );
       camera.lookAt(lookTarget);
     }
@@ -1124,11 +1213,34 @@ function RenderDriver({ fallbackShip }: { fallbackShip: Ship }): null {
           __probe?: {
             owned: Vector3;
             ownedQuat: { x: number; y: number; z: number; w: number };
+            viewMode: ViewMode;
+            flightMode: FlightMode;
+            camera: {
+              position: Vector3;
+              quaternion: { x: number; y: number; z: number; w: number };
+            };
+            orbit: { yawRad: number; pitchRad: number; distance: number };
           };
         }
       ).__probe = {
         owned: { x: origin.x, y: origin.y, z: origin.z },
         ownedQuat: { x: quaternion.x, y: quaternion.y, z: quaternion.z, w: quaternion.w },
+        viewMode: view,
+        flightMode: mode,
+        camera: {
+          position: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
+          quaternion: {
+            x: camera.quaternion.x,
+            y: camera.quaternion.y,
+            z: camera.quaternion.z,
+            w: camera.quaternion.w,
+          },
+        },
+        orbit: {
+          yawRad: orbitCamera.yawRad,
+          pitchRad: orbitCamera.pitchRad,
+          distance: orbitCamera.distance,
+        },
       };
     }
   });
@@ -1397,6 +1509,46 @@ function OtherShipMesh({
   );
 }
 
+// The player's own ship, rendered only in third person (in first person the camera sits
+// inside it). Same visual treatment as remote ships — cone hull, nav lights, flashlight
+// beam cone — but driven from the smoothed owned render transform so it is frame-smooth
+// under thrust and rotation, never snapshot-stepped. The group's position stays at the
+// scene origin: the floating origin pins the owned ship there. Illumination still comes
+// from ShipFlashlight (the shadow-casting spotlight); this adds the visible beam volume.
+function LocalShipMesh({
+  fallbackOrientation,
+  navLightsOn,
+  flashlightOn,
+}: {
+  fallbackOrientation: { x: number; y: number; z: number; w: number };
+  navLightsOn: boolean;
+  flashlightOn: boolean;
+}): ReactNode {
+  const groupRef = useRef<Object3D>(null);
+
+  useFrame(() => {
+    const group = groupRef.current;
+    if (group === null) {
+      return;
+    }
+    const orientation = flightRenderStore.hasOwned()
+      ? flightRenderStore.ownedRenderQuaternion()
+      : fallbackOrientation;
+    group.quaternion.set(orientation.x, orientation.y, orientation.z, orientation.w).normalize();
+  });
+
+  return (
+    <group ref={groupRef}>
+      <mesh scale={[0.08, 0.08, 0.08]} receiveShadow>
+        <coneGeometry args={[0.6, 1.4, 4]} />
+        <meshStandardMaterial color="#b54f57" roughness={0.7} />
+      </mesh>
+      {navLightsOn ? <ShipNavLights /> : null}
+      {flashlightOn ? <FlashlightBeamCone /> : null}
+    </group>
+  );
+}
+
 // Soft round dot for the nav strobe beacon (a textureless sprite renders as a hard
 // square). Built lazily once and shared by every remote ship.
 let beaconDotTexture: Texture | null = null;
@@ -1518,20 +1670,29 @@ function RemoteShipFlashlight(): ReactNode {
         color={flashlightColor}
       />
       <object3D ref={targetRef} position={[0, 0.02, -remoteFlashlightDistance]} />
-      <mesh position={[0, 0.02, -(0.06 + remoteBeamLength / 2)]} rotation={[-Math.PI / 2, 0, 0]}>
-        <coneGeometry args={[remoteBeamRadius, remoteBeamLength, 16, 1, true]} />
-        <meshBasicMaterial
-          color={flashlightColor}
-          transparent
-          opacity={remoteBeamOpacity}
-          blending={AdditiveBlending}
-          depthWrite={false}
-          side={DoubleSide}
-          toneMapped={false}
-          fog={false}
-        />
-      </mesh>
+      <FlashlightBeamCone />
     </>
+  );
+}
+
+// The faint additive cone that makes a ship's flashlight beam visible even when it hits
+// nothing. Mounted inside a ship group, so the ship transform aims it along the ship's
+// forward (-Z) axis for free. Shared by remote ships and the third-person local ship.
+function FlashlightBeamCone(): ReactNode {
+  return (
+    <mesh position={[0, 0.02, -(0.06 + remoteBeamLength / 2)]} rotation={[-Math.PI / 2, 0, 0]}>
+      <coneGeometry args={[remoteBeamRadius, remoteBeamLength, 16, 1, true]} />
+      <meshBasicMaterial
+        color={flashlightColor}
+        transparent
+        opacity={remoteBeamOpacity}
+        blending={AdditiveBlending}
+        depthWrite={false}
+        side={DoubleSide}
+        toneMapped={false}
+        fog={false}
+      />
+    </mesh>
   );
 }
 

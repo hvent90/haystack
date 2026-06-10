@@ -13,22 +13,26 @@ type PocketSeed = {
   signatureBias: number;
 };
 
+// Seeded gameplay pockets live in the belt's inner band (the home region around the
+// station spawn, r ≈ 1.25e6–1.46e6 m from the gas giant). z stays within the belt's
+// ±90 km vertical extent. long-echo sits at the edge of the 3:1 resonance gap
+// (r ≈ 1.44e6) — the first "deep" pocket players reach.
 const pockets: PocketSeed[] = [
   {
     id: "inner-drift",
-    center: { x: -22000, y: 1200, z: 8000 },
+    center: { x: 1250000, y: 1200, z: 8000 },
     spread: 5200,
     signatureBias: 0.58,
   },
   {
     id: "black-thread",
-    center: { x: 76000, y: -3200, z: -41000 },
+    center: { x: 1348000, y: -3200, z: -22000 },
     spread: 18200,
     signatureBias: 0.22,
   },
   {
     id: "long-echo",
-    center: { x: 182000, y: 16000, z: 94000 },
+    center: { x: 1454000, y: 16000, z: 24000 },
     spread: 41000,
     signatureBias: 0.34,
   },
@@ -266,17 +270,17 @@ function seedWorld(db: HaystackDb): void {
     `INSERT INTO structures
       (id, owner_pilot_id, kind, name, x, y, z, signature, hidden)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run("station-kestrel", null, "station", "Kestrel Transfer", -6400, 0, 0, 1.0, 0);
+  ).run("station-kestrel", null, "station", "Kestrel Transfer", 1265600, 0, 0, 1.0, 0);
   db.query(
     `INSERT INTO structures
       (id, owner_pilot_id, kind, name, x, y, z, signature, hidden)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run("relay-narrowband-7", null, "relay", "Narrowband Relay 7", 82000, -1900, -37000, 0.62, 0);
+  ).run("relay-narrowband-7", null, "relay", "Narrowband Relay 7", 1354000, -1900, -20000, 0.62, 0);
   db.query(
     `INSERT INTO structures
       (id, owner_pilot_id, kind, name, x, y, z, signature, hidden)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run("hab-cold-cache", null, "forwardHab", "Cold Cache HAB", 186000, 14800, 100200, 0.08, 1);
+  ).run("hab-cold-cache", null, "forwardHab", "Cold Cache HAB", 1458000, 14800, 26000, 0.08, 1);
 
   ensureMeta(db);
 }

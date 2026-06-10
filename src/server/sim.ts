@@ -124,7 +124,9 @@ type ChatRow = {
   created_at: string;
 };
 
-const stationSpawn: Vector3 = { x: -7100, y: 20, z: 250 };
+// ~700 m sunward of station-kestrel (db.ts), in the belt's inner band (r ≈ 1.265e6 m
+// from the gas giant at the origin).
+const stationSpawn: Vector3 = { x: 1264900, y: 20, z: 250 };
 const mineralPrices: Record<Mineral, number> = {
   cobalt: 92,
   nickel: 48,

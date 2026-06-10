@@ -14,7 +14,7 @@ import {
   resolveShipPairCollision,
   type ShipCollisionEnvironment,
 } from "../shared/collision";
-import { fieldSummary } from "./field";
+import { fieldSummary, serverBeltField } from "./field";
 import type { HaystackDb } from "./db";
 import { metrics } from "./metrics";
 
@@ -490,6 +490,7 @@ export class ServerWorld {
           position: { x: row.x, y: row.y, z: row.z },
           radius: row.radius,
         })),
+        serverBeltField(),
       );
     }
     return this.collisionEnvironment;

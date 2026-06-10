@@ -1,4 +1,5 @@
 import type { FieldSummary, Ship, Vector3 } from "./types";
+import { type BeltField, beltRockShapeAt } from "./belt/field";
 
 // Shared, deterministic ship collision: the same code resolves collisions on the server
 // fixed tick (ShipActor.update) and inside client owned-ship prediction, so flying into a
@@ -45,20 +46,68 @@ type FieldGeometry = {
 };
 
 // `field` null = no virtual field (seeded obstacles only; used by tests and tools).
+// Belt fields (field.belt set) REQUIRE the matching BeltField — the caller supplies it
+// (server: field.ts's loaded bake; client: field-core's registered bake) because this
+// shared module has no environment of its own. Passing a belt summary without the bake
+// throws: a silent legacy fallback would desync prediction from the server.
 export function makeShipCollisionEnvironment(
   field: FieldSummary | null,
   seeded: readonly CollisionSphere[],
+  belt?: BeltField | null,
 ): ShipCollisionEnvironment {
-  const geometry = field === null ? null : geometryOf(field);
+  const beltField = field?.belt !== undefined ? (belt ?? null) : null;
+  if (field?.belt !== undefined && beltField === null) {
+    throw new Error("makeShipCollisionEnvironment: belt field summary requires a loaded BeltField");
+  }
+  const geometry = field === null || beltField !== null ? null : geometryOf(field);
+  // Heroes can be far larger than background rocks; size the broad-phase reach from the
+  // actual artifact so a grazing pass at a 2 km hero is still swept.
+  let maxRockRadius = MAX_ROCK_RADIUS;
+  if (beltField !== null) {
+    const pr = beltField.bake.heroes.posRadius;
+    for (let i = 0; i < beltField.bake.heroes.count; i += 1) {
+      const r = pr[i * 4 + 3]!;
+      if (r > maxRockRadius) {
+        maxRockRadius = r;
+      }
+    }
+  }
   // Stable processing order on both sides of the prediction (the client receives the
   // seeded set in server order, but sort defensively — response order matters when a
   // ship touches several obstacles in one tick).
   const seededSorted = [...seeded].sort((left, right) => left.id.localeCompare(right.id));
+  const shape = { x: 0, y: 0, z: 0, radius: 0 };
   return {
     obstaclesForSegment(from: Vector3, to: Vector3): CollisionSphere[] {
-      const reach = MAX_ROCK_RADIUS + SHIP_COLLISION_RADIUS;
+      const reach = maxRockRadius + SHIP_COLLISION_RADIUS;
       const obstacles: CollisionSphere[] = [];
-      if (geometry !== null) {
+      if (beltField !== null) {
+        const geo = beltField.bake.geo;
+        const lastXY = geo.cellsXY - 1;
+        const lastZ = geo.cellsZ - 1;
+        const cellAt = (value: number, origin: number, last: number): number =>
+          Math.max(0, Math.min(last, Math.floor((value - origin) / geo.cellSize)));
+        const minX = cellAt(Math.min(from.x, to.x) - reach, geo.originXY, lastXY);
+        const maxX = cellAt(Math.max(from.x, to.x) + reach, geo.originXY, lastXY);
+        const minY = cellAt(Math.min(from.y, to.y) - reach, geo.originXY, lastXY);
+        const maxY = cellAt(Math.max(from.y, to.y) + reach, geo.originXY, lastXY);
+        const minZ = cellAt(Math.min(from.z, to.z) - reach, geo.originZ, lastZ);
+        const maxZ = cellAt(Math.max(from.z, to.z) + reach, geo.originZ, lastZ);
+        for (let x = minX; x <= maxX; x += 1) {
+          for (let y = minY; y <= maxY; y += 1) {
+            for (let z = minZ; z <= maxZ; z += 1) {
+              if (!beltRockShapeAt(beltField, x, y, z, shape)) {
+                continue;
+              }
+              obstacles.push({
+                id: `v-${x}-${y}-${z}`,
+                position: { x: shape.x, y: shape.y, z: shape.z },
+                radius: shape.radius,
+              });
+            }
+          }
+        }
+      } else if (geometry !== null) {
         const last = geometry.cellsPerAxis - 1;
         const minX = cellFloor(Math.min(from.x, to.x) - reach, geometry, last);
         const maxX = cellFloor(Math.max(from.x, to.x) + reach, geometry, last);

@@ -1,7 +1,8 @@
 import type { Asteroid, FieldSummary, Vector3, WorldSnapshot } from "../../shared/types";
+import { ensureBeltBake } from "./belt-bake-loader";
 import { renderStats } from "./render-stats";
 import { primeSunlitCells } from "./sun-occlusion";
-import { cellCoords, deriveVirtualField, indexByCell, unpackField } from "./field-core";
+import { beltReady, cellCoords, deriveVirtualField, indexByCell, unpackField } from "./field-core";
 import type { FieldDeriveRequest, FieldDeriveResponse } from "./field-worker";
 
 // Client-side reconstruction of the deterministic virtual asteroid field. The field math
@@ -166,6 +167,19 @@ export class FieldDeriver {
     }
     const key = cellKeyFor(position, field);
     if (key === this.cellKey) {
+      if (this.mergedSeededRef !== this.seeded) {
+        this.rebuildMerged();
+      }
+      renderStats.setDerivedCount(this.merged.length);
+      return this.merged;
+    }
+
+    // Belt fields: the MAIN THREAD's bake registration gates everything (unpackField's
+    // pocket recompute and any synchronous fallback derive need it). Kick the fetch off
+    // and keep serving the previous (seeded-only at boot) field until it lands; the
+    // worker fetches its own copy inside the derive request.
+    if (field.belt !== undefined && !beltReady(field)) {
+      void ensureBeltBake(field).then(() => this.updateListener?.());
       if (this.mergedSeededRef !== this.seeded) {
         this.rebuildMerged();
       }

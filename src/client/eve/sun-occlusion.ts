@@ -1,3 +1,5 @@
+import { beltRockShapeAt } from "../../shared/belt/field";
+import { activeBeltField } from "./field-core";
 import { sunDirection } from "./lighting";
 
 // Per-instance sun-occlusion ("aSunlit"): how much of the sun an asteroid can see, given
@@ -23,7 +25,6 @@ const NEIGH = 1;
 const SUN_ANGULAR_RADIUS = (0.5 * Math.PI) / 180; // ~1 degree sun disc
 const PENUMBRA_CAP = 120; // metres
 const TRANS_FLOOR = 0.002; // early-out once essentially fully shadowed
-const MARCH_M = MARCH_LAYERS * CELL_SIZE;
 
 const Sx = sunDirection.x;
 const Sy = sunDirection.y;
@@ -43,25 +44,51 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
   return t * t * (3 - 2 * t);
 }
 
+// Scratch for belt occluder lookups (avoid an allocation per visited cell).
+const shape = { x: 0, y: 0, z: 0, radius: 0 };
+
 // aSunlit in [0,1]: 1 = fully sunlit, 0 = fully shadowed by up-sun rocks.
+//
+// Belt mode: occluder positions/radii come from the SAME shared belt derivation the
+// field uses (beltRockShapeAt — density-gated cells, literal heroes), over the belt's
+// non-cubic grid. Legacy mode keeps the original mirrored hash formula. Both are
+// visual-only (never compared against the server).
 export function computeSunlit(cx: number, cy: number, cz: number): number {
-  const selfSeed = hashCell(cx, cy, cz);
-  const px = ORIGIN_OFFSET + cx * CELL_SIZE + noise(selfSeed + 1) * CELL_SIZE;
-  const py = ORIGIN_OFFSET + cy * CELL_SIZE + noise(selfSeed + 2) * CELL_SIZE;
-  const pz = ORIGIN_OFFSET + cz * CELL_SIZE + noise(selfSeed + 3) * CELL_SIZE;
+  const belt = activeBeltField();
+  const cellSize = belt !== null ? belt.bake.geo.cellSize : CELL_SIZE;
+  const originXY = belt !== null ? belt.bake.geo.originXY : ORIGIN_OFFSET;
+  const originZ = belt !== null ? belt.bake.geo.originZ : ORIGIN_OFFSET;
+  const cellsXY = belt !== null ? belt.bake.geo.cellsXY : CELLS_PER_AXIS;
+  const cellsZ = belt !== null ? belt.bake.geo.cellsZ : CELLS_PER_AXIS;
+  const keyBase = 8192; // > cellsXY in both modes; packed visited-cell key
+  const marchM = MARCH_LAYERS * cellSize;
+
+  let px: number;
+  let py: number;
+  let pz: number;
+  if (belt !== null && beltRockShapeAt(belt, cx, cy, cz, shape)) {
+    px = shape.x;
+    py = shape.y;
+    pz = shape.z;
+  } else {
+    const selfSeed = hashCell(cx, cy, cz);
+    px = originXY + cx * cellSize + noise(selfSeed + 1) * cellSize;
+    py = originXY + cy * cellSize + noise(selfSeed + 2) * cellSize;
+    pz = originZ + cz * cellSize + noise(selfSeed + 3) * cellSize;
+  }
 
   let trans = 1;
   const seen = new Set<number>();
-  const steps = Math.ceil(MARCH_M / CELL_SIZE);
+  const steps = Math.ceil(marchM / cellSize);
 
   for (let i = 1; i <= steps; i += 1) {
-    const t = i * CELL_SIZE;
+    const t = i * cellSize;
     const rx = px + Sx * t;
     const ry = py + Sy * t;
     const rz = pz + Sz * t;
-    const ccx = Math.floor((rx - ORIGIN_OFFSET) / CELL_SIZE);
-    const ccy = Math.floor((ry - ORIGIN_OFFSET) / CELL_SIZE);
-    const ccz = Math.floor((rz - ORIGIN_OFFSET) / CELL_SIZE);
+    const ccx = Math.floor((rx - originXY) / cellSize);
+    const ccy = Math.floor((ry - originXY) / cellSize);
+    const ccz = Math.floor((rz - originZ) / cellSize);
 
     for (let dx = -NEIGH; dx <= NEIGH; dx += 1) {
       for (let dy = -NEIGH; dy <= NEIGH; dy += 1) {
@@ -69,25 +96,37 @@ export function computeSunlit(cx: number, cy: number, cz: number): number {
           const x = ccx + dx;
           const y = ccy + dy;
           const z = ccz + dz;
-          if (x < 0 || x >= CELLS_PER_AXIS) continue;
-          if (y < 0 || y >= CELLS_PER_AXIS) continue;
-          if (z < 0 || z >= CELLS_PER_AXIS) continue;
-          const key = (x * CELLS_PER_AXIS + y) * CELLS_PER_AXIS + z;
+          if (x < 0 || x >= cellsXY) continue;
+          if (y < 0 || y >= cellsXY) continue;
+          if (z < 0 || z >= cellsZ) continue;
+          const key = (x * keyBase + y) * keyBase + z;
           if (seen.has(key)) continue;
           seen.add(key);
           if (x === cx && y === cy && z === cz) continue;
 
-          const seed = hashCell(x, y, z);
-          const qx = ORIGIN_OFFSET + x * CELL_SIZE + noise(seed + 1) * CELL_SIZE;
-          const qy = ORIGIN_OFFSET + y * CELL_SIZE + noise(seed + 2) * CELL_SIZE;
-          const qz = ORIGIN_OFFSET + z * CELL_SIZE + noise(seed + 3) * CELL_SIZE;
-          const qr = 45 + noise(seed + 5) * 310;
+          let qx: number;
+          let qy: number;
+          let qz: number;
+          let qr: number;
+          if (belt !== null) {
+            if (!beltRockShapeAt(belt, x, y, z, shape)) continue;
+            qx = shape.x;
+            qy = shape.y;
+            qz = shape.z;
+            qr = shape.radius;
+          } else {
+            const seed = hashCell(x, y, z);
+            qx = originXY + x * cellSize + noise(seed + 1) * cellSize;
+            qy = originXY + y * cellSize + noise(seed + 2) * cellSize;
+            qz = originZ + z * cellSize + noise(seed + 3) * cellSize;
+            qr = 45 + noise(seed + 5) * 310;
+          }
 
           const wx = qx - px;
           const wy = qy - py;
           const wz = qz - pz;
           const along = wx * Sx + wy * Sy + wz * Sz;
-          if (along <= 0 || along > MARCH_M) continue;
+          if (along <= 0 || along > marchM) continue;
 
           const ex = wx - along * Sx;
           const ey = wy - along * Sy;

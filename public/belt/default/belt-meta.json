@@ -1,0 +1,46 @@
+{
+  "formatVersion": 1,
+  "preset": "smoke",
+  "seed": 7,
+  "counts": {
+    "heroes": 2000,
+    "background": 27344
+  },
+  "density": {
+    "nr": 256,
+    "ntheta": 256,
+    "nz": 8,
+    "rMin": 0.5,
+    "rMax": 3.25,
+    "zMax": 0.09,
+    "countScale": 2.0297868251800537,
+    "densityScale": 1.0,
+    "order": "[r][theta][z], C-order, uint8"
+  },
+  "flow": {
+    "nr": 256,
+    "ntheta": 256,
+    "vMax": 1.0779242008921435,
+    "order": "[r][theta], int8 xyz dir + speed/127*vMax"
+  },
+  "zones": {
+    "nr": 256,
+    "encoding": "0=void, odd=band, even=gap"
+  },
+  "heroes": {
+    "record": "f32 x,y,z,d + i16 family + i16 pad (20 bytes LE)",
+    "sizeSlope": 2.5
+  },
+  "moons": [
+    {
+      "name": "korr",
+      "mass": 0.0008,
+      "a": 0.62
+    },
+    {
+      "name": "veil",
+      "mass": 0.0025,
+      "a": 3.0
+    }
+  ]
+}
