@@ -130,6 +130,9 @@ export type MacroParams = {
   voidThreshold: number; // 0..1
   gamma: number;
   floor: number; // 0..1
+  // optional classic-belt slab: density falls off with |y| over halfThickness
+  // (quadratic, raised to power), turning the cube field into a disk plane.
+  slab?: { halfThickness: number; power: number };
 };
 
 export function macroDensity(geo: FieldGeometry, macro: MacroParams, p: Vector3): number {
@@ -144,11 +147,16 @@ export function macroDensity(geo: FieldGeometry, macro: MacroParams, p: Vector3)
     freq *= 2.13; // non-integer lacunarity avoids lattice alignment
   }
   v /= amp;
+  let slab = 1;
+  if (macro.slab !== undefined) {
+    const yt = Math.abs(p.y) / macro.slab.halfThickness;
+    slab = yt >= 1 ? 0 : Math.pow(1 - yt * yt, macro.slab.power);
+  }
   const t = (v - macro.voidThreshold) / (1 - macro.voidThreshold);
   if (t <= 0) {
-    return macro.floor;
+    return macro.floor * slab;
   }
-  return macro.floor + (1 - macro.floor) * Math.pow(Math.min(1, t), macro.gamma);
+  return (macro.floor + (1 - macro.floor) * Math.pow(Math.min(1, t), macro.gamma)) * slab;
 }
 
 // ---------------------------------------------------------------------------

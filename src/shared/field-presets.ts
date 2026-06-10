@@ -192,6 +192,47 @@ export const beltV3: FieldPreset = {
   maxRocksPerCell: 8,
 };
 
+// Classic flattened belt: belt-v1's mix confined to a ±14 km disk plane.
+export const beltV4: FieldPreset = {
+  name: "belt-v4-disk",
+  macro: {
+    wavelength: 24000,
+    octaves: 2,
+    voidThreshold: 0.35,
+    gamma: 1.5,
+    floor: 0.06,
+    slab: { halfThickness: 14000, power: 1.4 },
+  },
+  clusterCells: 3,
+  archetypes: [
+    { params: pocket, weight: 0.18 },
+    { params: filament, weight: 0.14 },
+    { params: sheet, weight: 0.05 },
+    { params: ringArc, weight: 0.05 },
+    { params: cathedral, weight: 0.02 },
+    { params: drift, weight: 0.45 },
+  ],
+  baseDensity: 0.3,
+  maxRocksPerCell: 8,
+};
+
+// hv-feedback direction (2026-06-09): pockets read as natural gravitational
+// clumping; strings/rings/sheets look too authored. A belt of pockets at two
+// scales + drift + voids, nothing geometric.
+export const beltNatural: FieldPreset = {
+  name: "belt-natural",
+  macro: { wavelength: 24000, octaves: 2, voidThreshold: 0.4, gamma: 1.6, floor: 0.06 },
+  clusterCells: 3,
+  archetypes: [
+    { params: pocket, weight: 0.22 },
+    { params: gravelSwarm, weight: 0.08 },
+    { params: cathedral, weight: 0.03 },
+    { params: drift, weight: 0.5 },
+  ],
+  baseDensity: 0.3,
+  maxRocksPerCell: 8,
+};
+
 export const PRESETS: Record<string, FieldPreset> = {
   "legacy-uniform": legacyUniform,
   "solo-pocket": soloPocket,
@@ -204,4 +245,6 @@ export const PRESETS: Record<string, FieldPreset> = {
   "belt-v1": beltV1,
   "belt-v2-dense": beltV2,
   "belt-v3-planar": beltV3,
+  "belt-v4-disk": beltV4,
+  "belt-natural": beltNatural,
 };
