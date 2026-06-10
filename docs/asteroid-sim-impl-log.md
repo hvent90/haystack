@@ -115,3 +115,35 @@ Measured/learned (smoke runs, 20–30k particles):
   on x into the inner band (long-echo lands near the 3:1 gap edge).
 - **Far-field**: client-only density-haze annulus (TSL material over a z-summed density
   texture) + seeded impostor speckle layer; no parity, no gameplay reads.
+
+### Phase 3 implementation record (session 1, continued)
+
+Landed (all gates green at each step):
+
+- `src/shared/belt/` — artifact decode (`format.ts`) + THE derivation (`field.ts`):
+  trilinear f64 density sampling, ≤1-rock-per-cell probability model, hero cell
+  override, zone-driven pockets/minerals, growing-cube `deriveBeltField` (capped at
+  half-width 44; sparse regions legitimately return < renderedLimit rocks).
+- Server `field.ts` branches belt/hash; `HAYSTACK_FIELD=hash` keeps the legacy field as
+  the baseline; `HAYSTACK_BELT_PRESET`/`HAYSTACK_BELT_DENSITY` are runtime knobs.
+  totalAsteroids = polar volume integral of the bake ≈ 71M for the smoke artifacts.
+- Client: `belt-bake-loader.ts` (fetch + gzip-aware decode), field-core registration +
+  belt branches, worker fetches its own copy, FieldDeriver gates derives on bake
+  readiness, collision env + sun-occlusion + EveApp wired; world-seed/station/spawn
+  relocated to the inner band (x ≈ 1.265e6).
+- AXIS MAPPING (caught before any visuals): game world is y-up; sim is z-up. Decode maps
+  sim (x, y, z) -> world (x, z→y, y→z). Belt plane = world x–z.
+- Tests: `belt-parity.test.ts` (server ≡ client bit-for-bit at 4 positions, GPU base f32
+  image, double-load determinism, band≫gap density, sparse-derive semantics); collision +
+  server tests updated to belt coordinates. Full `bun run verify` 140/140 green.
+- GPU device gates: added `verifyBeltBaseRoundTrip` (50k bake-derived rocks bit-identical
+  through upload/readback) — `bun run verify:gpu` ALL PASS on device.
+- Gotcha for posterity: vite serves `.gz` with Content-Encoding: gzip → the browser
+  transport-decodes; the loader sniffs the gzip magic instead of assuming.
+- Far-field: `BeltFarField.tsx` — density-haze annulus (TSL node material over a z-summed
+  DataTexture, near-camera fade past the derive bubble), 60k seeded speckle impostors
+  sampled ∝ density, gas giant + moons at origin. Purely visual, fog-exempt.
+- First in-client run (smoke bake): boots clean, ~71M indexed, belt band visible from
+  inside, no console errors. Screenshot DM'd.
+- Pacing note: cruise 220 m/s ⇒ pockets at 14–200 km keep the old pacing; the full
+  6.5e6 m belt is long-horizon search space/scenery. Movement changes out of contract.
