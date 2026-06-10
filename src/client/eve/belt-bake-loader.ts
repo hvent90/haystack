@@ -57,8 +57,8 @@ export async function beltSummaryFromArtifacts(
       worldScale: BELT_WORLD_SCALE,
       pMax: BELT_P_MAX,
       densityScale: 1,
-      cellsXY: geo.cellsXY,
-      cellsZ: geo.cellsZ,
+      cellsXZ: geo.cellsXZ,
+      cellsY: geo.cellsY,
     },
   };
 }

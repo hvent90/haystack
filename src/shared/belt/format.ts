@@ -38,12 +38,16 @@ export const BELT_P_MAX = 0.85; // rocks/cell at density 255 (≈ today's 1-rock
 export const HERO_RADIUS_BASE = 100; // hero radius = base * d^0.75 (d ∈ [1,60] -> ~100..2150 m)
 export const HERO_RADIUS_EXP = 0.75;
 
+// AXIS MAPPING: the game world is y-up (three.js convention; the old seeded pockets kept
+// y small). The sim/bake is z-up (orbital inclination -> z). Decode maps sim (x, y, z)
+// -> world (x, z_sim -> y, y_sim -> z): the belt plane is the world x–z plane, and the
+// thin (vertical) axis is world Y.
 export type BeltGridGeometry = {
   cellSize: number;
-  cellsXY: number; // cells per x and y axis (field spans ±cellsXY/2 * cellSize)
-  cellsZ: number; // cells on z (the belt is quasi-2D)
-  originXY: number; // = -(cellsXY * cellSize) / 2
-  originZ: number;
+  cellsXZ: number; // cells per horizontal axis, x and z (field spans ±cellsXZ/2 * cellSize)
+  cellsY: number; // cells on the vertical axis (the belt is quasi-2D)
+  originXZ: number; // = -(cellsXZ * cellSize) / 2
+  originY: number;
 };
 
 // Key packing for hero cell buckets. cellsXY stays < 8192 for any sane worldScale
@@ -79,16 +83,16 @@ export function beltGridGeometry(
   worldScale: number,
   cellSize: number,
 ): BeltGridGeometry {
-  const halfXY = Math.ceil((meta.density.rMax * worldScale) / cellSize);
-  const halfZ = Math.ceil((meta.density.zMax * worldScale) / cellSize);
-  const cellsXY = halfXY * 2;
-  const cellsZ = halfZ * 2;
+  const halfXZ = Math.ceil((meta.density.rMax * worldScale) / cellSize);
+  const halfY = Math.ceil((meta.density.zMax * worldScale) / cellSize);
+  const cellsXZ = halfXZ * 2;
+  const cellsY = halfY * 2;
   return {
     cellSize,
-    cellsXY,
-    cellsZ,
-    originXY: -(cellsXY * cellSize) / 2,
-    originZ: -(cellsZ * cellSize) / 2,
+    cellsXZ,
+    cellsY,
+    originXZ: -(cellsXZ * cellSize) / 2,
+    originY: -(cellsY * cellSize) / 2,
   };
 }
 
@@ -101,9 +105,11 @@ function decodeHeroes(bytes: Uint8Array, geo: BeltGridGeometry, worldScale: numb
   const byCell = new Map<number, number>();
   for (let i = 0; i < count; i += 1) {
     const o = i * RECORD;
+    // Sim (x, y, z_vertical) -> world (x, y = sim z, z = sim y); see the axis-mapping
+    // note on BeltGridGeometry.
     const x = view.getFloat32(o, true) * worldScale;
-    const y = view.getFloat32(o + 4, true) * worldScale;
-    const z = view.getFloat32(o + 8, true) * worldScale;
+    const z = view.getFloat32(o + 4, true) * worldScale;
+    const y = view.getFloat32(o + 8, true) * worldScale;
     const d = view.getFloat32(o + 12, true);
     const radius = HERO_RADIUS_BASE * Math.pow(d, HERO_RADIUS_EXP);
     posRadius[i * 4] = x;
@@ -111,10 +117,10 @@ function decodeHeroes(bytes: Uint8Array, geo: BeltGridGeometry, worldScale: numb
     posRadius[i * 4 + 2] = z;
     posRadius[i * 4 + 3] = radius;
     family[i] = view.getInt16(o + 16, true);
-    const cx = Math.floor((x - geo.originXY) / geo.cellSize);
-    const cy = Math.floor((y - geo.originXY) / geo.cellSize);
-    const cz = Math.floor((z - geo.originZ) / geo.cellSize);
-    if (cx < 0 || cx >= geo.cellsXY || cy < 0 || cy >= geo.cellsXY || cz < 0 || cz >= geo.cellsZ) {
+    const cx = Math.floor((x - geo.originXZ) / geo.cellSize);
+    const cy = Math.floor((y - geo.originY) / geo.cellSize);
+    const cz = Math.floor((z - geo.originXZ) / geo.cellSize);
+    if (cx < 0 || cx >= geo.cellsXZ || cy < 0 || cy >= geo.cellsY || cz < 0 || cz >= geo.cellsXZ) {
       continue; // outside the field grid (shouldn't happen with matched extents)
     }
     const key = beltCellKey(cx, cy, cz);
@@ -171,7 +177,7 @@ export function beltFieldInfo(bake: BeltBake, densityScale: number): BeltFieldIn
     worldScale: bake.worldScale,
     pMax: BELT_P_MAX,
     densityScale,
-    cellsXY: bake.geo.cellsXY,
-    cellsZ: bake.geo.cellsZ,
+    cellsXZ: bake.geo.cellsXZ,
+    cellsY: bake.geo.cellsY,
   };
 }

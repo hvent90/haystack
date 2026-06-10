@@ -30,8 +30,8 @@ beforeAll(() => {
 // Positions inside the belt annulus (the station spawn band) and in sparse regions.
 const POSITIONS: Vector3[] = [
   { x: 1264900, y: 20, z: 250 }, // station spawn
-  { x: -900000, y: 1100000, z: -4000 }, // opposite side of the belt
-  { x: 0, y: 1700000, z: 12000 }, // outer band
+  { x: -900000, y: -4000, z: 1100000 }, // opposite side of the belt
+  { x: 0, y: 12000, z: 1700000 }, // outer band
   { x: 600000, y: 0, z: 0 }, // inner void edge (sparse: may yield few rocks)
 ];
 
@@ -102,7 +102,7 @@ describe("belt parity — one derivation, three consumers", () => {
       let sum = 0;
       for (let k = 0; k < 64; k += 1) {
         const theta = (k / 64) * Math.PI * 2;
-        sum += sampleDensity(belt, r * Math.cos(theta), r * Math.sin(theta), 0);
+        sum += sampleDensity(belt, r * Math.cos(theta), 0, r * Math.sin(theta));
       }
       return sum / 64;
     };
@@ -122,12 +122,12 @@ describe("belt parity — one derivation, three consumers", () => {
 function cellOfSpawn(): { cx: number; cy: number; cz: number } {
   const geo = {
     cellSize: field.cellSize,
-    originXY: -(field.belt!.cellsXY * field.cellSize) / 2,
-    originZ: -(field.belt!.cellsZ * field.cellSize) / 2,
+    originXZ: -(field.belt!.cellsXZ * field.cellSize) / 2,
+    originY: -(field.belt!.cellsY * field.cellSize) / 2,
   };
   return {
-    cx: Math.floor((1264900 - geo.originXY) / geo.cellSize),
-    cy: Math.floor((20 - geo.originXY) / geo.cellSize),
-    cz: Math.floor((250 - geo.originZ) / geo.cellSize),
+    cx: Math.floor((1264900 - geo.originXZ) / geo.cellSize),
+    cy: Math.floor((20 - geo.originY) / geo.cellSize),
+    cz: Math.floor((250 - geo.originXZ) / geo.cellSize),
   };
 }

@@ -66,15 +66,16 @@ export function makeBeltField(bake: BeltBake, seed: number, densityScale: number
 export function sampleDensity(field: BeltField, x: number, y: number, z: number): number {
   const { meta, worldScale, density } = field.bake;
   const { nr, ntheta, nz, rMin, rMax, zMax } = meta.density;
-  const r = Math.hypot(x, y) / worldScale;
+  // World axis mapping (see format.ts): belt plane = x–z, vertical = y.
+  const r = Math.hypot(x, z) / worldScale;
   if (r <= rMin || r >= rMax) {
     return 0;
   }
-  const zn = z / worldScale;
+  const zn = y / worldScale;
   if (zn <= -zMax || zn >= zMax) {
     return 0;
   }
-  const theta = Math.atan2(y, x); // [-pi, pi]
+  const theta = Math.atan2(z, x); // [-pi, pi]
 
   const fr = ((r - rMin) / (rMax - rMin)) * nr - 0.5;
   const ft = ((theta + Math.PI) / (2 * Math.PI)) * ntheta - 0.5;
@@ -107,10 +108,10 @@ export function sampleDensity(field: BeltField, x: number, y: number, z: number)
   return (value / 255) * field.pPeak;
 }
 
-export function zoneAtRadius(field: BeltField, x: number, y: number): number {
+export function zoneAtRadius(field: BeltField, x: number, z: number): number {
   const { meta, worldScale, zones } = field.bake;
   const { nr, rMin, rMax } = meta.density;
-  const r = Math.hypot(x, y) / worldScale;
+  const r = Math.hypot(x, z) / worldScale;
   const ir = Math.floor(((r - rMin) / (rMax - rMin)) * nr);
   if (ir < 0 || ir >= nr) {
     return 0;
@@ -146,7 +147,7 @@ export function beltRockAt(field: BeltField, cx: number, cy: number, cz: number)
     const hy = pr[o + 1]!;
     const hz = pr[o + 2]!;
     const family = field.bake.heroes.family[heroIndex]!;
-    const zone = zoneAtRadius(field, hx, hy);
+    const zone = zoneAtRadius(field, hx, hz);
     const mineral =
       family >= 0 ? MINERALS[family % MINERALS.length]! : mineralFor(noise(seed + 4), zone);
     return {
@@ -161,21 +162,21 @@ export function beltRockAt(field: BeltField, cx: number, cy: number, cz: number)
     };
   }
 
-  const centerX = geo.originXY + cx * geo.cellSize + geo.cellSize / 2;
-  const centerY = geo.originXY + cy * geo.cellSize + geo.cellSize / 2;
-  const centerZ = geo.originZ + cz * geo.cellSize + geo.cellSize / 2;
+  const centerX = geo.originXZ + cx * geo.cellSize + geo.cellSize / 2;
+  const centerY = geo.originY + cy * geo.cellSize + geo.cellSize / 2;
+  const centerZ = geo.originXZ + cz * geo.cellSize + geo.cellSize / 2;
   const p = sampleDensity(field, centerX, centerY, centerZ);
   if (p <= 0 || noise(seed + 11) >= p) {
     return null;
   }
-  const zone = zoneAtRadius(field, centerX, centerY);
+  const zone = zoneAtRadius(field, centerX, centerZ);
   return {
     id: `v-${cx}-${cy}-${cz}`,
     pocket: pocketForZone(zone),
     position: {
-      x: geo.originXY + cx * geo.cellSize + noise(seed + 1) * geo.cellSize,
-      y: geo.originXY + cy * geo.cellSize + noise(seed + 2) * geo.cellSize,
-      z: geo.originZ + cz * geo.cellSize + noise(seed + 3) * geo.cellSize,
+      x: geo.originXZ + cx * geo.cellSize + noise(seed + 1) * geo.cellSize,
+      y: geo.originY + cy * geo.cellSize + noise(seed + 2) * geo.cellSize,
+      z: geo.originXZ + cz * geo.cellSize + noise(seed + 3) * geo.cellSize,
     },
     radius: 45 + noise(seed + 5) * 310,
     signature: 0.08 + noise(seed + 6) * 0.7,
@@ -206,16 +207,16 @@ export function beltRockShapeAt(
     return true;
   }
   const seed = hashCell(field.seed, cx, cy, cz);
-  const centerX = geo.originXY + cx * geo.cellSize + geo.cellSize / 2;
-  const centerY = geo.originXY + cy * geo.cellSize + geo.cellSize / 2;
-  const centerZ = geo.originZ + cz * geo.cellSize + geo.cellSize / 2;
+  const centerX = geo.originXZ + cx * geo.cellSize + geo.cellSize / 2;
+  const centerY = geo.originY + cy * geo.cellSize + geo.cellSize / 2;
+  const centerZ = geo.originXZ + cz * geo.cellSize + geo.cellSize / 2;
   const p = sampleDensity(field, centerX, centerY, centerZ);
   if (p <= 0 || noise(seed + 11) >= p) {
     return false;
   }
-  out.x = geo.originXY + cx * geo.cellSize + noise(seed + 1) * geo.cellSize;
-  out.y = geo.originXY + cy * geo.cellSize + noise(seed + 2) * geo.cellSize;
-  out.z = geo.originZ + cz * geo.cellSize + noise(seed + 3) * geo.cellSize;
+  out.x = geo.originXZ + cx * geo.cellSize + noise(seed + 1) * geo.cellSize;
+  out.y = geo.originY + cy * geo.cellSize + noise(seed + 2) * geo.cellSize;
+  out.z = geo.originXZ + cz * geo.cellSize + noise(seed + 3) * geo.cellSize;
   out.radius = 45 + noise(seed + 5) * 310;
   return true;
 }
@@ -225,12 +226,12 @@ export function beltCellCoords(
   position: Vector3,
 ): { cx: number; cy: number; cz: number } {
   const geo = field.bake.geo;
-  const clampXY = (v: number): number => Math.max(0, Math.min(geo.cellsXY - 1, v));
-  const clampZ = (v: number): number => Math.max(0, Math.min(geo.cellsZ - 1, v));
+  const clampXZ = (v: number): number => Math.max(0, Math.min(geo.cellsXZ - 1, v));
+  const clampY = (v: number): number => Math.max(0, Math.min(geo.cellsY - 1, v));
   return {
-    cx: clampXY(Math.floor((position.x - geo.originXY) / geo.cellSize)),
-    cy: clampXY(Math.floor((position.y - geo.originXY) / geo.cellSize)),
-    cz: clampZ(Math.floor((position.z - geo.originZ) / geo.cellSize)),
+    cx: clampXZ(Math.floor((position.x - geo.originXZ) / geo.cellSize)),
+    cy: clampY(Math.floor((position.y - geo.originY) / geo.cellSize)),
+    cz: clampXZ(Math.floor((position.z - geo.originXZ) / geo.cellSize)),
   };
 }
 
@@ -247,22 +248,22 @@ export const BELT_DERIVE_MAX_HALF = 44;
 // (bake bytes, seed, cell, limit) on every consumer.
 export function deriveBeltField(field: BeltField, position: Vector3, limit: number): Asteroid[] {
   const geo = field.bake.geo;
-  const lastXY = geo.cellsXY - 1;
-  const lastZ = geo.cellsZ - 1;
+  const lastXZ = geo.cellsXZ - 1;
+  const lastY = geo.cellsY - 1;
   const { cx, cy, cz } = beltCellCoords(field, position);
-  const ox = geo.originXY + cx * geo.cellSize + geo.cellSize / 2;
-  const oy = geo.originXY + cy * geo.cellSize + geo.cellSize / 2;
-  const oz = geo.originZ + cz * geo.cellSize + geo.cellSize / 2;
+  const ox = geo.originXZ + cx * geo.cellSize + geo.cellSize / 2;
+  const oy = geo.originY + cy * geo.cellSize + geo.cellSize / 2;
+  const oz = geo.originXZ + cz * geo.cellSize + geo.cellSize / 2;
 
   let half = Math.max(2, Math.ceil(Math.cbrt(limit) / 2));
   let candidates: Array<{ asteroid: Asteroid; d2: number }> = [];
   for (;;) {
     const minX = Math.max(0, cx - half);
-    const maxX = Math.min(lastXY, cx + half);
+    const maxX = Math.min(lastXZ, cx + half);
     const minY = Math.max(0, cy - half);
-    const maxY = Math.min(lastXY, cy + half);
+    const maxY = Math.min(lastY, cy + half);
     const minZ = Math.max(0, cz - half);
-    const maxZ = Math.min(lastZ, cz + half);
+    const maxZ = Math.min(lastXZ, cz + half);
     candidates = [];
     for (let x = minX; x <= maxX; x += 1) {
       for (let y = minY; y <= maxY; y += 1) {

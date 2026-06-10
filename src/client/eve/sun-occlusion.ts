@@ -56,10 +56,10 @@ const shape = { x: 0, y: 0, z: 0, radius: 0 };
 export function computeSunlit(cx: number, cy: number, cz: number): number {
   const belt = activeBeltField();
   const cellSize = belt !== null ? belt.bake.geo.cellSize : CELL_SIZE;
-  const originXY = belt !== null ? belt.bake.geo.originXY : ORIGIN_OFFSET;
-  const originZ = belt !== null ? belt.bake.geo.originZ : ORIGIN_OFFSET;
-  const cellsXY = belt !== null ? belt.bake.geo.cellsXY : CELLS_PER_AXIS;
-  const cellsZ = belt !== null ? belt.bake.geo.cellsZ : CELLS_PER_AXIS;
+  const originXZ = belt !== null ? belt.bake.geo.originXZ : ORIGIN_OFFSET;
+  const originY = belt !== null ? belt.bake.geo.originY : ORIGIN_OFFSET;
+  const cellsXZ = belt !== null ? belt.bake.geo.cellsXZ : CELLS_PER_AXIS;
+  const cellsY = belt !== null ? belt.bake.geo.cellsY : CELLS_PER_AXIS;
   const keyBase = 8192; // > cellsXY in both modes; packed visited-cell key
   const marchM = MARCH_LAYERS * cellSize;
 
@@ -72,9 +72,9 @@ export function computeSunlit(cx: number, cy: number, cz: number): number {
     pz = shape.z;
   } else {
     const selfSeed = hashCell(cx, cy, cz);
-    px = originXY + cx * cellSize + noise(selfSeed + 1) * cellSize;
-    py = originXY + cy * cellSize + noise(selfSeed + 2) * cellSize;
-    pz = originZ + cz * cellSize + noise(selfSeed + 3) * cellSize;
+    px = originXZ + cx * cellSize + noise(selfSeed + 1) * cellSize;
+    py = originY + cy * cellSize + noise(selfSeed + 2) * cellSize;
+    pz = originXZ + cz * cellSize + noise(selfSeed + 3) * cellSize;
   }
 
   let trans = 1;
@@ -86,9 +86,9 @@ export function computeSunlit(cx: number, cy: number, cz: number): number {
     const rx = px + Sx * t;
     const ry = py + Sy * t;
     const rz = pz + Sz * t;
-    const ccx = Math.floor((rx - originXY) / cellSize);
-    const ccy = Math.floor((ry - originXY) / cellSize);
-    const ccz = Math.floor((rz - originZ) / cellSize);
+    const ccx = Math.floor((rx - originXZ) / cellSize);
+    const ccy = Math.floor((ry - originY) / cellSize);
+    const ccz = Math.floor((rz - originXZ) / cellSize);
 
     for (let dx = -NEIGH; dx <= NEIGH; dx += 1) {
       for (let dy = -NEIGH; dy <= NEIGH; dy += 1) {
@@ -96,9 +96,9 @@ export function computeSunlit(cx: number, cy: number, cz: number): number {
           const x = ccx + dx;
           const y = ccy + dy;
           const z = ccz + dz;
-          if (x < 0 || x >= cellsXY) continue;
-          if (y < 0 || y >= cellsXY) continue;
-          if (z < 0 || z >= cellsZ) continue;
+          if (x < 0 || x >= cellsXZ) continue;
+          if (y < 0 || y >= cellsY) continue;
+          if (z < 0 || z >= cellsXZ) continue;
           const key = (x * keyBase + y) * keyBase + z;
           if (seen.has(key)) continue;
           seen.add(key);
@@ -116,9 +116,9 @@ export function computeSunlit(cx: number, cy: number, cz: number): number {
             qr = shape.radius;
           } else {
             const seed = hashCell(x, y, z);
-            qx = originXY + x * cellSize + noise(seed + 1) * cellSize;
-            qy = originXY + y * cellSize + noise(seed + 2) * cellSize;
-            qz = originZ + z * cellSize + noise(seed + 3) * cellSize;
+            qx = originXZ + x * cellSize + noise(seed + 1) * cellSize;
+            qy = originY + y * cellSize + noise(seed + 2) * cellSize;
+            qz = originXZ + z * cellSize + noise(seed + 3) * cellSize;
             qr = 45 + noise(seed + 5) * 310;
           }
 

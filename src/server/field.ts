@@ -242,9 +242,9 @@ function cellCenter(cell: Cell): Vector3 {
 function beltCellCenter(cell: Cell): Vector3 {
   const geo = beltField!.bake.geo;
   return {
-    x: geo.originXY + cell.x * geo.cellSize + geo.cellSize / 2,
-    y: geo.originXY + cell.y * geo.cellSize + geo.cellSize / 2,
-    z: geo.originZ + cell.z * geo.cellSize + geo.cellSize / 2,
+    x: geo.originXZ + cell.x * geo.cellSize + geo.cellSize / 2,
+    y: geo.originY + cell.y * geo.cellSize + geo.cellSize / 2,
+    z: geo.originXZ + cell.z * geo.cellSize + geo.cellSize / 2,
   };
 }
 

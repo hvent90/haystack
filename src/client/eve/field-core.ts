@@ -40,10 +40,10 @@ export function setActiveBeltBake(bake: BeltBake, field: FieldSummary): void {
   if (field.belt === undefined) {
     throw new Error("setActiveBeltBake: field summary has no belt block");
   }
-  if (bake.geo.cellsXY !== field.belt.cellsXY || bake.geo.cellsZ !== field.belt.cellsZ) {
+  if (bake.geo.cellsXZ !== field.belt.cellsXZ || bake.geo.cellsY !== field.belt.cellsY) {
     throw new Error(
-      `belt bake grid ${bake.geo.cellsXY}x${bake.geo.cellsZ} != server ` +
-        `${field.belt.cellsXY}x${field.belt.cellsZ} — artifact/preset mismatch`,
+      `belt bake grid ${bake.geo.cellsXZ}x${bake.geo.cellsY} != server ` +
+        `${field.belt.cellsXZ}x${field.belt.cellsY} — artifact/preset mismatch`,
     );
   }
   activeBelt = makeBeltField(bake, field.seed, field.belt.densityScale);
@@ -114,12 +114,12 @@ export function cellCoords(
     // Belt grids are non-cubic; geometry comes from the summary's belt block alone so
     // cell-cross detection works even before the bake bytes are registered.
     const cellSize = field.cellSize;
-    const originXY = -(field.belt.cellsXY * cellSize) / 2;
-    const originZ = -(field.belt.cellsZ * cellSize) / 2;
+    const originXZ = -(field.belt.cellsXZ * cellSize) / 2;
+    const originY = -(field.belt.cellsY * cellSize) / 2;
     return {
-      cx: clampCell(Math.floor((position.x - originXY) / cellSize), field.belt.cellsXY),
-      cy: clampCell(Math.floor((position.y - originXY) / cellSize), field.belt.cellsXY),
-      cz: clampCell(Math.floor((position.z - originZ) / cellSize), field.belt.cellsZ),
+      cx: clampCell(Math.floor((position.x - originXZ) / cellSize), field.belt.cellsXZ),
+      cy: clampCell(Math.floor((position.y - originY) / cellSize), field.belt.cellsY),
+      cz: clampCell(Math.floor((position.z - originXZ) / cellSize), field.belt.cellsXZ),
     };
   }
   const geo = geometryOf(field);
@@ -328,7 +328,9 @@ export function unpackField(
       // legacy rocks keep the coordinate-band pockets. Both are pure recomputes, so the
       // unpacked object deep-equals the original derive.
       const pocket =
-        activeBelt !== null ? pocketForZone(zoneAtRadius(activeBelt, x, y)) : pocketForCell(cx);
+        activeBelt !== null
+          ? pocketForZone(zoneAtRadius(activeBelt, x, positions[i * 3 + 2]!))
+          : pocketForCell(cx);
       asteroid = {
         id: `v-${cx}-${cy}-${cz}`,
         pocket,

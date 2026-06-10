@@ -83,16 +83,16 @@ export function makeShipCollisionEnvironment(
       const obstacles: CollisionSphere[] = [];
       if (beltField !== null) {
         const geo = beltField.bake.geo;
-        const lastXY = geo.cellsXY - 1;
-        const lastZ = geo.cellsZ - 1;
+        const lastXZ = geo.cellsXZ - 1;
+        const lastY = geo.cellsY - 1;
         const cellAt = (value: number, origin: number, last: number): number =>
           Math.max(0, Math.min(last, Math.floor((value - origin) / geo.cellSize)));
-        const minX = cellAt(Math.min(from.x, to.x) - reach, geo.originXY, lastXY);
-        const maxX = cellAt(Math.max(from.x, to.x) + reach, geo.originXY, lastXY);
-        const minY = cellAt(Math.min(from.y, to.y) - reach, geo.originXY, lastXY);
-        const maxY = cellAt(Math.max(from.y, to.y) + reach, geo.originXY, lastXY);
-        const minZ = cellAt(Math.min(from.z, to.z) - reach, geo.originZ, lastZ);
-        const maxZ = cellAt(Math.max(from.z, to.z) + reach, geo.originZ, lastZ);
+        const minX = cellAt(Math.min(from.x, to.x) - reach, geo.originXZ, lastXZ);
+        const maxX = cellAt(Math.max(from.x, to.x) + reach, geo.originXZ, lastXZ);
+        const minY = cellAt(Math.min(from.y, to.y) - reach, geo.originY, lastY);
+        const maxY = cellAt(Math.max(from.y, to.y) + reach, geo.originY, lastY);
+        const minZ = cellAt(Math.min(from.z, to.z) - reach, geo.originXZ, lastXZ);
+        const maxZ = cellAt(Math.max(from.z, to.z) + reach, geo.originXZ, lastXZ);
         for (let x = minX; x <= maxX; x += 1) {
           for (let y = minY; y <= maxY; y += 1) {
             for (let z = minZ; z <= maxZ; z += 1) {

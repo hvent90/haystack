@@ -103,8 +103,8 @@ export type BeltFieldInfo = {
   worldScale: number; // meters per normalized sim unit
   pMax: number; // rocks per field cell where baked density peaks (u8 = 255)
   densityScale: number; // global density multiplier
-  cellsXY: number; // field grid cells per x/y axis (non-cubic: belt is quasi-2D)
-  cellsZ: number;
+  cellsXZ: number; // field grid cells per horizontal axis (belt plane = x–z, vertical = y)
+  cellsY: number;
 };
 
 export type FieldSummary = {
