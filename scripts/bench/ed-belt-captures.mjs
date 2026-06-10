@@ -90,6 +90,13 @@ await page.evaluate(() => {
   }
 });
 
+// Optional froxel tuning override for A/B captures, e.g.
+// FROXEL_TUNE='{"sigmaScale":0.55}' — applied via the live debug hook.
+const FROXEL_TUNE = process.env.FROXEL_TUNE ? JSON.parse(process.env.FROXEL_TUNE) : null;
+if (FROXEL_TUNE) {
+  await page.evaluate((t) => window.__HAYSTACK_RENDER_DEBUG__.froxel(t), FROXEL_TUNE);
+}
+
 for (const shot of SHOTS) {
   await page.evaluate(
     ([pos, look]) => {

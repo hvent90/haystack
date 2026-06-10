@@ -468,9 +468,12 @@ try {
       // The scene must hold a meaningful lit field at all (history: legacy hash field
       // ≈ 15500 lit / tier1 0.53 / tier2 0.15; belt 1M bake pre-power-law ≈ 7800 /
       // 0.22 / 0.13; power-law main ≈ 3008 / 0.184 / 0.098; ED-ring slab ≈ 2100-3500 /
-      // 0.066 / 0.040 — smaller rocks (20 m floor) + the tighter 11 km draw shrink lit
-      // pixel area, so floors are RELATIVE to baselineLit rather than absolute counts).
-      shadowGate.baselineLit > 2000 &&
+      // 0.066 / 0.040; ED slab + froxels ≈ 1082 / 0.25 / 0.18 — smaller rocks (20 m
+      // floor), the tighter 11 km draw, AND the froxel branch retiring the own-ship
+      // ADDITIVE beam cone (hundreds of >90-luma pixels in the A/B frames, replaced by
+      // volumetric scattering that mix:0 disables) all shrink lit pixel area, so floors
+      // are RELATIVE to baselineLit rather than absolute counts).
+      shadowGate.baselineLit > 800 &&
       // Each tier darkens (alive) but not everything (not a black wall). The ED-slab
       // ratios are geometry, not regression: a ±4 km slab lets the 38°-elevation sun
       // exit the rock layer within ~5 km (few rocks behind any caster to catch its
