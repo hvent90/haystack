@@ -16,34 +16,39 @@ const LABEL = process.argv[2] ?? "iter";
 const OUT = resolve(import.meta.dirname, "..", "..", "screenshots");
 if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true });
 
-// (a) cruise: in-slab eye-line at spawn — the moment-to-moment flying view.
+// Saturn-preset coordinates (station spawn x ≈ 9.42865e7; main promoted saturn to the
+// default bake). The shots:
+// (a) cruise: in-slab eye-line near spawn — the moment-to-moment flying view.
 // (b) plane: just above the midplane looking along the ring tangent — slab thinness.
-// (c) above: 8 km up looking down — the "drop into the sheet" approach view.
-// (d) hero: near-miss framing on the 438 m hero 2.7 km from spawn at (1266130, 750, 2493).
+// (c) above: 15 km up looking down — the "drop into the sheet" approach view.
+// (d) hero: near-miss framing on the largest rock inside the spawn derive bubble (a
+//     355 m cap rock 4 km out — the field derives around the SERVER ship at spawn, so
+//     viewPos can only roam ~±20 km before rocks stop existing; saturn's true heroes
+//     are hundreds of km down-ring).
 const SHOTS = [
   {
     // Offset from the station spawn so parked capture-pilot ships stay out of frame.
     name: "cruise",
-    pos: { x: 1264900, y: 0, z: 4500 },
+    pos: { x: 94286500, y: 0, z: 4500 },
     look: { x: 0.05, y: 0.02, z: 0.999 },
     settleMs: 16000,
   },
   {
     name: "plane",
-    pos: { x: 1264900, y: 600, z: 0 },
+    pos: { x: 94286500, y: 600, z: 0 },
     look: { x: 0.02, y: -0.06, z: 0.998 },
     settleMs: 12000,
   },
   {
     name: "above",
-    pos: { x: 1264900, y: 15000, z: 250 },
+    pos: { x: 94286500, y: 15000, z: 250 },
     look: { x: 0.05, y: -0.95, z: 0.3 },
     settleMs: 12000,
   },
   {
     name: "hero",
-    pos: { x: 1265600, y: 650, z: 1900 },
-    look: { x: 0.66, y: 0.12, z: 0.74 },
+    pos: { x: 94290700, y: -325, z: 1344 },
+    look: { x: -0.69, y: -0.19, z: 0.7 },
     settleMs: 14000,
   },
 ];
@@ -64,7 +69,7 @@ page.on("pageerror", (e) => errors.push(e.message));
 await page.goto(CLIENT_URL, { waitUntil: "domcontentloaded" });
 await page.waitForTimeout(2500);
 
-const input = page.locator("input").first();
+const input = page.locator('input[type="text"], input:not([type])').first();
 if ((await input.count()) > 0 && (await input.isVisible().catch(() => false))) {
   await input.fill(`EDCap-${LABEL}`.slice(0, 18));
   await page.keyboard.press("Enter");

@@ -53,7 +53,7 @@ page.on("pageerror", (e) => errors.push(e.message));
 await page.goto(CLIENT_URL, { waitUntil: "domcontentloaded" });
 await page.waitForTimeout(2500);
 
-const input = page.locator("input").first();
+const input = page.locator('input[type="text"], input:not([type])').first();
 if ((await input.count()) > 0 && (await input.isVisible().catch(() => false))) {
   await input.fill(`Scale-${LABEL}`.slice(0, 18));
   await page.keyboard.press("Enter");
