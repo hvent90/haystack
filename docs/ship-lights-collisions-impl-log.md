@@ -101,6 +101,38 @@ Commits: `ffe65a0` (lights/flashlight/HUD), `2092f58` (collisions).
   `screenshots/lights-close-{on,off}.png`, `screenshots/lights-far-{on,off}.png` —
   at 10.2 km the lit ship shows beam + beacon, the unlit ship is invisible.
 
+## Session 2 (2026-06-09) — ships vs sun light + asteroid shadows: verified, no code change needed
+
+Request: "make ships get lit up by directional lighting (but react to shadows from
+asteroids)". Investigation showed **both already work**: the remote ship cone is a
+`meshStandardMaterial` with `receiveShadow`, the sun is the shadow-casting directional
+light, and the instanced asteroid field renders into the same tier-1 shadow map — so
+asteroid shadows fall on ship hulls within the 16 km camera-following shadow bubble.
+
+New proof harness `scripts/bench/ship-shadow-visual.ts` (real Chrome/Metal): autopilots
+a remote ship to the sunlit side of a 322 m rock, then inside its shadow cone, with the
+viewer at a ~260 m vantage. Result: sunlit hull = big red cone with a correct
+terminator; shadowed hull = pitch black while neighboring out-of-shadow rocks stay lit.
+Numeric gate: center luminance 47.96 lit vs 15.13 shaded (3.2×), `shipShadow: ok`.
+Screenshots: `screenshots/ship-shadow-{sunlit,shaded}.png`.
+
+Surprises:
+
+- **The first two runs "failed" because the control spot was ALSO shadowed.** The field
+  near spawn is dense enough that a random point has roughly even odds of sitting in
+  some rendered rock's shadow — the harness now ray-marches toward the sun through all
+  rendered rocks (base ± the ≤70 m cosmetic wobble: ±40 m/axis, see overlay kernel) and
+  picks a verified-clear sunlit spot. This is also why ships frequently look black in
+  normal play: they are correctly in shadow, which is exactly what the nav lights are
+  for.
+- A boosted-gain crop (`scripts/bench/png-boost.mjs`) was the diagnostic that revealed
+  the "missing" ship as a pure-black silhouette against the #03040a background.
+
+Known limits: beyond the 8 km tier-1 bubble ships do not receive the asteroids' tier-2
+per-instance occlusion (asteroid-material-only) — at that range a 50 m hull is
+sub-pixel, so tier-1 coverage is the whole observable regime. Ships do not cast
+shadows (`castShadow` off on the cone); not requested, cheap to add if wanted.
+
 ### Not done / known limits
 
 - Ship-ship bumps are server-corrected on the predicting client (by design — the other
