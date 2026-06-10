@@ -1639,6 +1639,138 @@ tr:focus-visible {
   overflow-y: auto;
 }
 
+.fog-modified-indicator {
+  padding: 6px 8px;
+  background: rgba(184, 79, 87, 0.2);
+  border: 1px solid rgba(184, 79, 87, 0.4);
+  border-radius: 2px;
+  font-size: 10px;
+  color: #e2999b;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  text-align: center;
+}
+
+.fog-preset-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  background: rgb(16 16 15 / 32%);
+  border: 1px solid var(--border-soft);
+  border-radius: 2px;
+}
+
+.fog-preset-section h3 {
+  margin: 0;
+  padding: 0;
+  color: var(--accent-amber);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.fog-preset-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.preset-btn {
+  padding: 4px 8px;
+  background: rgb(16 16 15 / 48%);
+  border: 1px solid var(--border-soft);
+  color: var(--text-primary);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  border-radius: 2px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.preset-btn:not(:disabled):hover {
+  border-color: var(--accent-amber);
+  background: rgb(20 20 19 / 60%);
+}
+
+.preset-btn.saved {
+  border-color: var(--accent-cyan);
+}
+
+.preset-saved {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+}
+
+.preset-delete {
+  padding: 2px 4px;
+  background: rgb(16 16 15 / 48%);
+  border: 1px solid var(--border-soft);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.preset-delete:hover {
+  background: rgba(184, 79, 87, 0.2);
+  border-color: rgba(184, 79, 87, 0.4);
+  color: #e2999b;
+}
+
+.fog-save-preset {
+  display: flex;
+  gap: 4px;
+}
+
+.fog-save-preset input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  background: rgb(16 16 15 / 48%);
+  border: 1px solid var(--border-soft);
+  color: var(--text-primary);
+  font-size: 9px;
+  border-radius: 2px;
+}
+
+.fog-save-preset input[type="text"]:focus {
+  outline: none;
+  border-color: var(--accent-cyan);
+  background: rgb(20 20 19 / 60%);
+}
+
+.fog-save-preset button {
+  padding: 4px 8px;
+  background: rgb(16 16 15 / 48%);
+  border: 1px solid var(--border-soft);
+  color: var(--text-primary);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  border-radius: 2px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.fog-save-preset button:hover {
+  border-color: var(--accent-amber);
+  background: rgb(20 20 19 / 60%);
+}
+
+.save-preset-btn {
+  width: 100%;
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  justify-content: center;
+}
+
 .fog-section {
   display: flex;
   flex-direction: column;
