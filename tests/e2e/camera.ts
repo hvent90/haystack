@@ -8,7 +8,7 @@ import { existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
-import { chromium, type Browser, type Page } from "playwright";
+import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 
 import type { Pilot } from "../../src/shared/types";
 import { assert, captureTraffic, count, pollUntil, webgpuLaunchOptions } from "./helpers";
@@ -71,7 +71,8 @@ try {
   ).pilot;
 
   browser = await chromium.launch(webgpuLaunchOptions);
-  const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
+  const context = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
+  const page = await context.newPage();
   const traffic = captureTraffic(page);
   const url = new URL(clientUrl);
   url.searchParams.set("pilotId", pilot.id);
@@ -88,7 +89,7 @@ try {
   await verifyWheelZoom(page);
   await verifyUiDoesNotOrbit(page);
   await verifyThirdPersonFlight(page);
-  await verifyPersistenceAcrossReload(page, pilot.id);
+  await verifyPersistenceAcrossReload(context, page, pilot.id);
 
   console.log(JSON.stringify({ appUrl: clientUrl, pilotId: pilot.id, camera: "ok" }, null, 2));
 } finally {
@@ -334,12 +335,19 @@ async function verifyThirdPersonFlight(page: Page): Promise<void> {
   );
 }
 
-async function verifyPersistenceAcrossReload(page: Page, pilotId: string): Promise<void> {
-  const before = await probe(page);
+async function verifyPersistenceAcrossReload(
+  context: BrowserContext,
+  oldPage: Page,
+  pilotId: string,
+): Promise<void> {
+  const before = await probe(oldPage);
   assert(before !== null, "probe before reload");
+  // A fresh page in the same context (same localStorage origin) — reloading the live
+  // WebGPU page in place is crash-prone under headless SwiftShader.
+  await oldPage.close();
+  const page = await context.newPage();
   const url = new URL(clientUrl);
   url.searchParams.set("pilotId", pilotId);
-  // domcontentloaded, not networkidle: the live world stream keeps the network busy.
   await page.goto(url.toString(), { waitUntil: "domcontentloaded" });
   await page.waitForSelector("[data-testid='haystack-app']", { timeout: 30000 });
   const after = await pollUntil(

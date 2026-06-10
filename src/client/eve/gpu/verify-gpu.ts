@@ -110,6 +110,49 @@ export async function verifyBaseRoundTrip(
   }
 }
 
+// Belt-mode §3.2 gate: the SAME round-trip as above, but over the bake-derived field
+// (public/belt/default artifacts fetched by the harness page). Proves the CPU belt
+// derive -> f32 upload -> GPU readback path is bit-exact for the shipped structure
+// source, heroes included (the station spawn bubble contains hero cells).
+export async function verifyBeltBaseRoundTrip(renderer: Renderer): Promise<GateResult> {
+  try {
+    const { beltSummaryFromArtifacts, ensureBeltBake } = await import("../belt-bake-loader");
+    const summary = await beltSummaryFromArtifacts("default", FIELD.cellSize, MAX_RESIDENT);
+    await ensureBeltBake(summary);
+    const shipPos: Vector3 = { x: 1264900, y: 20, z: 250 }; // station spawn, inner band
+    const { base: cpuBytes, count } = deriveBase(shipPos, summary, MAX_RESIDENT);
+    if (count < 1000) {
+      return {
+        name: "belt base round-trip (§3.2, bake-derived)",
+        pass: false,
+        detail: `derive produced only ${count} rocks at the station spawn`,
+      };
+    }
+    seedBaseFromCPU(baseBuffer, cpuBytes);
+    renderer.compute(genFieldOverlay);
+    const gpuBytes = await readBackFloat32(renderer, baseBuffer);
+    let mismatches = 0;
+    const checked = count * 4;
+    for (let i = 0; i < checked; i += 1) {
+      if (gpuBytes[i] !== cpuBytes[i]) mismatches += 1;
+    }
+    const pass = mismatches === 0;
+    return {
+      name: "belt base round-trip (§3.2, bake-derived)",
+      pass,
+      detail: pass
+        ? `bit-identical over ${count} belt rocks (${checked} floats)`
+        : `${mismatches} mismatches over ${count} rocks`,
+    };
+  } catch (err) {
+    return {
+      name: "belt base round-trip (§3.2, bake-derived)",
+      pass: false,
+      detail: `threw: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
 // END-STATE step-5 gate: run the GPU binner SCAN (clearCounts → count → 3-phase scan) and
 // confirm cellStart === binCPU's exclusive scan. cellIndexOf is `i % G` on BOTH sides so the
 // histogram is identical and the comparison is exact. NOTE: the GPU `scatter` is intentionally
@@ -552,6 +595,7 @@ export async function verifyCollisions(renderer: Renderer): Promise<GateResult> 
 export async function runGpuVerification(renderer: Renderer): Promise<GateResult[]> {
   const results: GateResult[] = [];
   results.push(await verifyBaseRoundTrip(renderer));
+  results.push(await verifyBeltBaseRoundTrip(renderer));
   results.push(await verifyBinnerScan(renderer));
   results.push(await verifyBinnerScatter(renderer));
   results.push(await verifyCullLod(renderer));
