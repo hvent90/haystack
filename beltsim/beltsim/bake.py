@@ -60,30 +60,34 @@ def _polar_indices(
 
 
 def _detect_zones(radial_profile: np.ndarray) -> np.ndarray:
-    """Label each r-bin: 0 = void, odd = dense band k, even = gap between bands.
+    """Label each r-bin: 0 = void, odd = dense band k, even = sparse fringe/gap.
 
-    Bands are contiguous runs where the (smoothed) radial profile exceeds 18%
-    of its 95th percentile; everything below that inside the belt span is a
-    gap, and outside the belt span is void. This is what replaces the
-    hardcoded pocket x-bands at runtime.
+    Three levels of the (smoothed) radial profile vs its 95th percentile:
+    dense band > 45%, sparse (present but thin — moon-eroded fringes, smeared
+    resonance shoulders) > 4%, void below. Eccentricity smears a-space gaps in
+    physical radius, so the radial anatomy that survives is band/fringe/void;
+    azimuthal variation (families, arcs) lives in the 2D density itself. This
+    replaces the hardcoded pocket x-bands at runtime.
     """
     smooth = gaussian_filter1d(radial_profile.astype(np.float64), 6.0)
     peak = np.percentile(smooth, 95)
-    dense = smooth > 0.18 * peak
-    inside = np.flatnonzero(dense)
+    dense = smooth > 0.45 * peak
+    present = smooth > 0.04 * peak
     zones = np.zeros(len(smooth), dtype=np.uint8)
-    if inside.size == 0:
-        return zones
-    lo, hi = inside[0], inside[-1]
     band_id = 0
     in_band = False
-    for i in range(lo, hi + 1):
-        if dense[i] and not in_band:
-            band_id += 1
-            in_band = True
-        elif not dense[i] and in_band:
+    for i in range(len(smooth)):
+        if not present[i]:
             in_band = False
-        zones[i] = 2 * band_id - 1 if dense[i] else 2 * band_id  # band -> odd, gap after band k -> even
+            continue
+        if dense[i]:
+            if not in_band:
+                band_id += 1
+                in_band = True
+            zones[i] = 2 * band_id - 1
+        else:
+            in_band = False
+            zones[i] = max(2, 2 * band_id)  # sparse fringe (leading fringe shares id 2)
     return zones
 
 

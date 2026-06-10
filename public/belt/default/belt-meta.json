@@ -1,30 +1,30 @@
 {
   "formatVersion": 1,
-  "preset": "smoke",
-  "seed": 7,
+  "preset": "default",
+  "seed": 424242,
   "counts": {
-    "heroes": 2000,
-    "background": 27344
+    "heroes": 30000,
+    "background": 942472
   },
   "density": {
-    "nr": 256,
-    "ntheta": 256,
+    "nr": 1024,
+    "ntheta": 1024,
     "nz": 8,
     "rMin": 0.5,
     "rMax": 3.25,
     "zMax": 0.09,
-    "countScale": 2.0297868251800537,
+    "countScale": 2.2696244716644287,
     "densityScale": 1.0,
     "order": "[r][theta][z], C-order, uint8"
   },
   "flow": {
     "nr": 256,
     "ntheta": 256,
-    "vMax": 1.0779242008921435,
+    "vMax": 1.2908287558406861,
     "order": "[r][theta], int8 xyz dir + speed/127*vMax"
   },
   "zones": {
-    "nr": 256,
+    "nr": 1024,
     "encoding": "0=void, odd=band, even=gap"
   },
   "heroes": {
