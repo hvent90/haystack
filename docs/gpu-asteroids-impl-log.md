@@ -260,6 +260,15 @@ multiply vs idle (HUD-off captures; idle 0 → pulse ~6000+ on Metal). 60 fps he
    detection power: a dead tier measures ≈ 1×noise ≈ 0.03–0.04·baseLit, an all-dark
    regression ≈ 1.0 — both still fail. Evidence + per-run numbers in the gate comment.
 
+### Suite status (honest baseline)
+
+`verify` (165 pass), `verify:gpu` (Metal AND SwiftShader, all 9 gates), the prod live gate,
+the prod cross bench, and `verify:screenshot` are green on this branch. **`verify:ui` fails
+on this machine — and fails IDENTICALLY on a clean worktree of current main** (the
+`verifyHudAndFlight` thrust-click poll at ui.ts:267 / aim-delta wait at :390; not in this
+task's hard-constraint suite list, A/B'd for attribution only): pre-existing, not a froxel
+regression, left for its own investigation.
+
 ### Environment gotcha (for the next runner)
 
 `verify:gpu-live[:prod]` defaults to server port 8811/client 5211 — ANOTHER session's dev
