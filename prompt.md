@@ -1,42 +1,193 @@
-<conversation>me: Let's say I wanted to design an asteroid belt. Think of, like, you know, a big planet, gas giant, multiple kinda rings or bands of asteroids around it. Kinda thick. So it'd be... so if you're cruising around the asteroid belt on a ship, you know, you'd have some obstacles to to have to avoid. So it's a little fun. But anyways, the challenge here is is making it look realistic or at least our idea of realistic. So that involves, like, clustering, you know, and you might have, like, small things scattered everywhere, but some bigger things to the other. Who knows? Anyways, my assumption is that the best looking Atrid field would be done through maybe a physics simulation because then you get an idea of how things would naturally kinda clump together and you would have lots of different and interesting kinda geometries in space with, like, little, you know... yeah. But anyways, so that would be a lot of disk space. to save the positions and velocities and stuff of all these asteroids. So I was wondering if, you know, like, if it's possible to run this simulation, see how the positions of, like, billions of asteroids, and it creates a very pleasing and very varied and dynamic belt or belts. And then maybe create some kind of, like, nonlinear function or fourier transform or something to essentially be able to generate it on demand so you wouldn't... so be, like, you know, it would fit within a couple megabyte game or something. do you think?
+# Goal: Physically-Grounded Asteroid Belt Generation (Sim → Bake → Runtime)
 
+Build an asteroid belt generation pipeline whose large-scale structure comes from a real
+physics simulation and whose fine detail is generated deterministically at runtime, then
+integrate it as the source of Haystack's asteroid field. The end state: flying through the
+belt feels like flying through something that formed naturally — resonance gaps, collisional
+families, arcs, voids, and clumps — not through layered noise, and the whole thing ships in a
+few megabytes.
 
-claude: Your instinct is right but you can skip the expensive middle step. The key realization: you don't need to store the sim output, you need to store its *statistics*, and then resample from those statistics deterministically. That's how every "infinite universe" game does it — the belt is a pure function of position: `hash(cellCoords, seed) → RNG → asteroids in that cell`. Same cell always produces the same rocks, you only instantiate cells near the camera, and total storage is a seed plus maybe a kilobyte of parameters.
+## Source Of Truth
 
-So the pipeline looks like: run a physics sim once (or honestly, steal the stats from real belt literature), then measure a handful of things from it — radial density profile with resonance gaps (Kirkwood gaps are what make real belts look "structured" rather than uniform donuts), vertical scale height vs. radius, the size-frequency distribution (real belts follow a power law, N(>D) ∝ D^-2.5ish, which is exactly why you get "small things scattered everywhere, some bigger things"), and a two-point correlation function for clumping. That last one is your Fourier idea — capture the spatial power spectrum of the sim, then synthesize matching noise at runtime. Cosmologists do exactly this to generate universe initial conditions.
+This file is the contract for this `/goal` loop. Re-read it before each implementation pass.
+`context.md` in the repo root contains the design conversation that motivated this work —
+read it first; it explains the reasoning behind every phase below and the failure mode to
+avoid.
 
-The clumping itself has a nice physical shortcut: real clusters are collisional families — a big asteroid got smashed and the debris stays in similar orbits. So generate hierarchically: place large asteroids from a sparse layer, then spawn families of medium/small debris around a fraction of them with correlated velocities, then a diffuse background layer modulated by low-frequency noise × your ring density profile. Three layers of deterministic hashing gets you visually rich clustering without any sim at runtime.
+## Why This Exists
 
-One caveat for gameplay: real belt density is absurdly sparse (km between rocks), so you're tuning toward "Hollywood belt" anyway — which means the sim's literal output matters less than its statistical *texture*. A weekend sim with ~1M test particles around your gas giant (Kirkwood-style gaps emerge from the moons' resonances, which is a cool detail — gaps and ringlets line up with moon orbits) gives you everything you need to fit those parameters. Billions of particles buys you nothing extra.
+Haystack's current field (`src/server/field.ts` → `src/client/eve/field-core.ts`) is a
+seeded hash: every cell rolls position/radius/minerals from `frac(sin(...))`. It scales
+beautifully but its structure is statistical texture all the way down — no belt-scale
+identity. The game's core loop is needle-in-a-haystack search across orders of magnitude, so
+the belt's macro-structure (where it's dense, where it's empty, where the families clump) IS
+the gameplay terrain. A physics sim produces that structure for free: moons carve resonance
+gaps (Kirkwood-style), breakup families shear into arcs, density varies in ways noise
+octaves can't fake.
 
+The central risk, stated in `context.md`: summary statistics throw away phase information,
+and phase is where the interesting stuff lives. So the contract is — **keep the sim's actual
+output at low frequency (baked density/velocity fields, hero asteroids), go procedural only
+at high frequency** (individual small rocks below the bake's resolution). Do not replace the
+bake with fitted noise parameters; that reintroduces the formulaic look this project exists
+to kill.
 
-me: Hey, Right. So layout, uh, like, a bullet point plan for how to do this. And, um, there's a risk, which is if you go into it with assumptions that a good looking asteroid belt, you know, follows these rules. We're almost, like, multiple op... octaves of different kinds of noise. Right? Then, um, it it might end up becoming too formulaic and boring and not really look good, whereas, like, you know, if you have some of the chaos of a physics sim, then then you might get some... again, very kind of unique geometries, but that's still look correct. So so how do you think this could be going about?
+## What To Build
 
-claude: Your worry is well-founded, and there's a precise way to state it: summary stats like power spectra throw away *phase information*, and phase is where the interesting stuff lives — sharp resonance edges, arcs, filaments, voids, spiral wakes from moons. Resynthesize from the spectrum alone and you get Gaussian blobs. So the fix: keep the sim's actual output at low frequency (where the chaos and identity live), and only go procedural at high frequency (where it's just texture). Plan:
+### Phase 1 — Offline simulation (run once, tooling)
 
-**Phase 1 — Sim (offline, run once)**
-- N-body with the gas giant + 2-4 moons as massive perturbers, 1-10M massless test particles. Moons give you resonance gaps, shepherded ringlets, and spiral wakes for free.
-- Seed some collisional families: pick ~100 random "parent breakup" events, inject debris clouds with correlated velocities, let them shear out over sim time. This is where unique clumpy geometry comes from.
-- Integrate long enough for structure to emerge (10³–10⁴ orbits with a symplectic integrator); REBOUND does this out of the box.
+- N-body sim around a gas giant: 2–4 massive moons as perturbers, on the order of 1–10M
+  massless test particles, integrated long enough for resonance gaps, shepherded ringlets,
+  and spiral wakes to emerge (10³–10⁴ orbits with a symplectic integrator).
+- Seed collisional families: ~100 parent-breakup events injecting debris clouds with
+  correlated velocities, allowed to shear out over sim time. This is where unique clumpy
+  geometry comes from.
+- The sim is offline tooling, not app code: pick whatever gets a trustworthy result fastest
+  (REBOUND via Python is the known off-the-shelf path; a custom TS/WebGPU integrator is
+  acceptable if you verify it against known belt behavior). The app itself stays
+  TypeScript-only; the sim/bake application's language is your call.
+- The sim + bake application is a permanent first-class part of the repo, not a throwaway
+  script: give it its own dedicated top-level folder (e.g. `beltsim/`) with its own README,
+  pinned dependencies, and documented commands. We will re-run it repeatedly to tune the
+  belt, so treat it like a tool we keep, not a one-off.
+- Real-belt data (MPCORB / AstDyS, per `context.md`) is available as ground truth for
+  validating that the sim's gaps, power-law size distribution, and family clustering look
+  right. Use it as a reference check, not necessarily as the source field.
 
-**Phase 2 — Bake (compress without losing the chaos)**
-- Store the top ~50k largest asteroids as literal positions/orbital elements. Power law means the big rocks are few, and they carry the belt's visual identity. ~600KB raw, less compressed.
-- Bake the remaining millions into a density field: belts are quasi-2D, so a polar map (radius × azimuth × small vertical extent), maybe 1024×1024×8. A few MB, or hundreds of KB compressed since it's smooth-ish. This preserves the sim's actual clumps, arcs, and gaps — not a statistical imitation of them.
-- Also bake a per-region velocity/orientation field so debris fields shear in a plausible direction.
+### Phase 2 — Bake (compress without losing the chaos)
 
-**Phase 3 — Runtime generation**
-- Deterministic hash per spatial cell: `hash(cell, seed) → RNG`, sample asteroid count from the baked density field, place small rocks with jitter + a little local noise.
-- Hierarchy: hero asteroids (stored) → procedural families clustered around a fraction of them → background dust/small rocks from the density field.
-- Per-asteroid attributes (scale, rotation, mesh variant) from the same hash. Instanced rendering, only instantiate cells in frustum/range.
+- Hero asteroids: store the top tens of thousands of largest bodies as literal
+  positions/elements. They are few (power law) and carry the belt's visual identity.
+- Density field: bake the remaining millions into a quasi-2D polar map (radius × azimuth ×
+  small vertical extent — something like 1024×1024×8). This preserves the sim's actual
+  clumps, arcs, and gaps.
+- If the density field is baked to image-like tiles, consider serving it through a quadtree
+  tile pyramid (the slippy-map pattern): clients fetch small high-resolution tiles around
+  their current position and coarse tiles for distant regions, instead of downloading the
+  full-resolution field up front. The full bake stays server-side; what goes over the wire
+  scales with where the player actually is. Decide based on measured tile sizes and fetch
+  cost, and record the decision in the impl log.
+- This implies two distinct consumers of the density data, with different requirements:
+  - **Local derivation bubble** (the `renderedLimit` real rocks around the ship): cells here
+    must derive from the same tile data the server uses, at full resolution, so server/client
+    parity holds. This bubble is small, so it never needs more than a handful of full-res
+    tiles.
+  - **Far-field view**: the player can look across the belt and should see its structure —
+    bands, gaps, clumps — millions of km out, where no individual rocks are derived. Coarse
+    tiles are exactly the right input for this; render it with whatever modern distant-field
+    technique fits (impostors, point-cloud sprites, volumetric/billboard density haze — your
+    call, this is an invitation to use state-of-the-art tricks). It's purely visual, reads
+    no gameplay state, and needs no parity with anything.
+- Velocity/orientation field: per-region flow direction so debris shears plausibly.
+- Total baked artifact budget: single-digit megabytes compressed, committed to the repo with
+  a documented regeneration path.
 
-**Phase 4 — Validate**
-- Fly through it. The failure mode you're scared of is visible to the eye, not to a metric — record a few flythrough paths and compare against pure-noise baselines.
-- Cheap diversity lever: run the sim 3-5 times with different moon configs, ship multiple baked fields, pick per belt.
+### Tunability — this is a gameplay tool, not just a renderer
 
-The crux is Phase 2: the density field *is* your "nonlinear function," except instead of fitting one, you just store the sim's low-res truth and let hashing fill in detail below the resolution where formulaic-ness is detectable.
+The belt's density, gap widths, family tightness, and vertical thickness are gameplay
+levers: they set how hard it is to hide, find, and navigate. Design the pipeline so we can
+tune them without re-deriving everything from scratch:
 
-me: So you said something about a Kirkland bill or that we already have lots of real asteroid belt information mapped out. Uh, can you tell me more about that?
+- Expose the knobs that matter as named parameters in one config file in the sim/bake
+  folder: moon configuration (masses/orbits → gap positions and widths), particle counts,
+  family count/spread, overall density scale, ring band radii/thickness, vertical scale
+  height.
+- Cheap knobs should be cheap: global density scaling, mineral weighting, and pocket
+  thresholds should be adjustable at bake time (or runtime) without re-running the N-body
+  sim. Only structural changes (moving gaps, new families) should require a re-sim.
+- Document in the sim README which knob changes require which pipeline stage to re-run, and
+  keep end-to-end regeneration a single command so tuning iterations stay fast.
+- Ship at least one alternate tuning preset alongside the default to prove the pipeline is
+  actually re-runnable (the design conversation suggests multiple moon configs as a cheap
+  diversity lever).
 
-claude: Kirkwood gaps — named after Daniel Kirkwood, who spotted them in 1866. If you histogram real asteroids by orbital distance from the Sun, the belt isn't smooth: there are sharp empty bands at specific distances. Those distances are where an asteroid's orbital period forms a simple ratio with Jupiter's — 3:1, 5:2, 7:3, 2:1. An asteroid there gets a gravitational tug from Jupiter at the same point in its orbit every few laps, the tugs accumulate, and over millions of years its orbit gets pumped eccentric until it's ejected or collides. Same mechanism carves the Cassini division in Saturn's rings (a 2:1 resonance with the moon Mimas). For your gas giant belt, your moons play Jupiter's role — that's why I suggested including them in the sim.On the data side: this is actually mapped to an absurd degree. The Minor Planet Center publishes orbital elements for 1.3M+ known asteroids as a free flat file (MPCORB.DAT, ~200MB) — position, eccentricity, inclination, size estimates. So you could skip the sim's "did I get realistic structure" question entirely by computing positions of real asteroids at a fixed epoch and baking *that* density field, or at least using it as ground truth to validate your sim's statistics against.
+### Phase 3 — Runtime generation (replace the current field's structure source)
 
-The clustering you were after is in there too: Hirayama families (identified in 1918), which are exactly the collisional breakup clusters I mentioned — Eos, Koronis, Themis, Flora, Vesta. Tens of thousands of asteroids are tagged with family membership in datasets like AstDyS. So real data gives you the gaps, the power-law size distribution, and labeled clumps — a complete reference for what "correct" looks like before you tune anything.</conversation>
+- Keep the existing architecture's load-bearing invariants; this phase changes WHERE
+  structure comes from, not how it's queried or rendered:
+  - Deterministic per-cell derivation: same cell + seed → same rocks, on both server
+    (`src/server/field.ts`) and client (`src/client/eve/field-core.ts` worker derive), with
+    the existing f64-CPU-derive → GPU-upload determinism rule intact (the GPU never
+    regenerates `base`; see `docs/gpu-asteroids-architecture.md` §3.2).
+  - Stable ids (`v-cx-cy-cz` or a successor), O(rendered) queries, `renderedLimit`
+    streaming, fingerprint-based change detection.
+- New hierarchy per the design: hero asteroids (from the bake) → procedural families
+  clustered around a fraction of them with bake-driven shear → background small rocks whose
+  per-cell density is sampled from the baked density field, placed with hash jitter.
+- The current pocket zones (`inner-drift` / `black-thread` / `long-echo`) and mineral
+  assignment must survive in some form — gameplay keys off them — but their spatial
+  definition may (should) become bake-driven rather than coordinate-band hardcoded.
+
+### Phase 4 — Validate (the failure mode is visible to the eye, not to a metric)
+
+- Statistical checks: radial density histogram shows the sim's gaps; size distribution
+  follows the power law; family clustering measurably tighter than Poisson.
+- Visual checks: scripted flythrough paths rendered through the real client, screenshots
+  (≥1080p) captured at belt scale, region scale, and close scale. Produce a side-by-side
+  against the current hash field as the "pure noise baseline" the design conversation calls
+  for, and write up what's visibly different.
+- All existing gates stay green: `bun run verify`, `bun run verify:gpu`, the GPU parity
+  suites (`tests/integration/gpu-base-parity`, ring-stream, cull/binner/collide parity), and
+  `bench:gpu-cross:prod` perf numbers comparable to current main.
+
+## Constraints
+
+- Runtime/app code: TypeScript, strict, Bun, formatted with `oxfmt` — same standards as the
+  repo. Offline sim tooling is exempt from the TypeScript-only rule but must be reproducible
+  (pinned deps, documented invocation).
+- Server stays authoritative and the server/client derive must stay bit-identical; any
+  change to derivation math lands on both sides in the same pass with a parity test proving
+  it.
+- Don't break scale: the field must still plausibly support millions of virtual rocks
+  without eager materialization. The bake adds a lookup, not a list.
+- Don't add features beyond this contract — no new gameplay systems, no refactors of
+  adjacent code that the pipeline doesn't require.
+
+## Working Rules
+
+- You are operating autonomously. For reversible actions that follow from this contract,
+  proceed without asking. Pause only for destructive actions, real scope changes, or input
+  only the user can provide — and if you hit one, ask and end the turn rather than ending on
+  a promise.
+- Start by auditing `src/server/field.ts`, `src/client/eve/field-core.ts`,
+  `docs/gpu-asteroids-architecture.md`, and the existing parity tests so the integration
+  surface is understood before sim work begins.
+- Work in scoped, verifiable passes. After each meaningful slice run typecheck, format, and
+  the relevant test subset. Use fresh-context verifier subagents to check completed phases
+  against this contract rather than relying on self-review.
+- Before reporting progress, audit each claim against a tool result from this session. Only
+  report work you can point to evidence for; if something is not yet verified, say so
+  explicitly. If tests fail, say so with the output.
+- DM the user screenshots on Discord (use the `discord-dm` skill) regularly as visual
+  progress lands — sim output plots, the first rendered bake, the first in-client belt,
+  flythrough captures, before/after tuning comparisons. This is a visual project and the
+  user wants to watch it take shape without sitting at the terminal; a short caption saying
+  what they're looking at is enough. Don't wait for a phase to be "done" to share.
+- Keep an implementation log (e.g. `docs/asteroid-sim-impl-log.md`) recording decisions,
+  measured results, and anything the next session needs — sim parameters chosen, bake
+  resolutions tried, what looked wrong and why.
+- If a phase is too large for one pass, ship the smallest real vertical slice that proves
+  the pipeline end to end (e.g. a low-particle-count sim → tiny bake → one belt region
+  rendered) before scaling up.
+
+## Completion Criteria
+
+Do not call the goal complete until all of the following are true, with evidence:
+
+- The sim/bake application lives in its own permanent repo folder with a README, runs from a
+  documented command, and its output demonstrably shows resonance gaps and
+  collisional-family clustering (plots or measured histograms in the impl log).
+- The tuning config exists with documented knobs, the README maps each knob to the pipeline
+  stage it requires re-running, and at least one alternate preset has been generated
+  end-to-end to prove the tuning loop works.
+- Baked artifacts (heroes + density field + flow field) are committed, within the size
+  budget, with a regeneration script.
+- The runtime field derives its structure from the bake on both server and client, parity
+  tests prove bit-identical derivation, and all pre-existing integration/GPU gates pass.
+- Perf on `bench:gpu-cross:prod` and `verify:gpu-live:prod` is within tolerance of current
+  main (no dropped-frame regressions from the bake lookup).
+- Flythrough screenshots (≥1080p) at three scales are captured from the real client, with a
+  baseline comparison against the current hash field, and the visual verdict is recorded in
+  the impl log.
+- The final report lists commands run, artifact sizes, screenshot paths, and any
+  intentionally deferred work — without hiding missing criteria.

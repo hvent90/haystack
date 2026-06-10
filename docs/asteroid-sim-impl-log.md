@@ -205,7 +205,7 @@ fieldDiagnostic, both belt-aware).
   tiers alive at 0.22/0.13 ratios, all-dark upper bounds retained); bench:gpu-cross:prod
   median 16.7 / p99 16.8 / max 33.2 ms, over33 = 0 over 9 crossings, derive ≈ 7.5 ms.
 - Captures (screenshots/): belt-default-{close,region,belt}.png at 1920×1080 vs
-  belt-hash-baseline-*.png. Visual verdict: the hash field is an unstructured uniform
+  belt-hash-baseline-\*.png. Visual verdict: the hash field is an unstructured uniform
   soup at every scale; the belt shows family clumps and arcs at belt scale, band/lane
   structure + far-field granularity at region scale, and varied rock sizes incl. ~2 km
   heroes at close scale. The failure mode the design conversation feared (formulaic
@@ -235,8 +235,8 @@ fieldDiagnostic, both belt-aware).
 ### Completion criteria — evidence index
 
 1. Sim/bake app: beltsim/ (README, pinned uv deps, `uv run beltsim all <preset>`); gaps +
-   families: runs/default/plots/* + validation.json (this log, "1M default run results").
-2. Tuning: presets/*.json knobs, README "Knobs and what they cost" stage map; alternate
+   families: runs/default/plots/\* + validation.json (this log, "1M default run results").
+2. Tuning: presets/\*.json knobs, README "Knobs and what they cost" stage map; alternate
    preset shepherd-moat generated end-to-end and shipped.
 3. Artifacts committed: public/belt/default (3.2 MB) + public/belt/shepherd-moat
    (2.1 MB); regeneration: `uv run beltsim all presets/<p>.json` + copy (README).

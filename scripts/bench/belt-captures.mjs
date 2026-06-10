@@ -42,9 +42,24 @@ const SHOTS_BELT = [
 // The legacy hash field is a ±56.5 km cube at the origin — its baseline shots frame the
 // same three scales there. At belt scale it is a dot: that IS the comparison statement.
 const SHOTS_HASH = [
-  { name: "close", pos: { x: 0, y: 20, z: 250 }, look: { x: 0.05, y: 0.02, z: 0.999 }, settleMs: 16000 },
-  { name: "region", pos: { x: 0, y: 40000, z: 0 }, look: { x: 0.12, y: -0.85, z: 0.5 }, settleMs: 12000 },
-  { name: "belt", pos: { x: 0, y: 5000000, z: 0 }, look: { x: 0.02, y: -0.999, z: 0.04 }, settleMs: 9000 },
+  {
+    name: "close",
+    pos: { x: 0, y: 20, z: 250 },
+    look: { x: 0.05, y: 0.02, z: 0.999 },
+    settleMs: 16000,
+  },
+  {
+    name: "region",
+    pos: { x: 0, y: 40000, z: 0 },
+    look: { x: 0.12, y: -0.85, z: 0.5 },
+    settleMs: 12000,
+  },
+  {
+    name: "belt",
+    pos: { x: 0, y: 5000000, z: 0 },
+    look: { x: 0.02, y: -0.999, z: 0.04 },
+    settleMs: 9000,
+  },
 ];
 const SHOTS = HASH_BASELINE ? SHOTS_HASH : SHOTS_BELT;
 

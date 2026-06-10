@@ -39,7 +39,7 @@
     },
     {
       "name": "shepherd",
-      "mass": 5e-05,
+      "mass": 5e-5,
       "a": 1.45
     },
     {
