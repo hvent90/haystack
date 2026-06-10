@@ -1853,9 +1853,9 @@ tr:focus-visible {
   z-index: 90;
 }
 
-/* The mixer is a desktop debug affordance; on touch keep only the head (mute toggle +
-   unlock hint) so the panel stops covering the right stick zone. */
-.app-shell.touch-ui .audio-controls__row {
+/* The mixer is a desktop debug affordance — gone entirely on touch. Audio still
+   unlocks fine: useAudio unlocks on the first window-level pointerdown. */
+.app-shell.touch-ui .audio-controls {
   display: none;
 }
 
@@ -1966,7 +1966,7 @@ tr:focus-visible {
 /* Resting hints sit clear of the edge button columns (left col ends ~210px in with a
    wide notch; right col is ~62px deep). */
 .touch-stick-hint-left {
-  left: calc(190px + var(--safe-left));
+  left: calc(140px + var(--safe-left));
 }
 
 .touch-stick-hint-right {
@@ -1982,8 +1982,9 @@ tr:focus-visible {
   transform: translateY(-50%);
 }
 
+/* Flush to the screen edge (the 58px sidebar offset died with the sidebar). */
 .touch-btn-col-left {
-  left: calc(58px + var(--safe-left));
+  left: calc(10px + var(--safe-left));
 }
 
 .touch-btn-col-right {
