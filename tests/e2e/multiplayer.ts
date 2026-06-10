@@ -80,6 +80,12 @@ try {
   const haulerPage = await haulerContext.newPage();
 
   await Promise.all([openPilot(scoutPage, scout.id), openPilot(haulerPage, hauler.id)]);
+  // Windows boot closed (2e43cf2): the pilot cards live in the Character window and
+  // the local-presence list in Comms — open both on each page.
+  for (const page of [scoutPage, haulerPage]) {
+    await openWindow(page, "character");
+    await openWindow(page, "comms");
+  }
   await Promise.all([
     waitForPilotCard(scoutPage, haulerCallsign),
     waitForPilotCard(haulerPage, scoutCallsign),

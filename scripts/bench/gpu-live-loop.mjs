@@ -555,9 +555,11 @@ try {
   summary.pixels = { uniqueColors, nonBackgroundSamples };
 
   summary.stage = "done";
+  // Screenshot dimensions follow the configured viewport (CSS px x device scale) —
+  // a phone-shaped GPU_LIVE_CSS_* run must not be judged against the desktop default.
   summary.ok =
-    shotW >= 2560 &&
-    shotH >= 1440 &&
+    shotW >= CSS_WIDTH * DEVICE_SCALE - 32 &&
+    shotH >= CSS_HEIGHT * DEVICE_SCALE - 32 &&
     traceChunks.length > 0 &&
     consoleLines.length > 0 &&
     statsEnd &&

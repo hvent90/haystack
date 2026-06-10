@@ -245,6 +245,8 @@ async function verifyWheelZoom(page: Page): Promise<void> {
 }
 
 async function verifyUiDoesNotOrbit(page: Page): Promise<void> {
+  // Windows boot closed (2e43cf2) — open the scanner before dragging its titlebar.
+  await openWindow(page, "scanner");
   const before = await probe(page);
   assert(before !== null, "probe before UI drag");
   // Drag the scanner window by its titlebar: the window must move (UI drags keep
