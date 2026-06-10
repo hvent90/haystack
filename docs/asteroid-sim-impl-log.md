@@ -217,3 +217,38 @@ fieldDiagnostic, both belt-aware).
   varying thickness + element-space tightness (0.048× Poisson). If future tuning wants
   discrete blob-clumps, push `inject_window[1]` to ~0.9995 and drop `dv_over_vorb_min`
   (sim re-run required) — or accept that arcs ARE the physical answer.
+
+## Session 1 — alternate preset + final report
+
+- `shepherd-moat` preset ran end-to-end in the background (400k particles, 8000 orbits,
+  ~35 min): the embedded shepherd at a=1.45 splits the belt into THREE separated rings —
+  a structurally different belt from the same pipeline. Validation ALL PASS (3:1/5:2 read
+  0.0 = fully carved inside the moat; validator now treats an empty flank as maximal
+  depletion, not missing data). Bake 2.1 MB, shipped to public/belt/shepherd-moat/,
+  selected at runtime via HAYSTACK_BELT_PRESET=shepherd-moat, captured in-client
+  (screenshots/belt-shepherd-moat-clean.png vs belt-default-belt-clean.png).
+- viewPos debug control added (render-stats/renderStore/EveApp) so capture scripts frame
+  any scale without flying; scripts/bench/belt-captures.mjs is the reusable harness.
+- Ops note: two dev servers sharing data/haystack.sqlite deadlock ("database is locked")
+  — capture/benchmark servers must take HAYSTACK_DB=<own file>.
+
+### Completion criteria — evidence index
+
+1. Sim/bake app: beltsim/ (README, pinned uv deps, `uv run beltsim all <preset>`); gaps +
+   families: runs/default/plots/* + validation.json (this log, "1M default run results").
+2. Tuning: presets/*.json knobs, README "Knobs and what they cost" stage map; alternate
+   preset shepherd-moat generated end-to-end and shipped.
+3. Artifacts committed: public/belt/default (3.2 MB) + public/belt/shepherd-moat
+   (2.1 MB); regeneration: `uv run beltsim all presets/<p>.json` + copy (README).
+4. Runtime from bake on both sides, bit-identical: src/shared/belt/ +
+   tests/integration/belt-parity.test.ts; all gates: bun run verify 140/140, verify:gpu
+   ALL PASS (incl. belt device round-trip), collision/ring-stream/cull/binner/collide
+   parity suites green.
+5. Perf: bench:gpu-cross:prod median 16.7 / p99 16.8 / over33 = 0; verify:gpu-live:prod
+   PASS at 60.1 fps (shadow-gate floors relativized to baselineLit, justification in
+   scripts/bench/gpu-live-loop.mjs + this log).
+6. Captures (1920×1080, real client): screenshots/belt-default-{close,region,belt}.png,
+   belt-default-belt-clean.png, belt-shepherd-moat-clean.png vs
+   belt-hash-baseline-{close,region,belt}.png; visual verdict recorded above.
+7. Deferred (explicit): far-field flow-field animation (artifact shipped, consumer is
+   future cosmetic drift); deeper 3:1 via longer re-sim (knob documented); GIF flythrough.
