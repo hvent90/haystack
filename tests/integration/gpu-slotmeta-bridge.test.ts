@@ -21,6 +21,7 @@ const FIELD: FieldSummary = {
   seed: 424_242,
   cellSize: 1130,
   indexKind: "cubicCellHierarchy",
+  preset: "legacy-uniform",
   renderedLimit: 50_000,
 };
 

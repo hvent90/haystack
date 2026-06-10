@@ -9,7 +9,7 @@
 
 import type { FieldSummary, Vector3 } from "../../shared/types";
 import { deriveVirtualField, packField, type PackedField } from "./field-core";
-import { sunlitForId } from "./sun-occlusion";
+import { configureSunOcclusion, sunlitForId } from "./sun-occlusion";
 
 export type FieldDeriveRequest = {
   reqId: number;
@@ -40,6 +40,7 @@ const ctx = self as unknown as WorkerScope;
 
 ctx.onmessage = (event) => {
   const { reqId, key, position, field } = event.data;
+  configureSunOcclusion(field);
   const asteroids = deriveVirtualField(position, field);
   const packed = packField(asteroids);
   const sunlit = new Float64Array(asteroids.length);
@@ -48,6 +49,7 @@ ctx.onmessage = (event) => {
   }
   ctx.postMessage({ reqId, key, packed, sunlit }, [
     packed.cells.buffer,
+    packed.indices.buffer,
     packed.positions.buffer,
     packed.scalars.buffer,
     packed.minerals.buffer,

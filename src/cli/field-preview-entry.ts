@@ -113,7 +113,12 @@ async function renderPanel(
   );
   // clip foreground rocks near the camera — at wide zooms they project huge
   // and hide the structure the panel exists to show
-  const camera = new THREE.PerspectiveCamera(panel.fov, width / height, Math.max(10, dist * 0.12), 5e6);
+  const camera = new THREE.PerspectiveCamera(
+    panel.fov,
+    width / height,
+    Math.max(10, dist * 0.12),
+    5e6,
+  );
   camera.position.set(panel.camPos.x, panel.camPos.y, panel.camPos.z);
   camera.lookAt(panel.lookAt.x, panel.lookAt.y, panel.lookAt.z);
 
@@ -133,7 +138,13 @@ async function renderPanel(
   return { canvas: copy, rockCount: rocks.length };
 }
 
-function caption(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, size = 18): void {
+function caption(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  size = 18,
+): void {
   ctx.font = `${size}px Menlo, monospace`;
   ctx.fillStyle = "rgba(0,0,0,0.55)";
   const w = ctx.measureText(text).width;
@@ -149,12 +160,20 @@ export async function renderFieldPreview(opts: PreviewOpts): Promise<PreviewShot
   const renderer = new THREE.WebGPURenderer({ canvas, antialias: true });
   await renderer.init();
   const backend = renderer.backend as { isWebGPUBackend?: boolean };
-  console.warn(`[preview] backend: ${backend.isWebGPUBackend === true ? "webgpu" : "webgl-fallback"}`);
+  console.warn(
+    `[preview] backend: ${backend.isWebGPUBackend === true ? "webgpu" : "webgl-fallback"}`,
+  );
 
   const shots: PreviewShot[] = [];
   const panels: Array<{ canvas: HTMLCanvasElement; rockCount: number; panel: PreviewPanel }> = [];
   for (const panel of opts.panels) {
-    const result = await renderPanel(renderer, panel, opts.preset, opts.panelWidth, opts.panelHeight);
+    const result = await renderPanel(
+      renderer,
+      panel,
+      opts.preset,
+      opts.panelWidth,
+      opts.panelHeight,
+    );
     panels.push({ ...result, panel });
   }
 
@@ -168,12 +187,7 @@ export async function renderFieldPreview(opts: PreviewOpts): Promise<PreviewShot
     for (let i = 0; i < panels.length; i += 1) {
       const p = panels[i]!;
       ctx.drawImage(p.canvas, i * opts.panelWidth, 34);
-      caption(
-        ctx,
-        `${p.panel.label}  ·  ${p.rockCount} rocks`,
-        i * opts.panelWidth + 14,
-        34 + 28,
-      );
+      caption(ctx, `${p.panel.label}  ·  ${p.rockCount} rocks`, i * opts.panelWidth + 14, 34 + 28);
     }
     caption(ctx, opts.caption, 14, 24, 19);
     shots.push({

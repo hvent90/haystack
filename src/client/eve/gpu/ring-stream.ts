@@ -137,7 +137,9 @@ export class FieldRingStream {
       // Identical to packFromRocks: w = aSunlit (cached sun-occlusion march per id).
       target.packAttr[o + 3] = sunlitForId(rock.id);
       const parts = rock.id.split("-");
-      target.slotMeta[o] = Number(parts[1]);
+      // Same packing as base-derive packFromRocks: in-cell rock index rides
+      // the high half of x (id `v-x-y-z[-i]`).
+      target.slotMeta[o] = Number(parts[1]) | ((parts.length > 4 ? Number(parts[4]) : 0) << 16);
       target.slotMeta[o + 1] = Number(parts[2]);
       target.slotMeta[o + 2] = Number(parts[3]);
       target.slotMeta[o + 3] = epoch;

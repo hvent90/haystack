@@ -6,6 +6,13 @@ import type {
   ScanHit,
   Vector3,
 } from "../shared/types";
+import {
+  createFieldContext,
+  rocksInCell,
+  type FieldGeometry,
+  type RockSpec,
+} from "../shared/field-factory";
+import { PRESETS } from "../shared/field-presets";
 
 type Cell = {
   x: number;
@@ -32,6 +39,20 @@ function renderedLimit(): number {
 const originOffset = -(cellsPerAxis * cellSize) / 2;
 const minerals: Mineral[] = ["nickel", "waterIce", "cobalt", "silicates", "platinum", "xenotime"];
 
+// The field-factory preset shaping the virtual field. Defaults to the legacy
+// uniform scatter until a designed belt is approved; env-overridable for A/B.
+function fieldPresetName(): string {
+  const name = process.env["HAYSTACK_FIELD_PRESET"] ?? "legacy-uniform";
+  return PRESETS[name] !== undefined ? name : "legacy-uniform";
+}
+
+const factoryGeometry: FieldGeometry = {
+  seed: fieldSeed,
+  cellSize,
+  cellsPerAxis,
+  originOffset,
+};
+
 export function fieldSummary(): FieldSummary {
   return {
     totalAsteroids: cellsPerAxis * cellsPerAxis * cellsPerAxis,
@@ -39,6 +60,25 @@ export function fieldSummary(): FieldSummary {
     cellSize,
     indexKind: "cubicCellHierarchy",
     renderedLimit: renderedLimit(),
+    preset: fieldPresetName(),
+  };
+}
+
+// Wire `Asteroid` from a factory RockSpec. Rock 0 keeps the legacy `v-x-y-z` id
+// (byte-compatible with the pre-factory field); siblings append their index.
+function asteroidFromRock(rock: RockSpec): Asteroid {
+  return {
+    id:
+      rock.index === 0
+        ? `v-${rock.cx}-${rock.cy}-${rock.cz}`
+        : `v-${rock.cx}-${rock.cy}-${rock.cz}-${rock.index}`,
+    pocket: pocketForCell({ x: rock.cx, y: rock.cy, z: rock.cz }),
+    position: rock.position,
+    radius: rock.radius,
+    signature: rock.signature,
+    mineralRichness: rock.mineralRichness,
+    rareMineral: minerals[rock.mineralIndex] ?? "nickel",
+    discovered: true,
   };
 }
 
@@ -61,15 +101,19 @@ export function queryVirtualAsteroids(
 
   const candidates: Array<{ asteroid: Asteroid; distance: number }> = [];
   let cellsVisited = 0;
+  const preset = PRESETS[fieldPresetName()]!;
+  const ctx = createFieldContext();
 
   for (let x = min.x; x <= max.x; x += 1) {
     for (let y = min.y; y <= max.y; y += 1) {
       for (let z = min.z; z <= max.z; z += 1) {
         cellsVisited += 1;
-        const asteroid = virtualAsteroidAt({ x, y, z });
-        const range = distance(origin, asteroid.position);
-        if (range <= boundedRadius) {
-          candidates.push({ asteroid, distance: range });
+        for (const rock of rocksInCell(factoryGeometry, preset, ctx, x, y, z)) {
+          const asteroid = asteroidFromRock(rock);
+          const range = distance(origin, asteroid.position);
+          if (range <= boundedRadius) {
+            candidates.push({ asteroid, distance: range });
+          }
         }
       }
     }
@@ -179,31 +223,6 @@ export function fieldDiagnostic(origin: Vector3, radius: number, limit: number):
   };
 }
 
-function virtualAsteroidAt(cell: Cell): Asteroid {
-  const seed = hashCell(cell);
-  const position = {
-    x: originOffset + cell.x * cellSize + noise(seed + 1) * cellSize,
-    y: originOffset + cell.y * cellSize + noise(seed + 2) * cellSize,
-    z: originOffset + cell.z * cellSize + noise(seed + 3) * cellSize,
-  };
-  const mineralIndex = Math.floor(noise(seed + 4) * minerals.length) % minerals.length;
-  const rareMineral = minerals[mineralIndex] ?? "nickel";
-  const radius = 45 + noise(seed + 5) * 310;
-  const signature = 0.08 + noise(seed + 6) * 0.7;
-  const mineralRichness = 0.18 + noise(seed + 7) * 0.82;
-
-  return {
-    id: `v-${cell.x}-${cell.y}-${cell.z}`,
-    pocket: pocketForCell(cell),
-    position,
-    radius,
-    signature,
-    mineralRichness,
-    rareMineral,
-    discovered: true,
-  };
-}
-
 function worldToCell(position: Vector3): Cell {
   return {
     x: clampCell(Math.floor((position.x - originOffset) / cellSize)),
@@ -224,15 +243,6 @@ function pocketForCell(cell: Cell): string {
     return "black-thread";
   }
   return "long-echo";
-}
-
-function hashCell(cell: Cell): number {
-  return fieldSeed + cell.x * 73856093 + cell.y * 19349663 + cell.z * 83492791;
-}
-
-function noise(seed: number): number {
-  const x = Math.sin(seed * 12.9898) * 43758.5453;
-  return x - Math.floor(x);
 }
 
 function subtract(left: Vector3, right: Vector3): Vector3 {

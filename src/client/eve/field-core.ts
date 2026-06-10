@@ -1,4 +1,13 @@
 import type { Asteroid, FieldSummary, Mineral, Vector3 } from "../../shared/types";
+import {
+  createFieldContext,
+  rocksInCell,
+  type FieldContext,
+  type FieldGeometry as FactoryGeometry,
+  type FieldPreset,
+  type RockSpec,
+} from "../../shared/field-factory";
+import { PRESETS } from "../../shared/field-presets";
 
 // Pure, dependency-free reconstruction of the deterministic virtual asteroid field.
 //
@@ -17,15 +26,6 @@ import type { Asteroid, FieldSummary, Mineral, Vector3 } from "../../shared/type
 
 const MINERALS: Mineral[] = ["nickel", "waterIce", "cobalt", "silicates", "platinum", "xenotime"];
 
-function hashCell(seed: number, x: number, y: number, z: number): number {
-  return seed + x * 73856093 + y * 19349663 + z * 83492791;
-}
-
-function noise(seed: number): number {
-  const value = Math.sin(seed * 12.9898) * 43758.5453;
-  return value - Math.floor(value);
-}
-
 function pocketForCell(cellX: number): string {
   if (cellX < 33) {
     return "inner-drift";
@@ -36,12 +36,9 @@ function pocketForCell(cellX: number): string {
   return "long-echo";
 }
 
-type FieldGeometry = {
-  seed: number;
-  cellSize: number;
-  cellsPerAxis: number;
-  originOffset: number;
+type FieldGeometry = FactoryGeometry & {
   limit: number;
+  preset: FieldPreset;
 };
 
 function geometryOf(field: FieldSummary): FieldGeometry {
@@ -52,6 +49,9 @@ function geometryOf(field: FieldSummary): FieldGeometry {
     cellsPerAxis,
     originOffset: -(cellsPerAxis * field.cellSize) / 2,
     limit: Math.max(1, field.renderedLimit),
+    // Unknown preset names degrade to the legacy field rather than diverging
+    // from whatever the server meant — parity over novelty.
+    preset: PRESETS[field.preset] ?? PRESETS["legacy-uniform"]!,
   };
 }
 
@@ -73,23 +73,32 @@ export function cellCoords(
   };
 }
 
-function virtualAsteroidAt(geo: FieldGeometry, cx: number, cy: number, cz: number): Asteroid {
-  const seed = hashCell(geo.seed, cx, cy, cz);
+// Mirror of the server's asteroidFromRock (field.ts): rock 0 keeps the legacy
+// `v-x-y-z` id, siblings append their in-cell index.
+function asteroidFromRock(rock: RockSpec): Asteroid {
   return {
-    id: `v-${cx}-${cy}-${cz}`,
-    pocket: pocketForCell(cx),
-    position: {
-      x: geo.originOffset + cx * geo.cellSize + noise(seed + 1) * geo.cellSize,
-      y: geo.originOffset + cy * geo.cellSize + noise(seed + 2) * geo.cellSize,
-      z: geo.originOffset + cz * geo.cellSize + noise(seed + 3) * geo.cellSize,
-    },
-    radius: 45 + noise(seed + 5) * 310,
-    signature: 0.08 + noise(seed + 6) * 0.7,
-    mineralRichness: 0.18 + noise(seed + 7) * 0.82,
-    rareMineral:
-      MINERALS[Math.floor(noise(seed + 4) * MINERALS.length) % MINERALS.length] ?? "nickel",
+    id:
+      rock.index === 0
+        ? `v-${rock.cx}-${rock.cy}-${rock.cz}`
+        : `v-${rock.cx}-${rock.cy}-${rock.cz}-${rock.index}`,
+    pocket: pocketForCell(rock.cx),
+    position: rock.position,
+    radius: rock.radius,
+    signature: rock.signature,
+    mineralRichness: rock.mineralRichness,
+    rareMineral: MINERALS[rock.mineralIndex] ?? "nickel",
     discovered: true,
   };
+}
+
+function virtualAsteroidsAt(
+  geo: FieldGeometry,
+  ctx: FieldContext,
+  cx: number,
+  cy: number,
+  cz: number,
+): Asteroid[] {
+  return rocksInCell(geo, geo.preset, ctx, cx, cy, cz).map(asteroidFromRock);
 }
 
 // The nearest `renderedLimit` virtual rocks to the ship's CELL CENTER, sorted nearest
@@ -119,6 +128,9 @@ export function deriveVirtualField(position: Vector3, field: FieldSummary): Aste
   const oy = geo.originOffset + cy * geo.cellSize + geo.cellSize / 2;
   const oz = geo.originOffset + cz * geo.cellSize + geo.cellSize / 2;
 
+  // The factory's coarse-cluster memo persists across growth retries — the
+  // re-scanned inner cube hits the memo instead of re-hashing clusters.
+  const ctx = createFieldContext();
   let half = Math.max(1, Math.ceil(Math.cbrt(geo.limit) / 2));
   let candidates: Array<{ asteroid: Asteroid; d2: number }> = [];
   for (;;) {
@@ -132,11 +144,12 @@ export function deriveVirtualField(position: Vector3, field: FieldSummary): Aste
     for (let x = minX; x <= maxX; x += 1) {
       for (let y = minY; y <= maxY; y += 1) {
         for (let z = minZ; z <= maxZ; z += 1) {
-          const asteroid = virtualAsteroidAt(geo, x, y, z);
-          const dx = asteroid.position.x - ox;
-          const dy = asteroid.position.y - oy;
-          const dz = asteroid.position.z - oz;
-          candidates.push({ asteroid, d2: dx * dx + dy * dy + dz * dz });
+          for (const asteroid of virtualAsteroidsAt(geo, ctx, x, y, z)) {
+            const dx = asteroid.position.x - ox;
+            const dy = asteroid.position.y - oy;
+            const dz = asteroid.position.z - oz;
+            candidates.push({ asteroid, d2: dx * dx + dy * dy + dz * dz });
+          }
         }
       }
     }
@@ -175,6 +188,8 @@ export type PackedField = {
   count: number;
   // 3 per rock: cx, cy, cz (drives id + pocket).
   cells: Int32Array;
+  // 1 per rock: in-cell rock index (multi-rock cells; 0 = legacy id shape).
+  indices: Uint8Array;
   // 3 per rock: position x, y, z (f64 — bit-identical to deriveVirtualField).
   positions: Float64Array;
   // 3 per rock: radius, signature, mineralRichness.
@@ -183,20 +198,33 @@ export type PackedField = {
   minerals: Uint8Array;
 };
 
+// Parse `v-cx-cy-cz[-i]` (the only id shape virtual rocks have).
+function idParts(id: string): { cx: number; cy: number; cz: number; index: number } {
+  const parts = id.split("-");
+  return {
+    cx: Number(parts[1]),
+    cy: Number(parts[2]),
+    cz: Number(parts[3]),
+    index: parts.length > 4 ? Number(parts[4]) : 0,
+  };
+}
+
 // Pack a derived virtual field (all rocks have the `v-cx-cy-cz` id shape and
 // discovered=true) into transferable typed arrays. Runs in the worker, off the hot path.
 export function packField(asteroids: Asteroid[]): PackedField {
   const count = asteroids.length;
   const cells = new Int32Array(count * 3);
+  const indices = new Uint8Array(count);
   const positions = new Float64Array(count * 3);
   const scalars = new Float64Array(count * 3);
   const minerals = new Uint8Array(count);
   for (let i = 0; i < count; i += 1) {
     const asteroid = asteroids[i]!;
-    const parts = asteroid.id.split("-");
-    cells[i * 3] = Number(parts[1]);
-    cells[i * 3 + 1] = Number(parts[2]);
-    cells[i * 3 + 2] = Number(parts[3]);
+    const parts = idParts(asteroid.id);
+    cells[i * 3] = parts.cx;
+    cells[i * 3 + 1] = parts.cy;
+    cells[i * 3 + 2] = parts.cz;
+    indices[i] = parts.index;
     positions[i * 3] = asteroid.position.x;
     positions[i * 3 + 1] = asteroid.position.y;
     positions[i * 3 + 2] = asteroid.position.z;
@@ -206,15 +234,16 @@ export function packField(asteroids: Asteroid[]): PackedField {
     const mineralIndex = MINERALS.indexOf(asteroid.rareMineral);
     minerals[i] = mineralIndex < 0 ? 0 : mineralIndex;
   }
-  return { count, cells, positions, scalars, minerals };
+  return { count, cells, indices, positions, scalars, minerals };
 }
 
-// Cell coords are packed into one number key so the per-cross reuse map (below) needs no
-// string allocation to look a rock up. Safe while cellsPerAxis < 8192 (totalAsteroids <
-// ~5.5e11) — far beyond any real field.
+// Cell coords + in-cell rock index packed into one number key so the per-cross
+// reuse map (below) needs no string allocation to look a rock up. Safe while
+// cellsPerAxis < 8192 and rocks-per-cell ≤ 16 (8192³ · 16 ≈ 8.8e12 < 2^53).
 const CELL_KEY_BASE = 8192;
-function cellKeyOf(cx: number, cy: number, cz: number): number {
-  return (cx * CELL_KEY_BASE + cy) * CELL_KEY_BASE + cz;
+const CELL_KEY_ROCKS = 16;
+function cellKeyOf(cx: number, cy: number, cz: number, index: number): number {
+  return ((cx * CELL_KEY_BASE + cy) * CELL_KEY_BASE + cz) * CELL_KEY_ROCKS + index;
 }
 
 // Build the cellKey -> Asteroid index for an already-derived virtual field (rocks have the
@@ -223,8 +252,8 @@ function cellKeyOf(cx: number, cy: number, cz: number): number {
 export function indexByCell(asteroids: Asteroid[]): Map<number, Asteroid> {
   const byCell = new Map<number, Asteroid>();
   for (const asteroid of asteroids) {
-    const parts = asteroid.id.split("-");
-    byCell.set(cellKeyOf(Number(parts[1]), Number(parts[2]), Number(parts[3])), asteroid);
+    const parts = idParts(asteroid.id);
+    byCell.set(cellKeyOf(parts.cx, parts.cy, parts.cz, parts.index), asteroid);
   }
   return byCell;
 }
@@ -246,18 +275,19 @@ export function unpackField(
   packed: PackedField,
   reuse?: Map<number, Asteroid> | null,
 ): UnpackedField {
-  const { count, cells, positions, scalars, minerals } = packed;
+  const { count, cells, indices, positions, scalars, minerals } = packed;
   const asteroids: Asteroid[] = new Array(count);
   const byCell = new Map<number, Asteroid>();
   for (let i = 0; i < count; i += 1) {
     const cx = cells[i * 3]!;
     const cy = cells[i * 3 + 1]!;
     const cz = cells[i * 3 + 2]!;
-    const cellKey = cellKeyOf(cx, cy, cz);
+    const index = indices[i]!;
+    const cellKey = cellKeyOf(cx, cy, cz, index);
     let asteroid = reuse?.get(cellKey);
     if (asteroid === undefined) {
       asteroid = {
-        id: `v-${cx}-${cy}-${cz}`,
+        id: index === 0 ? `v-${cx}-${cy}-${cz}` : `v-${cx}-${cy}-${cz}-${index}`,
         pocket: pocketForCell(cx),
         position: { x: positions[i * 3]!, y: positions[i * 3 + 1]!, z: positions[i * 3 + 2]! },
         radius: scalars[i * 3]!,

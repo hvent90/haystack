@@ -113,18 +113,20 @@ function buildPanels(presetName: string): { panels: PreviewPanel[]; framing: str
     }
   }
   const zooms = (arg("zooms") ?? "2000,10000,50000").split(",").map(Number);
-  const panels = zooms.map((dist): PreviewPanel => ({
-    label: dist >= 1000 ? `${(dist / 1000).toFixed(0)} km` : `${dist} m`,
-    camPos: {
-      x: target.x + dir.x * dist,
-      y: target.y + dir.y * dist,
-      z: target.z + dir.z * dist,
-    },
-    lookAt: target,
-    fov,
-    queryRadius: Math.max(4000, dist * 1.4),
-    minWorldRadius: dist * 0.0038,
-  }));
+  const panels = zooms.map(
+    (dist): PreviewPanel => ({
+      label: dist >= 1000 ? `${(dist / 1000).toFixed(0)} km` : `${dist} m`,
+      camPos: {
+        x: target.x + dir.x * dist,
+        y: target.y + dir.y * dist,
+        z: target.z + dir.z * dist,
+      },
+      lookAt: target,
+      fov,
+      queryRadius: Math.max(4000, dist * 1.4),
+      minWorldRadius: dist * 0.0038,
+    }),
+  );
   return { panels, framing };
 }
 

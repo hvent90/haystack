@@ -421,7 +421,12 @@ function clusterAtMemo(
 // Rock octave — rocks for one fine cell.
 // ---------------------------------------------------------------------------
 
-function sampleRadius(dist: RadiusDist, u: number, intensity: number, uBig: number): {
+function sampleRadius(
+  dist: RadiusDist,
+  u: number,
+  intensity: number,
+  uBig: number,
+): {
   radius: number;
   role: 0 | 1 | 2;
 } {
@@ -533,8 +538,7 @@ export function rocksInCell(
 
   const rocks: RockSpec[] = [];
   for (let i = 0; i < count; i += 1) {
-    const ch = (channel: number): number =>
-      hash4(geo.seed, cx, cy, cz, S_ROCK + i * 16 + channel);
+    const ch = (channel: number): number => hash4(geo.seed, cx, cy, cz, S_ROCK + i * 16 + channel);
     // jittered position within the cell
     let px = geo.originOffset + (cx + u01(ch(0))) * geo.cellSize;
     let py = geo.originOffset + (cy + u01(ch(1))) * geo.cellSize;
@@ -699,14 +703,32 @@ export function rocksInSphere(
 ): RockSpec[] {
   const ctx = createFieldContext();
   const minC = {
-    x: clampCell(Math.floor((origin.x - radius - geo.originOffset) / geo.cellSize), geo.cellsPerAxis),
-    y: clampCell(Math.floor((origin.y - radius - geo.originOffset) / geo.cellSize), geo.cellsPerAxis),
-    z: clampCell(Math.floor((origin.z - radius - geo.originOffset) / geo.cellSize), geo.cellsPerAxis),
+    x: clampCell(
+      Math.floor((origin.x - radius - geo.originOffset) / geo.cellSize),
+      geo.cellsPerAxis,
+    ),
+    y: clampCell(
+      Math.floor((origin.y - radius - geo.originOffset) / geo.cellSize),
+      geo.cellsPerAxis,
+    ),
+    z: clampCell(
+      Math.floor((origin.z - radius - geo.originOffset) / geo.cellSize),
+      geo.cellsPerAxis,
+    ),
   };
   const maxC = {
-    x: clampCell(Math.floor((origin.x + radius - geo.originOffset) / geo.cellSize), geo.cellsPerAxis),
-    y: clampCell(Math.floor((origin.y + radius - geo.originOffset) / geo.cellSize), geo.cellsPerAxis),
-    z: clampCell(Math.floor((origin.z + radius - geo.originOffset) / geo.cellSize), geo.cellsPerAxis),
+    x: clampCell(
+      Math.floor((origin.x + radius - geo.originOffset) / geo.cellSize),
+      geo.cellsPerAxis,
+    ),
+    y: clampCell(
+      Math.floor((origin.y + radius - geo.originOffset) / geo.cellSize),
+      geo.cellsPerAxis,
+    ),
+    z: clampCell(
+      Math.floor((origin.z + radius - geo.originOffset) / geo.cellSize),
+      geo.cellsPerAxis,
+    ),
   };
   const out: RockSpec[] = [];
   const r2 = radius * radius;
