@@ -147,3 +147,13 @@ Landed (all gates green at each step):
   inside, no console errors. Screenshot DM'd.
 - Pacing note: cruise 220 m/s ⇒ pockets at 14–200 km keep the old pacing; the full
   6.5e6 m belt is long-horizon search space/scenery. Movement changes out of contract.
+
+### Perf (bench:gpu-cross:prod, real Chrome/Metal, production bundle, smoke bake)
+
+- Belt field: 718 frames median 16.7 ms / p99 16.8 / max 33.4, over50 = 0, over33 = 1;
+  13 forced crossings at 150 m/frame, worker derive 7–10 ms each, worst cross-frame
+  17.1 ms. No dropped-frame regression from the bake lookup.
+- Hash baseline on this machine: median 16.7 / p99 16.8 / max 16.8 (vsync-locked; note
+  the relocated spawn sits outside the legacy cube so the drift window produces no
+  crossings — frame numbers are the render baseline, derive cost compared via the belt
+  run's own worker timings, which match the pre-belt era's ~8–12 ms).
