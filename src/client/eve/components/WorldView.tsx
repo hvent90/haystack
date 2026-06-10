@@ -93,6 +93,7 @@ import {
 } from "../gpu/buffers";
 import { markRangesForUpload } from "../gpu/base-derive";
 import { FieldRingStream, mergeDirtyToRanges } from "../gpu/ring-stream";
+import { BeltFarField } from "./BeltFarField";
 // NOTE: the WebGL @react-three/postprocessing stack (ScanPulse + Bloom + ACES) cannot run under
 // WebGPURenderer; it is removed here and ported to the three-native TSL PostProcessing in step 2.
 
@@ -209,6 +210,7 @@ export function WorldView({
             <SunDisc />
             <ShipFlashlight fallbackOrientation={myShip.orientation} on={flashlightOn} />
             <GridStars />
+            <BeltFarField fallbackOrigin={myShip.position} />
             <InstancedAsteroids asteroids={asteroids} fallbackOrigin={myShip.position} />
             {structures.map((structure) => (
               <StructureMesh
