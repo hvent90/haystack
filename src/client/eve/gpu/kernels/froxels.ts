@@ -147,12 +147,17 @@ export type FroxelTuning = {
   mix: number;
 };
 
+// The "ED milk" tuning (hv-approved 2026-06-10): warm rocky-ring dust at Elite
+// Dangerous lit-side intensity — rocks silhouette into a glowing brown haze with a
+// bright sun-side gradient (research doc §5: "milk of clouds"). The pre-ED bluish
+// breath was sigmaScale 0.22 / albedo (0.5, 0.56, 0.74) / sunStrength 0.65;
+// sigmaScale is the one-number milk-intensity slider if this needs dialing.
 export const FROXEL_DEFAULTS: FroxelTuning = {
-  sigmaScale: 0.22,
+  sigmaScale: 0.55,
   sigmaFloor: 0.01,
-  albedo: { r: 0.5, g: 0.56, b: 0.74 },
-  ambient: 0.008,
-  sunStrength: 0.65,
+  albedo: { r: 0.66, g: 0.58, b: 0.47 },
+  ambient: 0.012,
+  sunStrength: 1.0,
   hgG: 0.45,
   flashStrength: 1,
   mix: 1,
