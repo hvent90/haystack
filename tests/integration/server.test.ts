@@ -1066,8 +1066,14 @@ describe("haystack server", () => {
         hits: unknown[];
       };
     }>(
+      // A LOCAL query (radius ~9 cells) proves the cubic-cell hierarchy materializes
+      // only the neighborhood, not the whole 1M field. The field is ~1130 m/cell
+      // spanning ±56.5 km (see field.ts: cellSize/cellsPerAxis), so a 10 km radius is
+      // a small local sphere (~a few thousand of the million cells). A field-spanning
+      // radius would correctly materialize a large fraction and prove nothing about
+      // pruning.
       await requireWorld().app.request(
-        `/api/ships/${pilot.id}/field-diagnostic?radius=52000&limit=16`,
+        `/api/ships/${pilot.id}/field-diagnostic?radius=10000&limit=16`,
       ),
     );
     const payload = await response.json();
@@ -1118,7 +1124,15 @@ describe("haystack server", () => {
       expect(snapshot.chat.some((message) => message.body === "persist me")).toBe(true);
       reopened.close();
     } finally {
-      rmSync(directory, { recursive: true, force: true });
+      // Best-effort temp cleanup. On Windows the sqlite file handle can linger a few
+      // ms after close(), so an immediate recursive rm throws EBUSY even though the
+      // assertions above already ran. The OS reclaims tmpdir() regardless, so a failed
+      // cleanup must not fail the test.
+      try {
+        rmSync(directory, { recursive: true, force: true });
+      } catch {
+        // ignore (Windows file-lock timing on a temp dir)
+      }
     }
   });
 });
