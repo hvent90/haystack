@@ -44,6 +44,23 @@ const client = Bun.spawn(
 
 let browser: Browser | null = null;
 
+// Hard wall-clock watchdog: under headless SwiftShader the page's main thread can
+// starve so badly that an un-timeboxed page.evaluate never resolves and the suite
+// hangs FOREVER (observed repeatedly; a healthy run completes in ~3-4 minutes).
+// Fail loudly with cleanup instead of wedging the pipeline.
+const watchdog = setTimeout(
+  () => {
+    console.error(
+      "WATCHDOG: prediction suite exceeded 6 minutes — page presumed starved " +
+        "(SwiftShader main-thread wedge); failing instead of hanging.",
+    );
+    server.kill();
+    client.kill();
+    process.exit(1);
+  },
+  6 * 60 * 1000,
+);
+
 try {
   await waitFor(`${serverUrl}/api/health`);
   await waitFor(clientUrl);
@@ -62,6 +79,13 @@ try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
   const url = new URL(clientUrl);
   url.searchParams.set("pilotId", pilot.id);
+  // Netcode test, not a render test (same rationale as the small HAYSTACK_RENDERED_LIMIT
+  // above): the mobile quality tier (quality.ts) cuts the froxel grid ~73% and drops the
+  // shadow pass, keeping headless SwiftShader frames short enough that the page's main
+  // thread stays responsive — at full desktop-tier rendering, SwiftShader can starve
+  // evaluate()/timers here for minutes. The input -> prediction -> ack path under test
+  // is identical across tiers.
+  url.searchParams.set("tier", "mobile");
   await page.goto(url.toString(), { waitUntil: "networkidle" });
   await page.waitForSelector("[data-testid='haystack-app']", { timeout: 15000 });
 
@@ -81,6 +105,7 @@ try {
     ),
   );
 } finally {
+  clearTimeout(watchdog);
   if (browser !== null) {
     await browser.close();
   }

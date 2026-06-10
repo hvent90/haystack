@@ -110,6 +110,13 @@ Commits: `37827f4` (viewport/safe-areas), `a7cb2ae` (sticks + buttons), `c78a04e
   hit the stale server, whose baked `VITE_API_URL` pointed at a dead port, so the app
   never booted. If a suite fails on boot with no code change, `lsof -i :<port>`
   first.
+- **`verify:prediction` intermittently wedged under SwiftShader at full desktop-tier
+  rendering** (its first un-timeboxed `page.evaluate` starves behind multi-second
+  software-rendered froxel frames; observed Chromium at 600 % CPU). The suite is a
+  netcode test and already shrinks the field for exactly this class of reason, so its
+  page now boots with `?tier=mobile` — the input → prediction → ack path under test is
+  tier-independent, and the suite went from minutes-or-hang to a fast deterministic
+  pass. The mobile tier paying down a desktop harness's debt is a pleasing inversion.
 - **The gpu-live SHADOW gate is margin-flaky on this machine.** The diag counts are
   noise-relative (`tier1 > 2.5 × noise`) and this machine's measure view yields tiny
   absolute counts (~10 px vs the ~8000 the comment expects on Metal), so a noise
