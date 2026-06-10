@@ -86,8 +86,19 @@ function buildPostStack(renderer: Renderer, scene: THREE.Scene, camera: THREE.Ca
   const uProjInv = uniform(camera.projectionMatrixInverse);
   const uCamWorld = uniform(camera.matrixWorld);
 
+  // Froxel volumetric composite (architecture §6.5): scene depth -> depth-aware lookup
+  // of the integrated froxel volume -> color·T + inScatter. Slots in BEFORE ScanPulse
+  // and BEFORE bloom. REVISED from the original §1.3 ordering (medium in front of the
+  // shells): at ED-milk fog density the medium fully extinguished the scan pulse at
+  // gameplay distances (live scan gate read 0 teal px). The scan shell is a sensor
+  // overlay, not a lit object — Elite Dangerous renders its scanner the same way
+  // (research doc: the pulse-wave overlay stays bright "no matter what distance",
+  // straight through ring dust) — so it composites ON TOP of the fog, fog-proof at any
+  // sigmaScale.
+  const fogged = makeFroxelComposite(beauty, depthTex, uv(), camera);
+
   const scanned = Fn(() => {
-    const result = vec4(beauty).toVar();
+    const result = vec4(fogged).toVar();
     // Idle (strength 0) short-circuits to passthrough; background (depth 1) has nothing
     // to scan.
     If(uStrength.greaterThan(0), () => {
@@ -108,16 +119,11 @@ function buildPostStack(renderer: Renderer, scene: THREE.Scene, camera: THREE.Ca
     return result;
   })();
 
-  // Froxel volumetric composite (architecture §6.5): scene depth -> depth-aware lookup of
-  // the integrated froxel volume -> color·T + inScatter. Slots in AFTER ScanPulse (the
-  // medium sits in front of the scanned shells) and BEFORE bloom, per the §1.3 chain.
-  const fogged = makeFroxelComposite(scanned, depthTex, uv(), camera);
-
-  const bloomNode = bloom(fogged, bloomIntensity, 0, bloomLuminanceThreshold);
+  const bloomNode = bloom(scanned, bloomIntensity, 0, bloomLuminanceThreshold);
   bloomNode.smoothWidth.value = bloomLuminanceSmoothing;
 
   const postProcessing = new THREE.PostProcessing(renderer);
-  postProcessing.outputNode = fogged.add(bloomNode);
+  postProcessing.outputNode = scanned.add(bloomNode);
 
   return {
     postProcessing,

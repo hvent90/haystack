@@ -150,10 +150,16 @@ export type FroxelTuning = {
 // The "ED milk" tuning (hv-approved 2026-06-10): warm rocky-ring dust at Elite
 // Dangerous lit-side intensity — rocks silhouette into a glowing brown haze with a
 // bright sun-side gradient (research doc §5: "milk of clouds"). The pre-ED bluish
-// breath was sigmaScale 0.22 / albedo (0.5, 0.56, 0.74) / sunStrength 0.65;
-// sigmaScale is the one-number milk-intensity slider if this needs dialing.
+// breath was sigmaScale 0.22 / albedo (0.5, 0.56, 0.74) / sunStrength 0.65.
+//
+// sigmaScale is CALIBRATED TO THE ACTIVE BAKE's local density statistics: extinction =
+// sigmaScale x baked density (0..1 of the bake's own 99.9th-pct peak). The saturn bake
+// reads ~0.19 of peak in the spawn band (the legacy default bake read ~0.7), so the
+// 0.55 that made milk on the legacy bake rendered as "no haze at all" on saturn (hv
+// report, 2026-06-10). 2.5 x 0.19 ≈ 0.48/km ≈ the legacy look. Re-tune this if the
+// shipped preset (or its density normalization) changes.
 export const FROXEL_DEFAULTS: FroxelTuning = {
-  sigmaScale: 0.55,
+  sigmaScale: 2.5,
   sigmaFloor: 0.01,
   albedo: { r: 0.66, g: 0.58, b: 0.47 },
   ambient: 0.012,
