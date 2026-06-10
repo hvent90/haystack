@@ -233,7 +233,11 @@ function buildAssets(belt: BeltField): FarFieldAssets {
   // ED's answer is physical: ring dust limits in-plane visibility. So when the camera
   // is inside the slab, extinguish distant speckles; from above/below the full belt
   // stays visible (that's the legitimate region/belt-scale view).
-  const speckCamAbove = smoothstep(float(2.5), float(7), cameraPosition.y.sub(positionWorld.y).abs());
+  const speckCamAbove = smoothstep(
+    float(2.5),
+    float(7),
+    cameraPosition.y.sub(positionWorld.y).abs(),
+  );
   const speckFarCut = mix(smoothstep(float(300), float(110), speckDist), float(1), speckCamAbove);
   speckMat.colorNode = vec4(vec3(0.5, 0.5, 0.53), speckFade.mul(speckFarCut).mul(0.2));
   speckMat.sizeNode = clamp(speckDist.mul(0.004), float(1.0), float(3.2));
@@ -351,9 +355,7 @@ export function BeltFarField({ fallbackOrigin }: { fallbackOrigin: Vector3 }): R
         : fallbackOrigin;
       const center = shellCenter.current;
       const moved =
-        center === null
-          ? Infinity
-          : Math.hypot(origin.x - center.x, origin.z - center.z);
+        center === null ? Infinity : Math.hypot(origin.x - center.x, origin.z - center.z);
       if (moved > SHELL_REBUILD_M) {
         shellCenter.current = { x: origin.x, z: origin.z };
         const positions = buildShellPositions(belt, origin.x, origin.z);
