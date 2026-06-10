@@ -28,6 +28,8 @@ import * as THREE from "three/webgpu";
 import {
   abs,
   atan,
+  atomicLoad,
+  Break,
   clamp,
   exp,
   float,
@@ -41,6 +43,7 @@ import {
   log,
   Loop,
   max,
+  min,
   mix,
   normalize,
   smoothstep,
@@ -63,8 +66,26 @@ import {
   FROXEL_NEAR,
   FROXEL_W,
   METERS_PER_SCENE_UNIT,
+  SUN_ANGULAR_RADIUS,
+  SUN_MARCH_STEP_METERS,
+  SUN_MARCH_STEPS,
+  SUN_PENUMBRA_CAP,
+  SUN_TRANS_FLOOR,
 } from "../froxels-cpu";
-import { backingU32Of } from "../buffers";
+import { backingU32Of, pos } from "../buffers";
+import { COLLISION_CELL_METERS, COLLISION_GRID_AXIS } from "../collide-cpu";
+import {
+  flashlightAngle,
+  flashlightColor,
+  flashlightDecay,
+  flashlightDistance,
+  flashlightIntensity,
+  flashlightPenumbra,
+  sunDirection,
+  sunLightColor,
+} from "../../lighting";
+import type { BinnerBuffers } from "./binner";
+import { gridOrigin } from "./collide";
 import { originMeters } from "./render-node";
 
 const WORKGROUP = 256;
@@ -108,8 +129,14 @@ export type FroxelTuning = {
   sigmaFloor: number;
   // Scattering albedo tint (what color the dust scatters).
   albedo: { r: number; g: number; b: number };
-  // Phase-1 isotropic ambient in-scatter strength (kept faint once lights land).
+  // Isotropic ambient in-scatter strength (faint — the lights carry the look).
   ambient: number;
+  // Sun in-scatter gain (the rock-shadow march + HG phase ride this term).
+  sunStrength: number;
+  // Henyey-Greenstein anisotropy; slight forward scatter per the spec (g ≈ 0.3..0.6).
+  hgG: number;
+  // Multiplier over flashlightIntensity for the volumetric beam term.
+  flashStrength: number;
   // 0 = froxel composite off (passthrough), 1 = fully applied.
   mix: number;
 };
@@ -118,7 +145,10 @@ export const FROXEL_DEFAULTS: FroxelTuning = {
   sigmaScale: 0.22,
   sigmaFloor: 0.01,
   albedo: { r: 0.5, g: 0.56, b: 0.74 },
-  ambient: 0.028,
+  ambient: 0.008,
+  sunStrength: 0.65,
+  hgG: 0.45,
+  flashStrength: 1,
   mix: 1,
 };
 
@@ -128,6 +158,8 @@ const uAlbedo = uniform(
   new THREE.Color(FROXEL_DEFAULTS.albedo.r, FROXEL_DEFAULTS.albedo.g, FROXEL_DEFAULTS.albedo.b),
 );
 const uAmbient = uniform(FROXEL_DEFAULTS.ambient);
+const uSunStrength = uniform(FROXEL_DEFAULTS.sunStrength);
+const uHgG = uniform(FROXEL_DEFAULTS.hgG);
 const uFroxelMix = uniform(FROXEL_DEFAULTS.mix);
 
 // Apply tuning (defaults overlaid with the WorldView debug-override object, if any) —
@@ -138,8 +170,40 @@ export function applyFroxelTuning(override: Partial<FroxelTuning> | null): void 
   uSigmaFloor.value = t.sigmaFloor;
   uAlbedo.value.setRGB(t.albedo.r, t.albedo.g, t.albedo.b);
   uAmbient.value = t.ambient;
+  uSunStrength.value = t.sunStrength;
+  uHgG.value = t.hgG;
+  flashTuningStrength = t.flashStrength;
   uFroxelMix.value = t.mix;
 }
+
+// --- the ship flashlight (analytic spot cone, scene units) -------------------------------
+// Pose + on/off are pushed each frame by ShipFlashlight (the same component that drives
+// the real shadow-casting spotlight), so the volumetric beam stays locked to the cockpit.
+const uFlashPos = uniform(new THREE.Vector3());
+const uFlashDir = uniform(new THREE.Vector3(0, 0, -1));
+const uFlashIntensity = uniform(0);
+const uFlashReach = uniform(flashlightDistance);
+const uFlashCosInner = uniform(Math.cos(flashlightAngle * (1 - flashlightPenumbra)));
+const uFlashCosOuter = uniform(Math.cos(flashlightAngle));
+const uFlashDecay = uniform(flashlightDecay);
+const uFlashColor = uniform(new THREE.Color(flashlightColor));
+let flashTuningStrength = FROXEL_DEFAULTS.flashStrength;
+
+export function setFroxelFlashlight(
+  posScene: { x: number; y: number; z: number },
+  dirScene: { x: number; y: number; z: number },
+  on: boolean,
+): void {
+  uFlashPos.value.set(posScene.x, posScene.y, posScene.z);
+  uFlashDir.value.set(dirScene.x, dirScene.y, dirScene.z);
+  uFlashIntensity.value = on ? flashlightIntensity * flashTuningStrength : 0;
+}
+
+// Sun constants (lighting.ts): fixed direction toward the sun; world == scene direction.
+const SUN_DIR = vec3(sunDirection.x, sunDirection.y, sunDirection.z);
+const SUN_COLOR = new THREE.Color(sunLightColor);
+const TAN_SUN = Math.tan(SUN_ANGULAR_RADIUS);
+const SUN_MARCH_M = SUN_MARCH_STEPS * SUN_MARCH_STEP_METERS;
 
 // --- density upload ---------------------------------------------------------------------
 
@@ -294,6 +358,18 @@ function farFade(dist: FloatNode): FloatNode {
   return smoothstep(float(FROXEL_FADE_START), float(FROXEL_FAR), dist).oneMinus();
 }
 
+// Henyey-Greenstein phase on the shared anisotropy uniform (froxels-cpu.henyeyGreenstein).
+function hgPhase(cosTheta: FloatNode): FloatNode {
+  const g2 = uHgG.mul(uHgG);
+  return g2.oneMinus().div(
+    g2
+      .add(1)
+      .sub(uHgG.mul(2).mul(cosTheta))
+      .pow(1.5)
+      .mul(4 * Math.PI),
+  );
+}
+
 // --- the kernels -------------------------------------------------------------------------
 
 export type FroxelPipeline = {
@@ -303,9 +379,17 @@ export type FroxelPipeline = {
   dispatches: ReturnType<ReturnType<ReturnType<typeof Fn>>["compute"]>[];
 };
 
-export function makeFroxelPipeline(): FroxelPipeline {
+// Build the froxel pipeline. `binner` is the COLLISION world-grid instance (§6.3): the
+// up-sun shadow march READS its cellStart/cellCount/sortedItems over the live `pos`
+// buffer — rocks become volumetric shadow casters for free. Froxels never write to it,
+// and the two grids keep separate origins (§6.4).
+export function makeFroxelPipeline(binner: BinnerBuffers): FroxelPipeline {
+  const { cellCount, cellStart, sortedItems } = binner;
+
   // froxelScatter — one lane per froxel. 921600 % 256 == 0, but keep the §impl-log
   // bounds guard anyway (dispatch rounding is a documented device-caught failure mode).
+  // Storage bindings: froxelAccum + densityWords + cellCount + cellStart + sortedItems +
+  // pos = 6, under the WebGPU default maxStorageBuffersPerShaderStage of 8.
   const scatter = Fn(() => {
     If(instanceIndex.lessThan(uint(FROXEL_COUNT)), () => {
       const i = instanceIndex;
@@ -336,14 +420,98 @@ export function makeFroxelPipeline(): FroxelPipeline {
       // world = originMeters + scene·1000 (the §"floating origin" hard constraint).
       const posScene = froxelCamWorld.mul(vec4(dir.mul(dist), 1)).xyz.toVar();
       const world = vec3(originMeters).add(posScene.mul(METERS_PER_SCENE_UNIT)).toVar();
+      // Unit view direction in scene == world axes (the camWorld rotation applied to the
+      // view-space ray) — the lighting phase functions' frame.
+      const dirWorld = normalize(froxelCamWorld.mul(vec4(dir, 0)).xyz).toVar();
 
       const density = sampleDensityTSL(world).toVar();
       const sigmaT = density.mul(uSigmaScale).add(uSigmaFloor).mul(farFade(dist)).toVar();
       const trans = exp(sigmaT.mul(sliceLen).negate()).toVar();
 
-      // Phase 1: isotropic ambient in-scatter only (sun march + flashlight are phase 2).
-      const energy = uAmbient.mul(trans.oneMinus());
-      froxelAccum.element(i).assign(vec4(vec3(uAlbedo).mul(energy), trans));
+      // In-scatter = albedo · (ambient + sun + flashlight) · (1 - sliceT). Lights skip
+      // where sigma_t ≈ 0: nothing scatters, so the march would be wasted bandwidth.
+      const light = vec3(uAmbient).toVar();
+      If(sigmaT.greaterThan(float(1e-4)), () => {
+        // --- sun: up-sun rock-shadow march through the collision world grid (the
+        // computeSunlit port, froxels-cpu.sunTransmittanceCPU mirrors this exactly).
+        If(uSunStrength.greaterThan(0), () => {
+          const sunT = float(1).toVar();
+          const prevCell = uint(0xffffffff).toVar();
+          Loop(
+            { start: uint(1), end: uint(SUN_MARCH_STEPS + 1), type: "uint", condition: "<" },
+            ({ i: si }) => {
+              // Outer-derived values materialized BEFORE the inner loop (the documented
+              // nested-Loop WGSL shadowing corruption — impl-log device bug #7).
+              const t = float(uint(si)).mul(SUN_MARCH_STEP_METERS).toVar();
+              const sample = world.add(SUN_DIR.mul(t)).toVar();
+              const cellF = floor(sample.sub(gridOrigin).div(COLLISION_CELL_METERS)).toVar();
+              const inGrid = cellF.x
+                .greaterThanEqual(0)
+                .and(cellF.y.greaterThanEqual(0))
+                .and(cellF.z.greaterThanEqual(0))
+                .and(cellF.x.lessThan(COLLISION_GRID_AXIS))
+                .and(cellF.y.lessThan(COLLISION_GRID_AXIS))
+                .and(cellF.z.lessThan(COLLISION_GRID_AXIS));
+              If(inGrid, () => {
+                const cellIdx = uint(cellF.x)
+                  .mul(uint(COLLISION_GRID_AXIS * COLLISION_GRID_AXIS))
+                  .add(uint(cellF.y).mul(uint(COLLISION_GRID_AXIS)))
+                  .add(uint(cellF.z))
+                  .toVar();
+                // Consecutive same-cell dedupe (step == cell size, so revisits are
+                // only ever adjacent in the walk).
+                If(cellIdx.notEqual(prevCell), () => {
+                  prevCell.assign(cellIdx);
+                  // Loop bounds materialized — a storage/atomic read as a raw Loop
+                  // end emits empty WGSL (impl-log device bug #6).
+                  const start = cellStart.element(cellIdx).toVar();
+                  const occ = uint(atomicLoad(cellCount.element(cellIdx))).toVar();
+                  Loop({ start: uint(0), end: occ, type: "uint", condition: "<" }, ({ i: k }) => {
+                    const j = sortedItems.element(start.add(uint(k))).toVar();
+                    const q = pos.element(j).toVar();
+                    const w = q.xyz.sub(world).toVar();
+                    const along = w.dot(SUN_DIR).toVar();
+                    If(along.greaterThan(0).and(along.lessThanEqual(float(SUN_MARCH_M))), () => {
+                      const perp = w.sub(SUN_DIR.mul(along));
+                      const d = length(perp);
+                      const penumbra = min(float(SUN_PENUMBRA_CAP), along.mul(TAN_SUN));
+                      const cover = smoothstep(q.w, q.w.add(penumbra), d).oneMinus();
+                      sunT.mulAssign(cover.oneMinus());
+                    });
+                  });
+                });
+              });
+              If(sunT.lessThanEqual(float(SUN_TRANS_FLOOR)), () => {
+                Break();
+              });
+            },
+          );
+          // Forward-scatter phase: cosTheta = dot(S, viewDir) (looking toward the sun
+          // through dust = bright glare; rocks carve shafts via sunT).
+          const sunE = uSunStrength.mul(hgPhase(SUN_DIR.dot(dirWorld))).mul(sunT);
+          light.addAssign(vec3(SUN_COLOR.r, SUN_COLOR.g, SUN_COLOR.b).mul(sunE));
+        });
+
+        // --- ship flashlight: analytic spot-cone in scene units (no occlusion march —
+        // the beam reads through dust; rocks already block it at the surface hit).
+        If(uFlashIntensity.greaterThan(0), () => {
+          const toF = posScene.sub(uFlashPos).toVar();
+          const df = length(toF).toVar();
+          If(df.greaterThan(float(1e-4)).and(df.lessThan(uFlashReach)), () => {
+            const lDir = toF.div(df).toVar();
+            const spot = smoothstep(uFlashCosOuter, uFlashCosInner, lDir.dot(vec3(uFlashDir)));
+            const range = clamp(df.div(uFlashReach).oneMinus(), 0, 1).pow(2);
+            const atten = range.div(max(df.pow(uFlashDecay), 0.05));
+            // Light propagates along lDir; out-scatter toward the camera is -viewDir.
+            const phase = hgPhase(lDir.dot(dirWorld).negate());
+            const flashE = uFlashIntensity.mul(spot).mul(atten).mul(phase);
+            light.addAssign(vec3(uFlashColor).mul(flashE));
+          });
+        });
+      });
+
+      const inScatter = vec3(uAlbedo).mul(light).mul(trans.oneMinus());
+      froxelAccum.element(i).assign(vec4(inScatter, trans));
     });
   })().compute(FROXEL_COUNT, [WORKGROUP]);
 

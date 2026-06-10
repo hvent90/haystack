@@ -21,9 +21,14 @@ import {
   froxelIntegrateCPU,
   froxelScatterCPU,
   froxelSigmaT,
+  henyeyGreenstein,
   sampleDensity,
   sliceFarEdge,
+  SUN_MARCH_STEPS,
+  SUN_TRANS_FLOOR,
+  sunTransmittanceCPU,
   zOfDistance,
+  type CollisionGridImage,
   type DensityGrid,
   type FroxelMediumParams,
 } from "../../src/client/eve/gpu/froxels-cpu";
@@ -198,6 +203,171 @@ describe("froxelSigmaT (far handoff)", () => {
   });
 });
 
+describe("henyeyGreenstein", () => {
+  test("normalizes to 1 over the sphere and peaks forward for g > 0", () => {
+    const g = 0.45;
+    // Numerical integral over the sphere: 2π ∫ p(cosθ) d(cosθ).
+    let integral = 0;
+    const n = 20000;
+    for (let i = 0; i < n; i += 1) {
+      const c = -1 + ((i + 0.5) / n) * 2;
+      integral += henyeyGreenstein(g, c) * (2 / n);
+    }
+    integral *= 2 * Math.PI;
+    expect(integral).toBeCloseTo(1, 3);
+    expect(henyeyGreenstein(g, 1)).toBeGreaterThan(henyeyGreenstein(g, 0));
+    expect(henyeyGreenstein(g, 0)).toBeGreaterThan(henyeyGreenstein(g, -1));
+    // g = 0 is isotropic.
+    expect(henyeyGreenstein(0, 0.7)).toBeCloseTo(1 / (4 * Math.PI), 9);
+  });
+});
+
+describe("sunTransmittanceCPU (the computeSunlit port, against a collision-grid image)", () => {
+  const AXIS = 64;
+  const CELL = 768;
+  // Unit sun direction (the lighting.ts constant, normalized here for exactness).
+  const s = (() => {
+    const v = { x: 0.55, y: 0.62, z: -0.56 };
+    const m = Math.hypot(v.x, v.y, v.z);
+    return { x: v.x / m, y: v.y / m, z: v.z / m };
+  })();
+
+  // A grid image with rocks at given world positions (meters) — hand-binned.
+  function gridWith(
+    origin: { x: number; y: number; z: number },
+    rocks: Array<{ x: number; y: number; z: number; r: number }>,
+  ): CollisionGridImage {
+    const cellCount = new Uint32Array(AXIS * AXIS * AXIS);
+    const cellStart = new Uint32Array(AXIS * AXIS * AXIS);
+    const posXYZR = new Float32Array(rocks.length * 4);
+    const cells: number[] = [];
+    rocks.forEach((rock, i) => {
+      posXYZR.set([rock.x, rock.y, rock.z, rock.r], i * 4);
+      const cx = Math.floor((rock.x - origin.x) / CELL);
+      const cy = Math.floor((rock.y - origin.y) / CELL);
+      const cz = Math.floor((rock.z - origin.z) / CELL);
+      cells.push(cx * AXIS * AXIS + cy * AXIS + cz);
+      cellCount[cells[i]!] = (cellCount[cells[i]!] ?? 0) + 1;
+    });
+    let acc = 0;
+    for (let c = 0; c < cellStart.length; c += 1) {
+      cellStart[c] = acc;
+      acc += cellCount[c]!;
+    }
+    const cursor = Uint32Array.from(cellStart);
+    const sortedItems = new Uint32Array(rocks.length);
+    cells.forEach((c, i) => {
+      sortedItems[cursor[c]!] = i;
+      cursor[c] = (cursor[c] ?? 0) + 1;
+    });
+    return {
+      gridOrigin: origin,
+      cellMeters: CELL,
+      gridAxis: AXIS,
+      cellCount,
+      cellStart,
+      sortedItems,
+      posXYZR,
+    };
+  }
+
+  // Probe point at the grid center cell's center.
+  const origin = { x: -32 * CELL + 100, y: -32 * CELL - 700, z: -32 * CELL + 350 };
+  const p = {
+    x: origin.x + 32 * CELL + CELL / 2,
+    y: origin.y + 32 * CELL + CELL / 2,
+    z: origin.z + 32 * CELL + CELL / 2,
+  };
+
+  test("a rock dead on the up-sun ray fully shadows (early-out floor)", () => {
+    // Place the occluder exactly at the second march sample: perp distance 0 -> cover 1.
+    const t = 2 * CELL;
+    const grid = gridWith(origin, [
+      { x: p.x + s.x * t, y: p.y + s.y * t, z: p.z + s.z * t, r: 200 },
+    ]);
+    expect(sunTransmittanceCPU(p.x, p.y, p.z, s, grid)).toBeLessThanOrEqual(SUN_TRANS_FLOOR);
+  });
+
+  test("a down-sun rock casts nothing", () => {
+    const t = 2 * CELL;
+    const grid = gridWith(origin, [
+      { x: p.x - s.x * t, y: p.y - s.y * t, z: p.z - s.z * t, r: 350 },
+    ]);
+    expect(sunTransmittanceCPU(p.x, p.y, p.z, s, grid)).toBe(1);
+  });
+
+  test("a rock past the march reach casts nothing", () => {
+    const t = (SUN_MARCH_STEPS + 3) * CELL;
+    const grid = gridWith(origin, [
+      { x: p.x + s.x * t, y: p.y + s.y * t, z: p.z + s.z * t, r: 350 },
+    ]);
+    expect(sunTransmittanceCPU(p.x, p.y, p.z, s, grid)).toBe(1);
+  });
+
+  // A unit perpendicular to s chosen so a ~300 m offset from the t = 2·CELL sample point
+  // stays INSIDE that sample's cell (the march only visits cells the ray passes through).
+  const perp = (() => {
+    const m = Math.hypot(s.z, s.x);
+    return { x: s.z / m, y: 0, z: -s.x / m };
+  })();
+
+  test("a penumbra-grazing rock in a visited cell partially shadows", () => {
+    // Offset the occluder perpendicular to the ray by radius + half the penumbra.
+    const t = 2 * CELL;
+    const r = 300;
+    const penumbra = Math.min(120, t * Math.tan((0.5 * Math.PI) / 180));
+    const offset = r + penumbra / 2;
+    const grid = gridWith(origin, [
+      {
+        x: p.x + s.x * t + perp.x * offset,
+        y: p.y + s.y * t + perp.y * offset,
+        z: p.z + s.z * t + perp.z * offset,
+        r,
+      },
+    ]);
+    const trans = sunTransmittanceCPU(p.x, p.y, p.z, s, grid);
+    expect(trans).toBeGreaterThan(0.2);
+    expect(trans).toBeLessThan(0.8);
+  });
+
+  test("two stacked occluders multiply their cover (product form)", () => {
+    // Two penumbra-grazing rocks at different depths, each placed inside a cell the ray
+    // visits (offsets hand-checked against the 768 m cell bounds): trans(both) < trans(one).
+    const mk = (t: number, r: number): { x: number; y: number; z: number; r: number } => {
+      const penumbra = Math.min(120, t * Math.tan((0.5 * Math.PI) / 180));
+      const offset = r + penumbra / 2;
+      return {
+        x: p.x + s.x * t + perp.x * offset,
+        y: p.y + s.y * t + perp.y * offset,
+        z: p.z + s.z * t + perp.z * offset,
+        r,
+      };
+    };
+    const near = mk(2 * CELL, 300);
+    const far = mk(3 * CELL, 50);
+    const one = sunTransmittanceCPU(p.x, p.y, p.z, s, gridWith(origin, [near]));
+    const both = sunTransmittanceCPU(p.x, p.y, p.z, s, gridWith(origin, [near, far]));
+    expect(one).toBeLessThan(1);
+    expect(both).toBeLessThan(one);
+  });
+
+  test("DOCUMENTED LIMITATION: a rock in a cell the ray never enters is missed", () => {
+    // Same grazing geometry but pushed a full cell off the ray path: computeSunlit's
+    // 27-neighbour sweep would catch this; the froxel march (visited cells only, for
+    // bandwidth) does not — the accepted soft under-shadowing in froxels-cpu.ts.
+    const t = 2 * CELL;
+    const grid = gridWith(origin, [
+      {
+        x: p.x + s.x * t + perp.x * CELL,
+        y: p.y + s.y * t + perp.y * CELL,
+        z: p.z + s.z * t + perp.z * CELL,
+        r: 350,
+      },
+    ]);
+    expect(sunTransmittanceCPU(p.x, p.y, p.z, s, grid)).toBe(1);
+  });
+});
+
 describe("scatter + integrate", () => {
   test("zero medium (null grid, zero floor) integrates to the identity", () => {
     const p = { ...cameraParams({ x: 0, y: 0, z: 0 }), sigmaFloor: 0, ambient: 0.07 };
@@ -254,6 +424,45 @@ describe("scatter + integrate", () => {
     expect(inBelt[idx + 3]!).toBeLessThan(0.05); // dense belt: heavy extinction
     expect(outBelt[idx + 3]!).toBeGreaterThan(0.75); // out of the belt: the floor only
     expect(inBelt[idx]!).toBeGreaterThan(outBelt[idx]!); // and more in-scatter
+  });
+
+  test("sun + flashlight light the medium above the ambient-only baseline", () => {
+    // Uniform thin medium, no shadow grid: the lit run must add in-scatter everywhere
+    // the medium scatters, and the flashlight must add it ONLY inside its cone.
+    const base = cameraParams({ x: 0, y: 0, z: 0 });
+    const lit: FroxelMediumParams = {
+      ...base,
+      lights: {
+        sunDirection: { x: 0.55, y: 0.62, z: -0.56 },
+        sunColor: { x: 1, y: 0.95, z: 0.85 },
+        sunStrength: 1,
+        hgG: 0.45,
+        grid: null,
+        flash: {
+          pos: { x: 0, y: 0.12, z: 0 },
+          dir: { x: 0, y: 0, z: -1 }, // straight ahead, the camera's own axis
+          color: { x: 0.92, y: 0.95, z: 1 },
+          intensity: 14,
+          reach: 18,
+          cosInner: Math.cos(0.36 * 0.55),
+          cosOuter: Math.cos(0.36),
+          decay: 0.85,
+        },
+      },
+    };
+    const dark = new Float32Array(FROXEL_COUNT * 4);
+    froxelScatterCPU(null, base, dark);
+    const bright = new Float32Array(FROXEL_COUNT * 4);
+    froxelScatterCPU(null, lit, bright);
+    // Center-screen mid-depth froxel: inside the flashlight cone AND sunlit.
+    const center = froxelIndexOf(80, 45, 40) * 4;
+    expect(bright[center]!).toBeGreaterThan(dark[center]!);
+    // A screen-corner froxel is outside the 0.36 rad cone — only sun should differ, and
+    // its in-scatter must stay below the beam-axis froxel's.
+    const corner = froxelIndexOf(0, 0, 40) * 4;
+    expect(bright[center]!).toBeGreaterThan(bright[corner]!);
+    // Transmittance is light-independent (extinction only).
+    expect(bright[center + 3]).toBeCloseTo(dark[center + 3]!, 9);
   });
 
   test("transmittance is monotonically non-increasing along every sampled column", () => {

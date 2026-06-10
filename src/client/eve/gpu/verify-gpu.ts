@@ -592,6 +592,201 @@ export async function verifyCollisions(renderer: Renderer): Promise<GateResult> 
   }
 }
 
+// END-STATE step-9 gate (§6.5): run the froxel volumetric pipeline (scatter + in-place
+// integrate, INCLUDING the up-sun rock-shadow march through the collision world grid and
+// the analytic flashlight cone) on the device and compare froxelAccum against the CPU
+// executable spec (froxels-cpu.ts) on identical f32 inputs: a synthetic smooth polar
+// density + an authored rock cluster, with the grid image (cellStart/cellCount/sorted/pos)
+// read BACK from the device so both sides march the same bytes. GPU f32 vs CPU f64 can
+// flip a march sample across a 768 m cell boundary (a whole rock appears/vanishes for
+// that froxel) or a trilinear tap across a density bin — so the gate requires the
+// overwhelming majority within tolerance rather than exactness, plus structural checks
+// (sun shafts present: shadowed froxels exist; flashlight cone present).
+export async function verifyFroxels(renderer: Renderer): Promise<GateResult> {
+  try {
+    const {
+      FROXEL_COUNT,
+      FROXEL_W,
+      FROXEL_H,
+      froxelIndexOf,
+      froxelScatterCPU,
+      froxelIntegrateCPU,
+    } = await import("./froxels-cpu");
+    const froxelsKernels = await import("./kernels/froxels");
+    const lighting = await import("../lighting");
+    const { COLLISION_CELL_METERS, COLLISION_GRID_AXIS } = await import("./collide-cpu");
+
+    // --- camera + origin: mid-belt, cockpit offset, looking down -Z -------------------
+    const shipMeters = { x: 1_500_000, y: 0, z: 0 };
+    originMeters.value.set(shipMeters.x, shipMeters.y, shipMeters.z);
+    const camera = new THREE.PerspectiveCamera(68, 16 / 9, 0.01, 20000);
+    camera.position.set(0, 0.12, 0);
+    camera.updateMatrixWorld(true);
+    camera.updateProjectionMatrix();
+    froxelsKernels.froxelProjInv.value.copy(camera.projectionMatrixInverse);
+    froxelsKernels.froxelCamWorld.value.copy(camera.matrixWorld);
+
+    // --- synthetic smooth polar density (adjacent bins differ little, so f32/f64
+    // trilinear boundary flips stay tiny) + deterministic tuning ------------------------
+    const nr = 64;
+    const ntheta = 64;
+    const nz = 8;
+    const data = new Uint8Array(nr * ntheta * nz);
+    for (let ir = 0; ir < nr; ir += 1) {
+      for (let it = 0; it < ntheta; it += 1) {
+        for (let iz = 0; iz < nz; iz += 1) {
+          data[(ir * ntheta + it) * nz + iz] = Math.round(
+            120 + 100 * Math.sin(ir / 9) * Math.cos(it / 7) * Math.cos(iz / 3),
+          );
+        }
+      }
+    }
+    const grid = { data, nr, ntheta, nz, rMin: 0.5, rMax: 3.25, zMax: 0.09, worldScale: 1e6 };
+    froxelsKernels.resetFroxelDensityForTest();
+    froxelsKernels.setFroxelDensityGrid(grid);
+    froxelsKernels.applyFroxelTuning(null);
+    const flashPose = { pos: { x: 0, y: 0.12, z: 0 }, dir: { x: 0, y: 0, z: -1 } };
+    froxelsKernels.setFroxelFlashlight(flashPose.pos, flashPose.dir, true);
+
+    // --- authored rocks: a small cluster ahead of the camera, offset up-sun so their
+    // shadow cones cross the view frustum (shafts must exist in the output) -------------
+    const origin = snapGridOrigin(shipMeters);
+    gridOrigin.value.set(origin.x, origin.y, origin.z);
+    const sun = lighting.sunDirection;
+    const posBytes = new Float32Array(MAX_RESIDENT * 4);
+    let seed = 13579;
+    const rand = (): number => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    };
+    const ROCKS = 64;
+    for (let i = 0; i < ROCKS; i += 1) {
+      const o = i * 4;
+      // 2-6 km ahead (-z), scattered, nudged up-sun so shadows fall back through the view.
+      const ahead = 2000 + rand() * 4000;
+      posBytes[o] = shipMeters.x + (rand() - 0.5) * 3000 + sun.x * 800;
+      posBytes[o + 1] = shipMeters.y + (rand() - 0.5) * 2000 + sun.y * 800;
+      posBytes[o + 2] = shipMeters.z - ahead + sun.z * 800;
+      posBytes[o + 3] = 150 + rand() * 200;
+    }
+    seedBaseFromCPU(posBuffer, posBytes);
+
+    // --- build the collision world grid on-device, then read the grid image back so the
+    // CPU march sees byte-identical inputs ----------------------------------------------
+    const pipeline = makeCollisionPipeline();
+    renderer.compute(pipeline.binner.clearCounts);
+    renderer.compute(pipeline.binner.count);
+    renderer.compute(pipeline.binner.scanPerBlock);
+    renderer.compute(pipeline.binner.scanBlockSums);
+    renderer.compute(pipeline.binner.addBlockOffsets);
+    renderer.compute(pipeline.binner.initCursor);
+    renderer.compute(pipeline.binner.scatter);
+
+    const froxel = froxelsKernels.makeFroxelPipeline(pipeline.binner.buffers);
+    renderer.compute(froxel.scatter);
+    renderer.compute(froxel.integrate);
+
+    const gpuAccum = await readBackFloat32(renderer, froxelsKernels.froxelAccum);
+    const cellStart = await readBackUint32(renderer, pipeline.binner.buffers.cellStart);
+    const cellCountRaw = await readBackUint32(renderer, pipeline.binner.buffers.cellCount);
+    const sortedItems = await readBackUint32(renderer, pipeline.binner.buffers.sortedItems);
+    const gpuPos = await readBackFloat32(renderer, posBuffer);
+
+    // --- CPU mirror on the read-back image ---------------------------------------------
+    const defaults = froxelsKernels.FROXEL_DEFAULTS;
+    const sunColor = new THREE.Color(lighting.sunLightColor);
+    const flashColor = new THREE.Color(lighting.flashlightColor);
+    const cpuAccum = new Float32Array(FROXEL_COUNT * 4);
+    froxelScatterCPU(
+      grid,
+      {
+        projectionMatrixInverse: camera.projectionMatrixInverse.elements,
+        cameraWorldMatrix: camera.matrixWorld.elements,
+        originMeters: shipMeters,
+        sigmaScale: defaults.sigmaScale,
+        sigmaFloor: defaults.sigmaFloor,
+        albedo: { x: defaults.albedo.r, y: defaults.albedo.g, z: defaults.albedo.b },
+        ambient: defaults.ambient,
+        lights: {
+          sunDirection: sun,
+          sunColor: { x: sunColor.r, y: sunColor.g, z: sunColor.b },
+          sunStrength: defaults.sunStrength,
+          hgG: defaults.hgG,
+          grid: {
+            gridOrigin: origin,
+            cellMeters: COLLISION_CELL_METERS,
+            gridAxis: COLLISION_GRID_AXIS,
+            cellCount: cellCountRaw,
+            cellStart,
+            sortedItems,
+            posXYZR: gpuPos,
+          },
+          flash: {
+            pos: flashPose.pos,
+            dir: flashPose.dir,
+            color: { x: flashColor.r, y: flashColor.g, z: flashColor.b },
+            intensity: lighting.flashlightIntensity * defaults.flashStrength,
+            reach: lighting.flashlightDistance,
+            cosInner: Math.cos(lighting.flashlightAngle * (1 - lighting.flashlightPenumbra)),
+            cosOuter: Math.cos(lighting.flashlightAngle),
+            decay: lighting.flashlightDecay,
+          },
+        },
+      },
+      cpuAccum,
+    );
+    froxelIntegrateCPU(cpuAccum);
+
+    // --- compare: overwhelming-majority within tolerance + structural presence ---------
+    const TOL = 3e-2;
+    let bad = 0;
+    let worst = 0;
+    let firstBad = -1;
+    for (let i = 0; i < FROXEL_COUNT * 4; i += 1) {
+      const d = Math.abs(gpuAccum[i]! - cpuAccum[i]!);
+      if (d > worst) worst = d;
+      if (d > TOL) {
+        bad += 1;
+        if (firstBad < 0) firstBad = i;
+      }
+    }
+    const badFrac = bad / (FROXEL_COUNT * 4);
+    // Sun shafts present: some final-slice columns must be visibly darker (shadowed dust)
+    // than the brightest column on the GPU output itself.
+    let minR = Infinity;
+    let maxR = 0;
+    let conedR = 0;
+    const lastSlice = (x: number, y: number): number => froxelIndexOf(x, y, 63) * 4;
+    for (let y = 0; y < FROXEL_H; y += 4) {
+      for (let x = 0; x < FROXEL_W; x += 4) {
+        const r = gpuAccum[lastSlice(x, y)]!;
+        if (r < minR) minR = r;
+        if (r > maxR) maxR = r;
+      }
+    }
+    // Flashlight cone present: the screen-center column (inside the beam) carries more
+    // in-scatter than the screen-corner column (outside the cone) on the GPU output.
+    const centerR = gpuAccum[lastSlice(FROXEL_W / 2, FROXEL_H / 2)]!;
+    conedR = gpuAccum[lastSlice(2, 2)]!;
+    const shafts = maxR > 0 && minR < maxR * 0.9;
+    const cone = centerR > conedR;
+    const pass = badFrac < 0.005 && shafts && cone;
+    return {
+      name: `froxels GPU-vs-CPU (§6.5, step 9): scatter+integrate, ${ROCKS}-rock shadow march, flashlight cone`,
+      pass,
+      detail: pass
+        ? `${(100 - badFrac * 100).toFixed(2)}% of ${FROXEL_COUNT * 4} floats within ${TOL} (worst ${worst.toFixed(4)}); shafts min/max=${minR.toFixed(4)}/${maxR.toFixed(4)}; beam center/corner=${centerR.toFixed(4)}/${conedR.toFixed(4)}`
+        : `badFrac=${(badFrac * 100).toFixed(3)}% worst=${worst.toFixed(4)} (first float ${firstBad}: gpu=${firstBad >= 0 ? gpuAccum[firstBad] : "?"} cpu=${firstBad >= 0 ? cpuAccum[firstBad] : "?"}) shafts=${shafts} (${minR.toFixed(4)}/${maxR.toFixed(4)}) cone=${cone} (${centerR.toFixed(4)}/${conedR.toFixed(4)})`,
+    };
+  } catch (err) {
+    return {
+      name: "froxels GPU-vs-CPU (§6.5, step 9)",
+      pass: false,
+      detail: `threw: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
 export async function runGpuVerification(renderer: Renderer): Promise<GateResult[]> {
   const results: GateResult[] = [];
   results.push(await verifyBaseRoundTrip(renderer));
@@ -602,5 +797,6 @@ export async function runGpuVerification(renderer: Renderer): Promise<GateResult
   results.push(await verifyOverlayBound(renderer));
   results.push(await verifyOverlaySmoothness(renderer));
   results.push(await verifyCollisions(renderer));
+  results.push(await verifyFroxels(renderer));
   return results;
 }

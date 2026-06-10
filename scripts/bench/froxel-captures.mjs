@@ -45,6 +45,51 @@ const SHOTS = [
     look: { x: 0.3, y: -0.35, z: 0.89 },
     settleMs: 12000,
   },
+  // Up-sun in the dense pocket: forward-scatter glare + rock shadow shafts.
+  {
+    name: "upsun",
+    pos: { x: 1264900, y: 20, z: 250 },
+    look: { x: 0.55, y: 0.62, z: -0.56 },
+    settleMs: 12000,
+  },
+  // Cross-sun in the dense pocket: shafts read from the side.
+  {
+    name: "crosssun",
+    pos: { x: 1264900, y: 20, z: 250 },
+    look: { x: 0.71, y: 0.0, z: 0.7 },
+    settleMs: 12000,
+  },
+  // ~40° off the sun axis: strong forward scatter without full glare — the shaft view.
+  {
+    name: "shaft",
+    pos: { x: 1264900, y: 20, z: 250 },
+    look: { x: 0.79, y: 0.39, z: -0.35 },
+    settleMs: 12000,
+  },
+  // Flashlight beam through the dust (F toggles; first-person, beam along the view).
+  {
+    name: "flashlight",
+    pos: { x: 1264900, y: 20, z: 250 },
+    look: { x: 0.71, y: 0.0, z: 0.7 },
+    key: "f",
+    settleMs: 12000,
+  },
+  // The beam dead-on (ship forward is -Z at the spawn orientation): glare + halo.
+  {
+    name: "beamaxis",
+    pos: { x: 1264900, y: 20, z: 250 },
+    look: { x: 0, y: 0, z: -1 },
+    key: "f",
+    settleMs: 12000,
+  },
+  // The beam oblique: the cone read from slightly off-axis.
+  {
+    name: "beamside",
+    pos: { x: 1264900, y: 20, z: 250 },
+    look: { x: 0.45, y: 0, z: -0.89 },
+    key: "f",
+    settleMs: 12000,
+  },
 ];
 const shots = SHOTS_ARG ? SHOTS.filter((s) => SHOTS_ARG.includes(s.name)) : SHOTS;
 
@@ -85,6 +130,20 @@ for (const shot of shots) {
     },
     [shot.pos, shot.look, TUNING],
   );
+  if (shot.key === "f") {
+    // Ensure the flashlight is ON (F is a toggle; consecutive shots would flip it off).
+    // Key bindings are ignored while an editable element has focus — blur first.
+    await page.evaluate(() => {
+      const el = document.activeElement;
+      if (el && el instanceof HTMLElement) el.blur();
+    });
+    const state = () => page.getAttribute('[data-testid="hud-keybind-flashlight"]', "data-on");
+    if ((await state()) !== "true") {
+      await page.keyboard.press("f");
+      await page.waitForTimeout(1000);
+    }
+    console.log(`flashlight data-on=${await state()}`);
+  }
   await page.waitForTimeout(shot.settleMs);
   const path = resolve(OUT, `froxel-${LABEL}-${shot.name}.png`);
   await page.screenshot({ path, scale: "device" });
