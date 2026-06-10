@@ -81,15 +81,16 @@ export const shadowSoftRadius = 1;
 export const shadowBubbleFadeNear = 5;
 export const shadowBubbleFadeFar = 8;
 
-// RETIRED as atmosphere (froxel volumetrics, architecture §6): the old 9..18 km linear
-// fog band is superseded by the froxel participating medium, whose extinction follows the
-// baked belt density (thick in clumps, clear in voids). What remains here is ONLY a
-// narrow draw-distance dissolve: the GPU cull retires rocks at MAX_DRAW_SCENE (18 km,
-// cull-cpu.ts — math the froxel work must not touch), and in a near-void the structured
-// medium is too thin to hide that pop, so the last 3.5 km blend to the background colour.
-export const fogColor = "#03040a";
-export const fogNear = 14.5;
-export const fogFar = 18;
+// RETIRED as atmosphere (froxel volumetrics, architecture §6): the old linear fog band
+// is superseded by the froxel participating medium, whose extinction follows the baked
+// belt density (thick in clumps, clear in voids). What remains here is ONLY a narrow
+// draw-distance dissolve: the GPU cull retires rocks at MAX_DRAW_SCENE (11 km in the
+// ED-ring tuning, cull-cpu.ts), and in a near-void the structured medium is too thin to
+// hide that pop, so the last 3 km blend to the background colour (warm rocky-ring dust,
+// matched by WorldView's scene background).
+export const fogColor = "#080706";
+export const fogNear = 8;
+export const fogFar = 11;
 
 // Rotate the canonical camera-forward axis (0, 0, -1) by an orientation quaternion.
 // Used to aim the flashlight (and anything else that needs the ship's facing).

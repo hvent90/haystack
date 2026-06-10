@@ -275,7 +275,13 @@ export function ensureFroxelDensity(belt: BeltField | null): boolean {
     nz,
     rMin,
     rMax,
-    zMax,
+    // The runtime squashes every bake's vertical structure into the same ED-thin slab
+    // (shared/belt/format.ts beltVerticalSquash; the rock derivation samples density at
+    // y·squash). Dividing the grid's zMax by the bake's squash reproduces that exact
+    // mapping in the froxel sampler — fz = ((y/ws)+zMax')/(2·zMax') with
+    // zMax' = zMax/squash is identical to the shared sampleDensity's compressed fz —
+    // so the fog slab is the SAME slab the rocks live in.
+    zMax: zMax / belt.bake.squash,
     worldScale: belt.bake.worldScale,
   });
   return true;

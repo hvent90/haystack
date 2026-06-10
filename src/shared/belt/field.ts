@@ -48,11 +48,12 @@ function noise(seed: number): number {
 }
 
 // Background rock radius from a uniform roll: truncated power law N(>r) ∝ r^-2 between
-// 55 m and the legacy 355 m cap — swarms of small rocks punctuated by rare big ones
-// (real-belt size statistics; the uniform legacy 45..355 read as uniformly mid-sized).
-// ~2.4% of rocks saturate the cap; everything above 355 m is hero territory. Same noise
-// channel (+5) as the legacy formula, so positions/attributes are unchanged.
-const RADIUS_MIN = 55;
+// 20 m and the legacy 355 m cap — swarms of small rocks punctuated by rare big ones.
+// 20 m floor matches ED's smallest distinctly-rendered ring debris (research doc §1:
+// dominant cockpit class 50-300 m with pebbles below); ~0.3% of rocks saturate the cap;
+// everything above 355 m is hero territory. Same noise channel (+5) as the legacy
+// formula, so positions/attributes are unchanged.
+const RADIUS_MIN = 20;
 const RADIUS_MAX = 355;
 function backgroundRadius(u: number): number {
   return Math.min(RADIUS_MAX, RADIUS_MIN / Math.sqrt(1 - u * 0.999999));
@@ -82,7 +83,9 @@ export function sampleDensity(field: BeltField, x: number, y: number, z: number)
   if (r <= rMin || r >= rMax) {
     return 0;
   }
-  const zn = y / worldScale;
+  // Vertical squash (format.ts beltVerticalSquash): world y is expanded back into the
+  // bake's z range, so the sim's vertical profile plays out across an ED-thin slab.
+  const zn = (y * field.bake.squash) / worldScale;
   if (zn <= -zMax || zn >= zMax) {
     return 0;
   }

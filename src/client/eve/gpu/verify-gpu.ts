@@ -12,6 +12,7 @@
 import * as THREE from "three/webgpu";
 
 import type { FieldSummary, Vector3 } from "../../../shared/types";
+import { BELT_CELL_SIZE } from "../../../shared/belt/format";
 import { base as baseBuffer, MAX_RESIDENT, pos as posBuffer } from "./buffers";
 import { deriveBase, seedBaseFromCPU } from "./base-derive";
 import { binCPU, ELEMENTS_PER_BLOCK } from "./binner-cpu";
@@ -117,7 +118,7 @@ export async function verifyBaseRoundTrip(
 export async function verifyBeltBaseRoundTrip(renderer: Renderer): Promise<GateResult> {
   try {
     const { beltSummaryFromArtifacts, ensureBeltBake } = await import("../belt-bake-loader");
-    const summary = await beltSummaryFromArtifacts("default", FIELD.cellSize, MAX_RESIDENT);
+    const summary = await beltSummaryFromArtifacts("default", BELT_CELL_SIZE, MAX_RESIDENT);
     await ensureBeltBake(summary);
     const shipPos: Vector3 = { x: 1264900, y: 20, z: 250 }; // station spawn, inner band
     const { base: cpuBytes, count } = deriveBase(shipPos, summary, MAX_RESIDENT);

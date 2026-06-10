@@ -2,7 +2,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 
-import { BELT_WORLD_SCALE, type BeltBake, decodeBeltBake } from "../shared/belt/format";
+import {
+  BELT_WORLD_SCALE,
+  type BeltBake,
+  type BeltBakeMeta,
+  beltVerticalSquash,
+  decodeBeltBake,
+} from "../shared/belt/format";
 
 // Server-side belt bake loading: read the committed artifacts from public/belt/<preset>/
 // (the SAME files vite serves to the client) and decode them with the shared decoder.
@@ -50,6 +56,30 @@ export function beltLayoutScale(): number {
   return beltWorldScaleSync() / BELT_WORLD_SCALE;
 }
 
+// Vertical-slab toggle (the ED-ring squash, shared/belt/format.ts beltVerticalSquash):
+//   unset                -> ED slab (BELT_SLAB_HALF_METERS, ~±4.1 km)
+//   HAYSTACK_BELT_SLAB=native (or off/0) -> the bake's true vertical structure (squash 1
+//                            — e.g. main's saturn rings at their full ±447 km)
+//   HAYSTACK_BELT_SLAB=<meters> -> that slab half-thickness
+// The resolved squash is published in FieldSummary.belt.squash, so the client always
+// decodes with the server's value and parity holds for every setting.
+function resolveSquash(metaJson: string): number | undefined {
+  const raw = process.env["HAYSTACK_BELT_SLAB"];
+  if (raw === undefined || raw === "") {
+    return undefined; // decode default: the ED slab target
+  }
+  if (raw === "native" || raw === "off" || raw === "0") {
+    return 1;
+  }
+  const meters = Number(raw);
+  if (!Number.isFinite(meters) || meters <= 0) {
+    return undefined;
+  }
+  const meta = JSON.parse(metaJson) as BeltBakeMeta;
+  const worldScale = meta.world?.worldScale ?? BELT_WORLD_SCALE;
+  return beltVerticalSquash(meta, worldScale, meters);
+}
+
 export function loadBeltBakeSync(preset: string, cellSize: number): BeltBake | null {
   const dir = join(PUBLIC_BELT_DIR, preset);
   if (!existsSync(join(dir, "belt-meta.json"))) {
@@ -59,14 +89,17 @@ export function loadBeltBakeSync(preset: string, cellSize: number): BeltBake | n
     const raw = readFileSync(join(dir, name));
     return name.endsWith(".gz") ? new Uint8Array(gunzipSync(raw)) : new Uint8Array(raw);
   };
+  const metaJson = readFileSync(join(dir, "belt-meta.json"), "utf8");
   return decodeBeltBake(
     {
-      metaJson: readFileSync(join(dir, "belt-meta.json"), "utf8"),
+      metaJson,
       density: read("density.bin.gz"),
       heroes: read("heroes.bin.gz"),
       zones: read("zones.bin.gz"),
       flow: read("flow.bin.gz"),
     },
     cellSize,
+    undefined,
+    resolveSquash(metaJson),
   );
 }

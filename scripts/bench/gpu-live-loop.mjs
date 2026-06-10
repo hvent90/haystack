@@ -465,28 +465,26 @@ try {
     };
     shadowGate.pass =
       shadowGate.noise < 600 &&
-      // The scene must hold a meaningful lit field at all (legacy hash ≈ 15500 lit
-      // samples; belt-bake band ≈ 7800 when first calibrated). RECALIBRATED 2026-06-10:
-      // the same default bake on the SAME code (verified against a pristine origin/main
-      // worktree) now measures baseLit ≈ 3500-3750 in this environment — absolute lit
-      // pixel counts halved (Chrome/Metal rendering drift), while the tier/baseLit
-      // ratios stayed exactly at the documented healthy 0.22/0.13. The floor therefore
-      // drops to 2200: still far above an empty/black scene (≈ 0) but tolerant of
-      // environment-level brightness statistics. The RATIO checks below are the real
-      // dead-tier detectors.
-      shadowGate.baselineLit > 2200 &&
-      // Each tier darkens (alive) but not everything (not a black wall). The FLOORS are
-      // noise-relative only: a dead tier darkens ≈ 1.0× the identical-state noise count,
-      // alive tiers measure 2.5-4.7× (default bake) and 2.6-4.3× (saturn bake) across
-      // environments. Ratio-to-baselineLit floors (0.21/0.13 on the default bake) were
-      // dropped 2026-06-10: at Saturn scale the down-sun frame contains the PLANET — a
-      // huge lit object rock shadows can never darken — so baselineLit quadruples while
-      // tier counts stay constant and any ratio floor becomes scene-dependent. The
-      // all-dark UPPER bounds below stay ratio-based on purpose (a black wall darkens
-      // nearly everything regardless of scene).
+      // The scene must hold a meaningful lit field at all (history: legacy hash field
+      // ≈ 15500 lit; belt 1M bake ≈ 7800; power-law main ≈ 3008-3750; ED-ring slab +
+      // froxels ≈ 1082-1464 — smaller rocks (20 m floor), the tighter 11 km draw, AND
+      // the froxel work retiring the own-ship ADDITIVE beam cone (hundreds of >90-luma
+      // pixels in the A/B frames) all shrink absolute lit-pixel counts, so the floor is
+      // a low sanity bound, not a calibration).
+      shadowGate.baselineLit > 800 &&
+      // Each tier darkens (alive) but not everything (not a black wall). FLOORS are
+      // noise-relative only: a dead tier darkens ≈ 1.0x the identical-state noise count;
+      // alive tiers measure 2.5-4.7x (default bake), 2.6-4.3x (saturn) and 2.0-3.0x
+      // (ED slab — a ±4 km slab lets the 38°-elevation sun exit the rock layer within
+      // ~5 km, so there is physically less rock-on-rock shadowing; tier2 sits at
+      // 1.8-2.2x). Ratio-to-baselineLit floors were dropped 2026-06-10: at Saturn scale
+      // the down-sun frame contains the PLANET — a huge lit object rock shadows can
+      // never darken — so any ratio floor becomes scene-dependent. The A/B runs at
+      // froxel mix 0 (unfogged image). The all-dark UPPER bounds stay ratio-based on
+      // purpose (a black wall darkens nearly everything regardless of scene).
       shadowGate.tier1Darkened > 2.5 * shadowGate.noise &&
       shadowGate.tier1Darkened < 0.8 * shadowGate.baselineLit &&
-      shadowGate.tier2Darkened > 2.0 * shadowGate.noise &&
+      shadowGate.tier2Darkened > 1.8 * shadowGate.noise &&
       shadowGate.tier2Darkened < 0.4 * shadowGate.baselineLit &&
       // The production blend keeps individually lit rocks (varied, not a black wall).
       shadowGate.blendLit > 0.4 * shadowGate.baselineLit;

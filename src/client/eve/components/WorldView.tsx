@@ -10,14 +10,12 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AdditiveBlending,
   CanvasTexture,
-  DodecahedronGeometry,
   DoubleSide,
   IcosahedronGeometry,
   Matrix4,
   Object3D,
   OctahedronGeometry,
   Quaternion as ThreeQuaternion,
-  TetrahedronGeometry,
   Vector3 as ThreeVector3,
   type Camera,
   type Sprite,
@@ -217,7 +215,7 @@ export function WorldView({
           onArrow={setSelectionArrow}
           onBox={setSelectionBox}
         />
-        <color attach="background" args={["#03040a"]} />
+        <color attach="background" args={["#080706"]} />
         <fog attach="fog" args={[fogColor, fogNear, fogFar]} />
         <SunLight />
         <ConditionalListenerRig ctx={audioContext} volume={audioVolume}>
@@ -1286,11 +1284,15 @@ const EMPTY_VIEW_LIFT = 1000;
 // geometry) render zero-copy through positionNode under the floating origin. No per-chunk
 // meshes, no setMatrixAt, no CPU in the cull. The aSunlit two-tier shadow rides packAttr.w
 // through the material's receivedShadowNode (the TSL port of the old patchAsteroidShader).
+// ED-rock ladder: subdivided icosahedra dense enough for the material's per-instance
+// lump displacement (render-node.ts) to read as a lumpy potato, not a platonic solid.
+// All verts are unit-length on every level, so the same displacement function produces
+// matching silhouettes across band transitions.
 const LOD_GEOMETRY_FACTORIES = [
-  () => new DodecahedronGeometry(1, 0), // band 0: full, 36 tris
-  () => new IcosahedronGeometry(1, 0), // band 1: 20 tris, near-identical silhouette
-  () => new OctahedronGeometry(1, 0), // band 2: 8 tris, fogged sub-dozen-px rocks
-  () => new TetrahedronGeometry(1, 0), // band 3: 4 tris, far heavily-fogged <5px specks
+  () => new IcosahedronGeometry(1, 2), // band 0: 320 tris — full lumpy silhouette
+  () => new IcosahedronGeometry(1, 1), // band 1: 80 tris — lumps still visible
+  () => new IcosahedronGeometry(1, 0), // band 2: 20 tris, fogged sub-dozen-px rocks
+  () => new OctahedronGeometry(1, 0), // band 3: 8 tris, far heavily-fogged <5px specks
 ] as const;
 
 function InstancedAsteroids({

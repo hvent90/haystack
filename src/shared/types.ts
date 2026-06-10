@@ -103,6 +103,9 @@ export type BeltFieldInfo = {
   worldScale: number; // meters per normalized sim unit
   pMax: number; // rocks per field cell where baked density peaks (u8 = 255)
   densityScale: number; // global density multiplier
+  // Vertical squash the server decoded the bake with (HAYSTACK_BELT_SLAB toggle; 1 =
+  // the bake's native vertical structure). The client decodes with this exact value.
+  squash: number;
   cellsXZ: number; // field grid cells per horizontal axis (belt plane = x–z, vertical = y)
   cellsY: number;
 };

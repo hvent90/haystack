@@ -13,7 +13,7 @@ import {
   makeBeltField,
   queryBeltAsteroids,
 } from "../shared/belt/field";
-import { beltFieldInfo } from "../shared/belt/format";
+import { BELT_CELL_SIZE, beltFieldInfo } from "../shared/belt/format";
 import { beltDensityScale, beltPresetName, fieldMode, loadBeltBakeSync } from "./belt-bake";
 
 type Cell = {
@@ -29,7 +29,10 @@ type QueryResult = {
 };
 
 const fieldSeed = 424242;
-const cellSize = 1130; // ~6000 / ∛150 for 150x asteroid density
+// Legacy hash-field cell (~6000 / ∛150 for 150x asteroid density). Belt mode uses the
+// shared BELT_CELL_SIZE (530 m, ED ring density) — fieldSummary publishes whichever
+// grid is active, so the client always reconstructs the right one.
+const cellSize = 1130;
 const cellsPerAxis = 100;
 // Cap on how many virtual rocks the client derives/renders near a player. Env-configurable
 // so the perf benchmark can drive the field to 100k+; defaults to 50000 in normal use.
@@ -52,7 +55,7 @@ const beltField: BeltField | null = (() => {
   if (fieldMode() !== "belt") {
     return null;
   }
-  const bake = loadBeltBakeSync(beltPresetName(), cellSize);
+  const bake = loadBeltBakeSync(beltPresetName(), BELT_CELL_SIZE);
   if (bake === null) {
     console.warn(
       `[field] belt bake "${beltPresetName()}" not found under public/belt/ — ` +
@@ -75,7 +78,7 @@ const beltTotalAsteroids: number = (() => {
   const dr = (rMax - rMin) / nr;
   const dtheta = (2 * Math.PI) / ntheta;
   const dz = (2 * zMax) / nz;
-  const cellVolume = cellSize * cellSize * cellSize;
+  const cellVolume = BELT_CELL_SIZE * BELT_CELL_SIZE * BELT_CELL_SIZE;
   let texelSum = 0;
   // Sum density per r-ring first (texel volume depends only on r).
   const perRing = new Float64Array(nr);
@@ -89,7 +92,9 @@ const beltTotalAsteroids: number = (() => {
   }
   for (let ir = 0; ir < nr; ir += 1) {
     const rMid = rMin + (ir + 0.5) * dr;
-    const texelVolumeWorld = rMid * dr * dtheta * dz * worldScale * worldScale * worldScale;
+    // dz spans the bake's normalized z; the runtime squash compresses it vertically.
+    const texelVolumeWorld =
+      (rMid * dr * dtheta * dz * worldScale * worldScale * worldScale) / beltField.bake.squash;
     texelSum += (perRing[ir]! / 255) * beltField.pPeak * (texelVolumeWorld / cellVolume);
   }
   return Math.round(texelSum);
@@ -106,7 +111,7 @@ export function fieldSummary(): FieldSummary {
     return {
       totalAsteroids: beltTotalAsteroids,
       seed: fieldSeed,
-      cellSize,
+      cellSize: BELT_CELL_SIZE,
       indexKind: "beltBakeV1",
       renderedLimit: renderedLimit(),
       belt: { ...beltFieldInfo(beltField.bake, beltDensityScale()), preset: beltPresetName() },

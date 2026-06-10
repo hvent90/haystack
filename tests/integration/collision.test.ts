@@ -73,22 +73,28 @@ function nearestDerivedRock(origin: Vector3): { position: Vector3; radius: numbe
 describe("shared ship collision", () => {
   test("virtual obstacle derivation matches the parity-gated field math exactly", () => {
     // Station spawn + the seeded pocket centers, in-plane scaled with the active bake
-    // (db.ts seeds them the same way), so the probes land in the same physical bands.
+    // (db.ts seeds them the same way) so the probes land in the same physical bands.
+    // HEIGHTS sit inside the squashed ED slab (beltVerticalSquash compresses every bake
+    // to ~±4 km, most mass within ~±2 km — research doc §3): unsquashed sample heights
+    // like y=16000 are legitimately empty space now.
     const k = beltLayoutScale();
     const samples: Vector3[] = [
       { ...stationSpawn },
       { x: 1250000 * k, y: 1200, z: 8000 * k },
-      { x: 1348000 * k, y: -3200, z: -22000 * k },
-      { x: 1454000 * k, y: 16000, z: 24000 * k },
+      { x: 1348000 * k, y: -1500, z: -22000 * k },
+      { x: 1454000 * k, y: 800, z: 24000 * k },
     ];
     let totalObstacles = 0;
     for (const origin of samples) {
       const env = makeShipCollisionEnvironment(field, [], serverBeltField());
       const obstacles = env.obstaclesForSegment(origin, origin);
-      // A single probe's collision window CAN be empty in the sparser cold-disk belts
-      // (emptiness is terrain); the union check below keeps the test non-vacuous.
+      // A single probe's collision window CAN be empty in sparse bands (emptiness is
+      // terrain); the union check below keeps the test non-vacuous.
       totalObstacles += obstacles.length;
-      const derived = deriveVirtualField(origin, { ...field, renderedLimit: 200 });
+      // The obstacle sweep reaches maxHeroRadius (+ship) ≈ ±2.2 km of the segment; at
+      // the ED-ring density (BELT_CELL_SIZE 530 m, ~4-6 rocks/km³) a 200-rock ball
+      // spans only ~2 km, so the cross-check set needs 2500 to cover the whole box.
+      const derived = deriveVirtualField(origin, { ...field, renderedLimit: 2500 });
       const derivedById = new Map(derived.map((rock) => [rock.id, rock]));
       for (const obstacle of obstacles) {
         const rock = derivedById.get(obstacle.id);
