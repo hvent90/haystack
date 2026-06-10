@@ -41,6 +41,8 @@ const PALETTE: Record<string, [number, number]> = {
   sheet: [0x9dc24a, 0xe4f4b0],
   "ring-arc": [0xb06ae0, 0xe8c8ff],
   drift: [0x6a86a8, 0xc4d4e8],
+  "gravel-swarm": [0xc4a050, 0xf0d8a0],
+  cathedral: [0xdce4f0, 0xffffff],
   base: [0x8a8a8a, 0xcccccc],
   "legacy-uniform": [0x9a9a9a, 0xdddddd],
 };

@@ -71,12 +71,38 @@ export const drift: ArchetypeParams = {
   mineralWeights: [4, 3, 1, 3, 0.5, 0.5],
 };
 
+// Dense swarm of small gravel — a hazard/mining field with no anchors.
+export const gravelSwarm: ArchetypeParams = {
+  name: "gravel-swarm",
+  kind: "pocket",
+  countScale: 20,
+  radiusFrac: [0.4, 0.7],
+  sharpness: 0.35,
+  radius: { kind: "power", min: 12, max: 60, alpha: 2.8 },
+  spinRange: [0.2, 0.5],
+  mineralWeights: [4, 2, 2, 4, 0.5, 0.5],
+};
+
+// A few colossal landmark rocks, slow and far apart.
+export const cathedral: ArchetypeParams = {
+  name: "cathedral",
+  kind: "pocket",
+  countScale: 0.5,
+  radiusFrac: [0.25, 0.4],
+  sharpness: 0.8,
+  radius: { kind: "uniform", min: 380, max: 700 },
+  spinRange: [0.005, 0.03],
+  mineralWeights: [2, 1, 2, 2, 3, 3],
+};
+
 export const ARCHETYPES: Record<string, ArchetypeParams> = {
   pocket,
   filament,
   sheet,
   "ring-arc": ringArc,
   drift,
+  "gravel-swarm": gravelSwarm,
+  cathedral,
 };
 
 // ---------------------------------------------------------------------------
@@ -130,6 +156,42 @@ export const beltV1: FieldPreset = {
   maxRocksPerCell: 8,
 };
 
+export const soloGravelSwarm = soloPreset(gravelSwarm);
+export const soloCathedral = soloPreset(cathedral, 0.15);
+
+// belt-v1 at roughly double density — busier, EVE-style.
+export const beltV2: FieldPreset = {
+  name: "belt-v2-dense",
+  macro: { wavelength: 24000, octaves: 2, voidThreshold: 0.4, gamma: 1.6, floor: 0.06 },
+  clusterCells: 3,
+  archetypes: [
+    { params: pocket, weight: 0.24 },
+    { params: filament, weight: 0.18 },
+    { params: sheet, weight: 0.09 },
+    { params: ringArc, weight: 0.07 },
+    { params: drift, weight: 0.42 },
+  ],
+  baseDensity: 0.5,
+  maxRocksPerCell: 8,
+};
+
+// Planar/orbital-dominant alternative: sheets and arcs lead, strings support.
+export const beltV3: FieldPreset = {
+  name: "belt-v3-planar",
+  macro: { wavelength: 24000, octaves: 2, voidThreshold: 0.45, gamma: 1.8, floor: 0.05 },
+  clusterCells: 3,
+  archetypes: [
+    { params: sheet, weight: 0.14 },
+    { params: ringArc, weight: 0.12 },
+    { params: filament, weight: 0.06 },
+    { params: pocket, weight: 0.06 },
+    { params: cathedral, weight: 0.03 },
+    { params: drift, weight: 0.35 },
+  ],
+  baseDensity: 0.25,
+  maxRocksPerCell: 8,
+};
+
 export const PRESETS: Record<string, FieldPreset> = {
   "legacy-uniform": legacyUniform,
   "solo-pocket": soloPocket,
@@ -137,5 +199,9 @@ export const PRESETS: Record<string, FieldPreset> = {
   "solo-sheet": soloSheet,
   "solo-ring-arc": soloRingArc,
   "solo-drift": soloDrift,
+  "solo-gravel-swarm": soloGravelSwarm,
+  "solo-cathedral": soloCathedral,
   "belt-v1": beltV1,
+  "belt-v2-dense": beltV2,
+  "belt-v3-planar": beltV3,
 };
