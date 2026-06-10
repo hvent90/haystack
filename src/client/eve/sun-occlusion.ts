@@ -1,3 +1,13 @@
+import type { FieldSummary } from "../../shared/types";
+import {
+  createFieldContext,
+  DEFAULT_GEOMETRY,
+  rocksInCell,
+  type FieldContext,
+  type FieldGeometry,
+  type FieldPreset,
+} from "../../shared/field-factory";
+import { PRESETS } from "../../shared/field-presets";
 import { sunDirection } from "./lighting";
 
 // Per-instance sun-occlusion ("aSunlit"): how much of the sun an asteroid can see, given
@@ -6,13 +16,67 @@ import { sunDirection } from "./lighting";
 // and read for free in the shader at any distance. This is what lets hundreds of thousands
 // of rocks shadow each other without a per-rock render cost.
 //
-// Field constants mirror src/server/field.ts exactly (the same deterministic generator).
-// Kept client-side only: Math.sin is not bit-portable across JS engines, so this is a
-// visual-only value and is never shared with or compared against the server.
-const CELL_SIZE = 1130;
-const CELLS_PER_AXIS = 100;
-const ORIGIN_OFFSET = -(CELLS_PER_AXIS * CELL_SIZE) / 2;
-const FIELD_SEED = 424242;
+// Rocks come from the shared field factory with the ACTIVE preset (configureSunOcclusion;
+// defaults to legacy-uniform), so shadows always march against the field actually rendered.
+// Kept client-side only: this is a visual-only value and is never shared with or compared
+// against the server.
+const CELL_SIZE = DEFAULT_GEOMETRY.cellSize;
+const CELLS_PER_AXIS = DEFAULT_GEOMETRY.cellsPerAxis;
+const ORIGIN_OFFSET = DEFAULT_GEOMETRY.originOffset;
+
+let activeGeo: FieldGeometry = DEFAULT_GEOMETRY;
+let activePreset: FieldPreset = PRESETS["legacy-uniform"]!;
+let factoryCtx: FieldContext = createFieldContext();
+
+// Switch the occlusion march to the server-announced field. Resets every cache —
+// they are all preset-derived. No-op when nothing changed (the common path:
+// called once per session when the first world snapshot lands).
+export function configureSunOcclusion(field: FieldSummary): void {
+  const preset = PRESETS[field.preset] ?? PRESETS["legacy-uniform"]!;
+  if (preset === activePreset && field.seed === activeGeo.seed) {
+    return;
+  }
+  activeGeo = {
+    seed: field.seed,
+    cellSize: field.cellSize,
+    cellsPerAxis: Math.max(1, Math.round(Math.cbrt(field.totalAsteroids))),
+    originOffset: -(Math.max(1, Math.round(Math.cbrt(field.totalAsteroids))) * field.cellSize) / 2,
+  };
+  activePreset = preset;
+  factoryCtx = createFieldContext();
+  occluderByCell.clear();
+  cache.clear();
+  primedByCell.clear();
+}
+
+// Per-cell occluder memo: flat [x,y,z,radius]*n. The march re-visits the same
+// cells constantly across neighbouring rocks (each march only dedups within
+// itself), and factory cell generation is ~10× the old inline noise math.
+const occluderByCell = new Map<number, Float64Array>();
+const NO_OCCLUDERS = new Float64Array(0);
+
+function occludersAt(x: number, y: number, z: number, key: number): Float64Array {
+  const hit = occluderByCell.get(key);
+  if (hit !== undefined) {
+    return hit;
+  }
+  const rocks = rocksInCell(activeGeo, activePreset, factoryCtx, x, y, z);
+  let packed: Float64Array;
+  if (rocks.length === 0) {
+    packed = NO_OCCLUDERS;
+  } else {
+    packed = new Float64Array(rocks.length * 4);
+    for (let i = 0; i < rocks.length; i += 1) {
+      const rock = rocks[i]!;
+      packed[i * 4] = rock.position.x;
+      packed[i * 4 + 1] = rock.position.y;
+      packed[i * 4 + 2] = rock.position.z;
+      packed[i * 4 + 3] = rock.radius;
+    }
+  }
+  occluderByCell.set(key, packed);
+  return packed;
+}
 
 // March tunables (validated). MARCH_LAYERS is the field brightness dial — fewer layers =>
 // brighter field (the field is angularly dense, so a long march drives it nearly black).
@@ -29,26 +93,20 @@ const Sx = sunDirection.x;
 const Sy = sunDirection.y;
 const Sz = sunDirection.z;
 
-function hashCell(x: number, y: number, z: number): number {
-  return FIELD_SEED + x * 73856093 + y * 19349663 + z * 83492791;
-}
-
-function noise(seed: number): number {
-  const value = Math.sin(seed * 12.9898) * 43758.5453;
-  return value - Math.floor(value);
-}
-
 function smoothstep(edge0: number, edge1: number, x: number): number {
   const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
   return t * t * (3 - 2 * t);
 }
 
-// aSunlit in [0,1]: 1 = fully sunlit, 0 = fully shadowed by up-sun rocks.
+// aSunlit in [0,1]: 1 = fully sunlit, 0 = fully shadowed by up-sun rocks. Cell-granular:
+// siblings in a multi-rock cell share rock 0's march (and never self-shadow within the
+// cell), matching the legacy one-rock-per-cell behavior.
 export function computeSunlit(cx: number, cy: number, cz: number): number {
-  const selfSeed = hashCell(cx, cy, cz);
-  const px = ORIGIN_OFFSET + cx * CELL_SIZE + noise(selfSeed + 1) * CELL_SIZE;
-  const py = ORIGIN_OFFSET + cy * CELL_SIZE + noise(selfSeed + 2) * CELL_SIZE;
-  const pz = ORIGIN_OFFSET + cz * CELL_SIZE + noise(selfSeed + 3) * CELL_SIZE;
+  const selfKey = (cx * CELLS_PER_AXIS + cy) * CELLS_PER_AXIS + cz;
+  const self = occludersAt(cx, cy, cz, selfKey);
+  const px = self.length > 0 ? self[0]! : ORIGIN_OFFSET + (cx + 0.5) * CELL_SIZE;
+  const py = self.length > 0 ? self[1]! : ORIGIN_OFFSET + (cy + 0.5) * CELL_SIZE;
+  const pz = self.length > 0 ? self[2]! : ORIGIN_OFFSET + (cz + 0.5) * CELL_SIZE;
 
   let trans = 1;
   const seen = new Set<number>();
@@ -77,26 +135,24 @@ export function computeSunlit(cx: number, cy: number, cz: number): number {
           seen.add(key);
           if (x === cx && y === cy && z === cz) continue;
 
-          const seed = hashCell(x, y, z);
-          const qx = ORIGIN_OFFSET + x * CELL_SIZE + noise(seed + 1) * CELL_SIZE;
-          const qy = ORIGIN_OFFSET + y * CELL_SIZE + noise(seed + 2) * CELL_SIZE;
-          const qz = ORIGIN_OFFSET + z * CELL_SIZE + noise(seed + 3) * CELL_SIZE;
-          const qr = 45 + noise(seed + 5) * 310;
+          const occluders = occludersAt(x, y, z, key);
+          for (let q = 0; q < occluders.length; q += 4) {
+            const wx = occluders[q]! - px;
+            const wy = occluders[q + 1]! - py;
+            const wz = occluders[q + 2]! - pz;
+            const qr = occluders[q + 3]!;
+            const along = wx * Sx + wy * Sy + wz * Sz;
+            if (along <= 0 || along > MARCH_M) continue;
 
-          const wx = qx - px;
-          const wy = qy - py;
-          const wz = qz - pz;
-          const along = wx * Sx + wy * Sy + wz * Sz;
-          if (along <= 0 || along > MARCH_M) continue;
-
-          const ex = wx - along * Sx;
-          const ey = wy - along * Sy;
-          const ez = wz - along * Sz;
-          const d = Math.sqrt(ex * ex + ey * ey + ez * ez);
-          const penumbra = Math.min(PENUMBRA_CAP, along * Math.tan(SUN_ANGULAR_RADIUS));
-          const cover = 1 - smoothstep(qr, qr + penumbra, d);
-          if (cover <= 0) continue;
-          trans *= 1 - cover;
+            const ex = wx - along * Sx;
+            const ey = wy - along * Sy;
+            const ez = wz - along * Sz;
+            const d = Math.sqrt(ex * ex + ey * ey + ez * ez);
+            const penumbra = Math.min(PENUMBRA_CAP, along * Math.tan(SUN_ANGULAR_RADIUS));
+            const cover = 1 - smoothstep(qr, qr + penumbra, d);
+            if (cover <= 0) continue;
+            trans *= 1 - cover;
+          }
         }
       }
     }
@@ -129,9 +185,11 @@ export function primeSunlitCells(cells: Int32Array, values: Float64Array, count:
   }
 }
 
-// aSunlit for an asteroid id. Virtual field ids encode the cell as "v-x-y-z"; any other id
-// (e.g. a seeded gameplay asteroid) has no cell and is treated as fully sunlit. Cached so
-// steady-state cost is ~0 — only newly seen rocks are marched.
+// aSunlit for an asteroid id. Virtual field ids encode the cell as "v-x-y-z" (with an
+// optional "-i" in-cell rock index for multi-rock cells); any other id (e.g. a seeded
+// gameplay asteroid) has no cell and is treated as fully sunlit. Cached so steady-state
+// cost is ~0 — only newly seen rocks are marched. Sibling rocks share the cell's march
+// value (the march is cell-granular, not rock-granular).
 export function sunlitForId(id: string): number {
   const cached = cache.get(id);
   if (cached !== undefined) {
@@ -139,7 +197,7 @@ export function sunlitForId(id: string): number {
   }
   let value = 1;
   const parts = id.split("-");
-  if (parts.length === 4 && parts[0] === "v") {
+  if ((parts.length === 4 || parts.length === 5) && parts[0] === "v") {
     const cx = Number(parts[1]);
     const cy = Number(parts[2]);
     const cz = Number(parts[3]);

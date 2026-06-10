@@ -16,6 +16,7 @@ const FIELD = {
   seed: 424242,
   cellSize: 1130,
   indexKind: "cubicCellHierarchy" as const,
+  preset: "legacy-uniform",
   renderedLimit: 200,
 };
 

@@ -99,6 +99,9 @@ export type FieldSummary = {
   cellSize: number;
   indexKind: "cubicCellHierarchy";
   renderedLimit: number;
+  // Field-factory preset shaping the virtual field (field-presets.ts). The client
+  // derives the SAME field from (seed, preset), so this must ride the summary.
+  preset: string;
 };
 
 export type ChatMessage = {

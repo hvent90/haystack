@@ -5,6 +5,8 @@ import { resolve } from "node:path";
 import { chromium, type Page } from "playwright";
 import { PNG } from "pngjs";
 
+import { webgpuLaunchOptions } from "./helpers";
+
 const serverPort = 8798;
 const clientPort = 5198;
 const statePath = resolve(tmpdir(), `haystack-cli-${Date.now()}.json`);
@@ -205,7 +207,7 @@ async function inspectCanvas(
   uniqueColors: number;
   nonZeroSamples: number;
 }> {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(webgpuLaunchOptions);
   const page = await browser.newPage({
     viewport: {
       width: viewport.width,

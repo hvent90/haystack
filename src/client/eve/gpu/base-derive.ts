@@ -66,7 +66,10 @@ function packFromRocks(
     // the TSL two-tier shadow (step 4). Cosmetic, not parity-gated (client-only Math.sin).
     packAttr[o + 3] = sunlitForId(r.id);
     const parts = r.id.split("-");
-    slotMeta[o] = Number(parts[1]);
+    // x packs the in-cell rock index (multi-rock cells, id `v-x-y-z[-i]`) into
+    // its high half — cells are < 2^16, so the cell coord survives in the low
+    // half and legacy 4-part ids pack identically to before (index 0).
+    slotMeta[o] = Number(parts[1]) | ((parts.length > 4 ? Number(parts[4]) : 0) << 16);
     slotMeta[o + 1] = Number(parts[2]);
     slotMeta[o + 2] = Number(parts[3]);
     slotMeta[o + 3] = residencyEpoch;
@@ -100,7 +103,11 @@ export function packBaseFromAsteroids(
 // (DerivedBase.slotMeta or backingU32Of(slotMetaBuffer)); `slot` is the slot index.
 export function idFromSlotMeta(slotMeta: Uint32Array, slot: number): string {
   const o = slot * 4;
-  return `v-${slotMeta[o]}-${slotMeta[o + 1]}-${slotMeta[o + 2]}`;
+  const cx = slotMeta[o]! & 0xffff;
+  const index = slotMeta[o]! >>> 16;
+  return index === 0
+    ? `v-${cx}-${slotMeta[o + 1]}-${slotMeta[o + 2]}`
+    : `v-${cx}-${slotMeta[o + 1]}-${slotMeta[o + 2]}-${index}`;
 }
 
 // Upload a u32 buffer image (e.g. slotMeta) into a uint/uvec storage node's backing store.

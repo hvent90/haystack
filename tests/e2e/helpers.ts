@@ -1,5 +1,12 @@
 import type { Page } from "playwright";
 
+// The app requires a WebGPU device; headless Chromium only exposes one (SwiftShader)
+// with these flags. Without them the client renders the "requires WebGPU" screen and
+// [data-testid='haystack-app'] never appears.
+export const webgpuLaunchOptions = {
+  args: ["--enable-unsafe-webgpu", "--enable-unsafe-swiftshader"],
+};
+
 export function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(`Assertion failed: ${message}`);

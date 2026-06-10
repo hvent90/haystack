@@ -1,6 +1,6 @@
 import type { Asteroid, FieldSummary, Vector3, WorldSnapshot } from "../../shared/types";
 import { renderStats } from "./render-stats";
-import { primeSunlitCells } from "./sun-occlusion";
+import { configureSunOcclusion, primeSunlitCells } from "./sun-occlusion";
 import { cellCoords, deriveVirtualField, indexByCell, unpackField } from "./field-core";
 import type { FieldDeriveRequest, FieldDeriveResponse } from "./field-worker";
 
@@ -156,6 +156,10 @@ export class FieldDeriver {
   }
 
   asteroidsFor(position: Vector3 | null, field: FieldSummary): Asteroid[] {
+    // Point the main-thread sun-occlusion march at the server-announced preset
+    // (no-op after the first call) — base-derive/ring-stream ask for aSunlit
+    // without a FieldSummary in hand.
+    configureSunOcclusion(field);
     if (position === null) {
       if (this.cellKey !== "none" || this.mergedSeededRef !== this.seeded) {
         this.cellKey = "none";
