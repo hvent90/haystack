@@ -180,7 +180,9 @@ function buildAssets(belt: BeltField): FarFieldAssets {
   speckles.renderOrder = -9;
 
   // --- gas giant + moons -----------------------------------------------------------------
-  const planetRadiusS = (0.34 * worldScale) / SCENE;
+  // Bakes with a world block carry their own planet size (saturn: 0.809 normalized =
+  // 60,268 km at worldScale 7.45e7); older bakes keep the legacy 0.34 (~340 km giant).
+  const planetRadiusS = ((meta.world?.planetRadius ?? 0.34) * worldScale) / SCENE;
   const planetMat = new THREE.MeshStandardNodeMaterial({ roughness: 0.85, metalness: 0 });
   planetMat.fog = false;
   // Procedural latitude banding: layered sines of the LOCAL y (stable under the

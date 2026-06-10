@@ -65,6 +65,13 @@ class BakeConfig:
     size_d_min: float  # smallest hero diameter (normalized units, only sets the sampling floor)
     size_d_max: float
     density_scale: float  # global density multiplier (cheap knob: bake/runtime only)
+    # Optional world-mapping block, emitted verbatim into belt-meta.json's "world" key.
+    # world_scale: meters per normalized unit (runtime overrides its legacy default with
+    # this); planet_radius: rendered planet radius in normalized units. Saturn preset:
+    # world_scale 7.45e7 (a=1 -> 74,500 km, C-ring inner edge), planet_radius 0.809
+    # (60,268 km / 74,500 km). Presets without it keep the runtime defaults.
+    world_scale: float | None = None
+    planet_radius: float | None = None
 
 
 @dataclass(frozen=True)

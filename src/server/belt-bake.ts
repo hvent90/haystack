@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 
-import { type BeltBake, decodeBeltBake } from "../shared/belt/format";
+import { BELT_WORLD_SCALE, type BeltBake, decodeBeltBake } from "../shared/belt/format";
 
 // Server-side belt bake loading: read the committed artifacts from public/belt/<preset>/
 // (the SAME files vite serves to the client) and decode them with the shared decoder.
@@ -23,6 +23,28 @@ export function beltDensityScale(): number {
 // field — retained as the pure-noise baseline for comparison captures and as a fallback.
 export function fieldMode(): "belt" | "hash" {
   return process.env["HAYSTACK_FIELD"] === "hash" ? "hash" : "belt";
+}
+
+// The active bake's world scale, from the meta alone (cheap: no binary decode). Presets
+// without a world block (default, shepherd-moat) keep the legacy BELT_WORLD_SCALE.
+export function beltWorldScaleSync(): number {
+  if (fieldMode() !== "belt") {
+    return BELT_WORLD_SCALE;
+  }
+  try {
+    const raw = readFileSync(join(PUBLIC_BELT_DIR, beltPresetName(), "belt-meta.json"), "utf8");
+    const meta = JSON.parse(raw) as { world?: { worldScale?: number } };
+    return meta.world?.worldScale ?? BELT_WORLD_SCALE;
+  } catch {
+    return BELT_WORLD_SCALE;
+  }
+}
+
+// How much the seeded world layout (station, relay, pockets — authored against the
+// legacy worldScale 1e6) stretches IN-PLANE for the active bake. Vertical (y) offsets
+// are NOT scaled: belt thickness follows the bake's inc_sigma/zMax, not worldScale.
+export function beltLayoutScale(): number {
+  return beltWorldScaleSync() / BELT_WORLD_SCALE;
 }
 
 export function loadBeltBakeSync(preset: string, cellSize: number): BeltBake | null {

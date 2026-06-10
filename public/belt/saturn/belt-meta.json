@@ -1,0 +1,61 @@
+{
+  "formatVersion": 1,
+  "bakeId": "9c4bae8c950d",
+  "preset": "saturn",
+  "seed": 19811,
+  "counts": {
+    "heroes": 30000,
+    "background": 2435590
+  },
+  "density": {
+    "nr": 2048,
+    "ntheta": 512,
+    "nz": 8,
+    "rMin": 0.9,
+    "rMax": 1.95,
+    "zMax": 0.006,
+    "countScale": 5.275094985961914,
+    "densityScale": 1.0,
+    "order": "[r][theta][z], C-order, uint8"
+  },
+  "flow": {
+    "nr": 256,
+    "ntheta": 256,
+    "vMax": 1.0729535419675627,
+    "order": "[r][theta], int8 xyz dir + speed/127*vMax"
+  },
+  "zones": {
+    "nr": 2048,
+    "encoding": "0=void, odd=band, even=gap"
+  },
+  "heroes": {
+    "record": "f32 x,y,z,d + i16 family + i16 pad (20 bytes LE)",
+    "sizeSlope": 2.5
+  },
+  "moons": [
+    {
+      "name": "korr",
+      "mass": 0.0005,
+      "a": 0.63
+    },
+    {
+      "name": "weir",
+      "mass": 5e-10,
+      "a": 1.225
+    },
+    {
+      "name": "pan",
+      "mass": 1e-10,
+      "a": 1.755
+    },
+    {
+      "name": "mimas",
+      "mass": 0.00105,
+      "a": 2.556
+    }
+  ],
+  "world": {
+    "worldScale": 74500000.0,
+    "planetRadius": 0.809
+  }
+}

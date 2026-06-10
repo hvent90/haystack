@@ -269,3 +269,119 @@ fieldDiagnostic, both belt-aware).
   NOISE-RELATIVE thresholds (live tiers measure 3.6–4.7×/2.1–2.9× the identical-state
   noise floor; dead ≈ 1×) — fraction-of-baseLit floors assumed a size distribution and
   broke twice. All gates re-green (verify 140/140, verify:gpu-live:prod PASS).
+
+## Session 2 — 2026-06-10 — Saturn-scale belt (structure + real planetary scale)
+
+Contract: `prompt-saturn-belt.md`. Worktree `saturn-belt/impl`.
+
+### Scale derivation (everything follows from this)
+
+a=1 (sim) → 74,500 km = the C-ring inner edge ⇒ `worldScale = 7.45e7`. Planet radius
+60,268 km ⇒ 0.809 normalized. Ring map in sim units: C 1.000–1.235, B 1.235–1.577,
+Cassini division 1.577–1.642, A 1.642–1.836, Encke 1.793. Carried by a new optional
+`world` block in belt-meta.json (`bake.world_scale`/`bake.planet_radius` preset knobs);
+the shared decoder prefers it over the legacy BELT_WORLD_SCALE so the scale cannot
+split-brain across server/client/tests.
+
+### Thread A — what each lever did (smoke runs, 60k × 3000–12000 orbits, ~1–4 min each)
+
+- Resonance ladder, computed before any run: a mimas-analogue at a=2.556 puts its 2:1 at
+  1.610 (mid-Cassini), 3:1 at 1.229 (C/B boundary) and 5:3 at 1.818 (A-ring fine
+  structure) — the same multi-resonance double-duty real Mimas does. korr at 0.63 puts
+  its exterior 1:2 exactly at the belt inner edge (1.000).
+- **Cold disk is the whole ballgame**: e_sigma 0.03→0.0015, inc_sigma 0.015→0.00075
+  (20× colder than default). Edges sharpen to single bake-bins, embedded-moonlet lanes
+  become possible, the disk becomes a thin sheet.
+- **Mimas mass/e tuning is a knife-edge** (iters 1–4): m=1.2e-3 e=0.03 ate everything
+  beyond a=1.72 (the first-order ladder 9:5/7:4/5:3 pumped the entire outer region into
+  the cull band). e→0.01 saved the A region (forced eccentricity ∝ e_moon); m→1.5e-3
+  e=0.005 blew the 2:1 division open to 0.135 wide (≈2× real Cassini); the bisected
+  m=1.05e-3 e=0.005 lands the division at ≈0.045 and leaves the outer bands alive.
+- **Embedded moonlets carve honest gaps in a cold disk**: weir (5e-10, a=1.225) cuts a
+  clean narrow C/B lane; pan's gap is wider than naive crossing-width (repeated
+  conjunctions pump e diffusively in a collisionless disk — no damping to balance), so
+  Encke-narrow needs ~1e-10 at most. A moonlet inside a region mimas already erodes
+  just merges into the bigger gap — placement must respect the mimas ladder.
+- **Time scaling measured** (iter4 3k vs iter5 12k orbits, same preset): structure is
+  STABLE — gaps deepen and sharpen rather than widen catastrophically. Production at
+  12k orbits is therefore predictable from 3k smokes.
+- Families in a cold disk shear into bright thin ringlets (very Saturn); 8 events at
+  60k particles produced towers that dominate the bake's 99.9-pct normalization —
+  production uses count=60 / fraction=0.10 to spread them.
+
+### Thread B — the scale migration (committed b8051bc, 260c434)
+
+- **Cell keys**: single base 8192 overflows 2^53 at cellsXZ≈264k. Repacked with
+  asymmetric bases (xz 2^19, y 2^11; worst key < 2^49, exact in f64). Guards updated.
+- **GPU f32 fix — the floating field anchor** (`gpu/anchor.ts`): base/pos buffers,
+  originMeters, collision gridOrigin and well uniforms are all ANCHOR-RELATIVE; the
+  anchor is a 2^16-m-grid point near the ship, re-snapped when the origin strays >98 km
+  (full ring rewrite in one merged sub-range upload, ~50k slots, ms-scale). f64
+  subtraction happens CPU-side before f32 narrowing. Kills the three Saturn-scale
+  pathologies: ~16 m rock quantization, ~8 m whole-field shimmer from origin-uniform
+  rounding, wobble/drift animation vanishing below the f32 ULP. Legacy behavior is
+  byte-identical while the anchor is {0,0,0}, so all pre-existing parity gates pass
+  unchanged; a far-from-origin suite (belt-parity.test.ts) pins the rebased image to
+  <2 cm of f64 truth at 1.4e8 m.
+- **Seeded layout scales in-plane** by worldScale/1e6 (station-kestrel → a=1.2656 =
+  94,287 km, B-ring band; pockets/relay/hab likewise); vertical offsets and docking
+  distances stay metric. ShipActor reset/recenter follows via stationSpawn.
+- **Far field**: planet radius from meta.world.planetRadius (0.809 ⇒ 60,268 km).
+- **Boot-proven at saturn-smoke scale**: grid 263,718×792, station spawn zone=band,
+  200-rock derive at spawn 2.9 ms, live prod client 60 fps (p95 16.7 ms) with 8.4e11
+  rocks indexed. verify 146/146, verify:gpu ALL PASS.
+- **Shadow gate recalibrated** (scripts/bench/gpu-live-loop.mjs): pristine origin/main
+  fails the old absolute floors in today's environment (lit-pixel counts halved, ratios
+  unchanged at 0.22/0.13) — floors re-anchored to current default-bake measurements,
+  ratio invariants untouched. Default PASSES post-recalibration.
+- Gotcha: `beltsim bake` reads knobs from the sim-meta PRESET ECHO, not the preset
+  file — bake-stage knob edits after a sim run require patching runs/<p>/sim-meta.json
+  (or re-simulating). Bit me adding world_scale; documented here for the next belt.
+
+### Production run + ship (same session)
+
+- **Sim**: `presets/saturn.json`, 3,000,000 particles × 12,000 orbits, 8 shards under
+  caffeinate, **17,052 s wall (4.74 h — inside the ≤6 h budget)**. 2,465,590 alive /
+  534,411 removed. Early ETA scare: Chrome verify-gates running concurrently stole ~2
+  cores and pushed the projection toward 6 h; after freeing the machine it settled at
+  4.7 h. Lesson: don't run browser harnesses during a production sim.
+- **Structure matches the smoke prediction** (sharpened, not changed — the contract's
+  test): C ring with ringlet texture 1.0–1.22, weir lane 1.225, B ring with dozens of
+  family ringlets, Cassini division 1.585–1.62, A ring 1.62–1.73, pan gap ~1.74–1.79,
+  F-ring-like ringlet 1.79–1.815, 5:3 notch 1.818, outer band 1.82–1.86.
+  `beltsim validate` ALL PASS: 2:1 and 3:1 notch/flank = 0.0 (fully carved), size slope
+  −2.504 vs −2.5 target, 60/60 families measured at 0.014× Poisson a-tightness.
+- **Bake**: 3.36 MB compressed (density 2.85 MB at 2048×512×8 over r∈[0.9,1.95] —
+  38 km radial bins; heroes 441 KB ×30k; flow 66 KB). Shipped to `public/belt/saturn/`
+  (bakeId 9c4bae8c950d); the superseded `saturn-smoke` spike artifacts removed from
+  public/. Runtime indexes ≈ 1.33e12 virtual rocks at worldScale 7.45e7.
+- **Gates**: `bun run verify` 146/146 (saturn far-from-origin parity now pins the
+  production bake — 30k hero cell keys round-trip the 264k-cell grid); `verify:gpu`
+  ALL PASS on device; `verify:gpu-live:prod` PASS on BOTH saturn (60 fps p95 16.7 ms,
+  SCAN pass, shadow tiers 5.7×/3.5× noise) and default (60.1 fps, tiers 4.1×/2.5×).
+- **Shadow gate, second recalibration (structural)**: at Saturn scale the down-sun test
+  frame contains the PLANET — a huge lit surface rock shadows can never darken — so
+  baselineLit quadruples (10.4k vs 2.6k) while tier counts stay constant, and any
+  tier/baselineLit ratio floor is scene-dependent. Floors are now noise-relative only
+  (2.5×/2.0× the identical-state noise; dead tier ≈ 1×); the all-dark UPPER bounds and
+  blend checks stay ratio-based (a black wall darkens everything regardless of scene).
+- **Camera far plane** 20,000 → 500,000 scene units: at Saturn scale the whole far
+  field (planet up to ~205,000 km, opposite ring edge ~290,000 km) sat beyond the old
+  frustum and rendered black. Free precision-wise (depth error is near-plane-dominated).
+- **Harness ops learned the hard way**: ZOMBIE servers are the dominant failure mode —
+  a leftover `bun src/server/main.ts` on the gate's port (8811) or capture port (8807)
+  silently serves a stale preset/db to every later run (symptom: client derives only the
+  ~30 db-seeded rocks because the published preset's artifacts are gone from dist, or a
+  capture shows legacy coordinates). `lsof -iTCP:<port> -sTCP:LISTEN` before every
+  harness run. Also: hv's dev vite on localhost:5173 shadows a capture vite on the same
+  port (bind 127.0.0.1:5273 instead), and the windows-closed layout (2e43cf2) means the
+  first visible `input` is the audio slider — harnesses must target
+  `input[type="text"]` (the app auto-onboards anyway).
+- **In-game captures** (screenshots/belt-saturn-{close,gap-edge,planet,rings}.png,
+  1920×1080, clean windows-closed UI): inside the B ring the cold disk reads as a
+  razor-thin ring plane crossing the whole sky; the planet fills the frame from the
+  C-ring inner edge; the face-on far-field shows the full ring system with divisions.
+- **Still open at session end**: hv's call on traversal (options DMed: dynamic cruise
+  scaling / warp-to-zone / time compression; recommended start = warp-to-zone) and hv's
+  in-game look approval before `saturn` is promoted to the default preset (it ships
+  runtime-selectable via `HAYSTACK_BELT_PRESET=saturn`).

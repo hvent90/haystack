@@ -10,6 +10,7 @@
 import type { Asteroid, FieldSummary, Vector3 } from "../../../shared/types";
 import { deriveVirtualField } from "../field-core";
 import { sunlitForId } from "../sun-occlusion";
+import { fieldAnchor } from "./anchor";
 import { backingArrayOf, backingU32Of, MAX_RESIDENT } from "./buffers";
 import type { instancedArray } from "three/tsl";
 
@@ -52,13 +53,15 @@ function packFromRocks(
   const base = new Float32Array(capacity * 4);
   const packAttr = new Float32Array(capacity * 4);
   const slotMeta = new Uint32Array(capacity * 4);
+  const anchor = fieldAnchor();
   for (let i = 0; i < count; i += 1) {
     const r = rocks[i]!;
     const o = i * 4;
-    // Float32Array stores apply the f64->f32 narrowing; this IS the GPU buffer image.
-    base[o] = r.position.x;
-    base[o + 1] = r.position.y;
-    base[o + 2] = r.position.z;
+    // ANCHOR-RELATIVE (anchor.ts): subtract the field anchor in f64, THEN let the
+    // Float32Array store apply the f64->f32 narrowing; this IS the GPU buffer image.
+    base[o] = r.position.x - anchor.x;
+    base[o + 1] = r.position.y - anchor.y;
+    base[o + 2] = r.position.z - anchor.z;
     base[o + 3] = r.radius;
     packAttr[o + 1] = r.mineralRichness;
     packAttr[o + 2] = phaseSeed(i);

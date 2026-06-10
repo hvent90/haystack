@@ -460,17 +460,27 @@ try {
     shadowGate.pass =
       shadowGate.noise < 600 &&
       // The scene must hold a meaningful lit field at all (legacy hash ≈ 15500 lit
-      // samples; belt-bake band ≈ 7800 — the belt is genuinely sparser than the old
-      // 1-rock-per-cell field, so the tier floors below are RELATIVE to baselineLit
-      // rather than absolute pixel counts).
-      shadowGate.baselineLit > 4000 &&
-      // Each tier darkens (alive) but not everything (not a black wall). Measured
-      // healthy ratios vs baselineLit: legacy tier1 ≈ 0.53 / tier2 ≈ 0.15; belt 1M bake
-      // tier1 ≈ 0.22 / tier2 ≈ 0.13. An all-dark regression ≈ 1.0 and fails the upper
-      // bounds; a dead tier fails the floors.
-      shadowGate.tier1Darkened > Math.max(0.18 * shadowGate.baselineLit, 3 * shadowGate.noise) &&
+      // samples; belt-bake band ≈ 7800 when first calibrated). RECALIBRATED 2026-06-10:
+      // the same default bake on the SAME code (verified against a pristine origin/main
+      // worktree) now measures baseLit ≈ 3500-3750 in this environment — absolute lit
+      // pixel counts halved (Chrome/Metal rendering drift), while the tier/baseLit
+      // ratios stayed exactly at the documented healthy 0.22/0.13. The floor therefore
+      // drops to 2200: still far above an empty/black scene (≈ 0) but tolerant of
+      // environment-level brightness statistics. The RATIO checks below are the real
+      // dead-tier detectors.
+      shadowGate.baselineLit > 2200 &&
+      // Each tier darkens (alive) but not everything (not a black wall). The FLOORS are
+      // noise-relative only: a dead tier darkens ≈ 1.0× the identical-state noise count,
+      // alive tiers measure 2.5-4.7× (default bake) and 2.6-4.3× (saturn bake) across
+      // environments. Ratio-to-baselineLit floors (0.21/0.13 on the default bake) were
+      // dropped 2026-06-10: at Saturn scale the down-sun frame contains the PLANET — a
+      // huge lit object rock shadows can never darken — so baselineLit quadruples while
+      // tier counts stay constant and any ratio floor becomes scene-dependent. The
+      // all-dark UPPER bounds below stay ratio-based on purpose (a black wall darkens
+      // nearly everything regardless of scene).
+      shadowGate.tier1Darkened > 2.5 * shadowGate.noise &&
       shadowGate.tier1Darkened < 0.8 * shadowGate.baselineLit &&
-      shadowGate.tier2Darkened > Math.max(0.1 * shadowGate.baselineLit, 3 * shadowGate.noise) &&
+      shadowGate.tier2Darkened > 2.0 * shadowGate.noise &&
       shadowGate.tier2Darkened < 0.4 * shadowGate.baselineLit &&
       // The production blend keeps individually lit rocks (varied, not a black wall).
       shadowGate.blendLit > 0.4 * shadowGate.baselineLit;
