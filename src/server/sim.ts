@@ -58,6 +58,8 @@ type ShipRow = {
   wz: number;
   throttle: number;
   cruise_lock: number;
+  nav_lights: number;
+  flashlight: number;
   heat: number;
   cargo_mass: number;
   cargo_capacity: number;
@@ -1068,6 +1070,8 @@ function mapShip(row: ShipRow): Ship {
     },
     throttle: round(row.throttle),
     cruiseLock: row.cruise_lock === 1,
+    navLightsOn: row.nav_lights === 1,
+    flashlightOn: row.flashlight === 1,
     heat: round(row.heat),
     cargoMass: round(row.cargo_mass),
     cargoCapacity: row.cargo_capacity,

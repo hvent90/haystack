@@ -181,6 +181,8 @@ function baseShip(): Ship {
     angularVelocity: { x: 0, y: 0, z: 0 },
     throttle: 0,
     cruiseLock: false,
+    navLightsOn: false,
+    flashlightOn: false,
     heat: 0,
     cargoMass: 0,
     cargoCapacity: 180,

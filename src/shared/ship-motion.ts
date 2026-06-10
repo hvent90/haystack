@@ -40,10 +40,14 @@ export function receiveFlightInput(ship: Ship, command: FlightInputCommand): Fli
   let nextShip = cloneShip(ship);
   const throttle = clamp(command.throttle, -1, 1);
   const cruiseLock = command.cruiseLock ?? nextShip.cruiseLock;
+  const navLightsOn = command.navLights ?? nextShip.navLightsOn;
+  const flashlightOn = command.flashlight ?? nextShip.flashlightOn;
   nextShip = {
     ...nextShip,
     throttle,
     cruiseLock,
+    navLightsOn,
+    flashlightOn,
   };
 
   const heldInput: HeldFlightInput | null =

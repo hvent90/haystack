@@ -735,6 +735,161 @@ describe("haystack server", () => {
     }
   });
 
+  test("replicates nav-light and flashlight toggles to the sender and remote peers", async () => {
+    const sender = await createPilot("Verifier Lights Sender");
+    const observer = await createPilot("Verifier Lights Observer");
+    const serverWorld = getServerWorld(requireWorld().db);
+    const worldStream = new WorldStream(serverWorld);
+    worldStream.start();
+    const streamApp = createApp({ db: requireWorld().db, world: serverWorld, worldStream });
+    const server = Bun.serve({
+      port: 0,
+      fetch: streamApp.fetch,
+      websocket,
+    });
+
+    try {
+      const senderStream = await connectWorldSocket(
+        `ws://127.0.0.1:${server.port}/api/world/stream?pilotId=${sender.id}`,
+      );
+      const observerStream = await connectWorldSocket(
+        `ws://127.0.0.1:${server.port}/api/world/stream?pilotId=${observer.id}`,
+      );
+
+      try {
+        const hello = await senderStream.waitFor((message) => message.type === "hello");
+        await observerStream.waitFor((message) => message.type === "hello");
+        if (hello.type !== "hello") {
+          throw new Error("Expected hello snapshot.");
+        }
+        const initialShip = hello.snapshot.ships.find((ship) => ship.pilotId === sender.id);
+        expect(initialShip?.navLightsOn).toBe(false);
+        expect(initialShip?.flashlightOn).toBe(false);
+
+        senderStream.socket.send(
+          JSON.stringify({
+            type: "input",
+            pilotId: sender.id,
+            clientTick: 7,
+            command: {
+              kind: "flight",
+              throttle: 0,
+              active: false,
+              navLights: true,
+              flashlight: true,
+              strafe: { x: 0, y: 0, z: 0 },
+              rotation: { x: 0, y: 0, z: 0 },
+            },
+          }),
+        );
+        const onAck = await senderStream.waitFor(
+          (message) => message.type === "ack" && message.clientTick === 7,
+        );
+        if (onAck.type !== "ack") {
+          throw new Error("Expected lights-on acknowledgement.");
+        }
+        expect(onAck.ship.navLightsOn).toBe(true);
+        expect(onAck.ship.flashlightOn).toBe(true);
+
+        const observerSeesOn = await observerStream.waitFor(
+          (message) =>
+            message.type === "delta" &&
+            (message.patch.ships ?? []).some(
+              (ship) =>
+                ship.pilotId === sender.id &&
+                ship.navLightsOn === true &&
+                ship.flashlightOn === true,
+            ),
+        );
+        expect(observerSeesOn.type).toBe("delta");
+
+        senderStream.socket.send(
+          JSON.stringify({
+            type: "input",
+            pilotId: sender.id,
+            clientTick: 8,
+            command: {
+              kind: "flight",
+              throttle: 0,
+              active: false,
+              navLights: false,
+              flashlight: false,
+              strafe: { x: 0, y: 0, z: 0 },
+              rotation: { x: 0, y: 0, z: 0 },
+            },
+          }),
+        );
+        const offAck = await senderStream.waitFor(
+          (message) => message.type === "ack" && message.clientTick === 8,
+        );
+        if (offAck.type !== "ack") {
+          throw new Error("Expected lights-off acknowledgement.");
+        }
+        expect(offAck.ship.navLightsOn).toBe(false);
+        expect(offAck.ship.flashlightOn).toBe(false);
+
+        const observerSeesOff = await observerStream.waitFor(
+          (message) =>
+            message.type === "delta" &&
+            (message.patch.ships ?? []).some(
+              (ship) =>
+                ship.pilotId === sender.id &&
+                ship.navLightsOn === false &&
+                ship.flashlightOn === false,
+            ),
+        );
+        expect(observerSeesOff.type).toBe("delta");
+
+        // A flight input that omits the light fields must keep the current state
+        // (same contract as cruiseLock), not reset it.
+        senderStream.socket.send(
+          JSON.stringify({
+            type: "input",
+            pilotId: sender.id,
+            clientTick: 9,
+            command: {
+              kind: "flight",
+              throttle: 0,
+              active: false,
+              navLights: true,
+              strafe: { x: 0, y: 0, z: 0 },
+              rotation: { x: 0, y: 0, z: 0 },
+            },
+          }),
+        );
+        await senderStream.waitFor((message) => message.type === "ack" && message.clientTick === 9);
+        senderStream.socket.send(
+          JSON.stringify({
+            type: "input",
+            pilotId: sender.id,
+            clientTick: 10,
+            command: {
+              kind: "flight",
+              throttle: 0.2,
+              active: true,
+              strafe: { x: 0, y: 0, z: 0 },
+              rotation: { x: 0, y: 0, z: 0 },
+            },
+          }),
+        );
+        const keepAck = await senderStream.waitFor(
+          (message) => message.type === "ack" && message.clientTick === 10,
+        );
+        if (keepAck.type !== "ack") {
+          throw new Error("Expected state-keeping acknowledgement.");
+        }
+        expect(keepAck.ship.navLightsOn).toBe(true);
+        expect(keepAck.ship.flashlightOn).toBe(false);
+      } finally {
+        senderStream.socket.close();
+        observerStream.socket.close();
+      }
+    } finally {
+      worldStream.stop();
+      server.stop(true);
+    }
+  });
+
   test("stateful CLI joins, watches, and moves through the public world stream", async () => {
     const serverWorld = getServerWorld(requireWorld().db);
     const worldStream = new WorldStream(serverWorld);
@@ -817,6 +972,8 @@ describe("haystack server", () => {
       "angVel",
       "throttle",
       "cruiseLock",
+      "navLights",
+      "flashlight",
       "heat",
       "cargoMass",
     ]);

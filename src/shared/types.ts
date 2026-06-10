@@ -48,6 +48,8 @@ export type Ship = {
   angularVelocity: Vector3;
   throttle: number;
   cruiseLock: boolean;
+  navLightsOn: boolean;
+  flashlightOn: boolean;
   heat: number;
   cargoMass: number;
   cargoCapacity: number;
@@ -169,6 +171,8 @@ export type FlightInputCommand = {
   stabilize?: boolean;
   boost?: boolean;
   cruiseLock?: boolean;
+  navLights?: boolean;
+  flashlight?: boolean;
 };
 
 export type ScanRequest = {

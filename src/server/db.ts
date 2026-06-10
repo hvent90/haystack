@@ -87,6 +87,8 @@ function migrate(db: HaystackDb): void {
       wz REAL NOT NULL DEFAULT 0,
       throttle REAL NOT NULL DEFAULT 0,
       cruise_lock INTEGER NOT NULL DEFAULT 0,
+      nav_lights INTEGER NOT NULL DEFAULT 0,
+      flashlight INTEGER NOT NULL DEFAULT 0,
       heat REAL NOT NULL,
       cargo_mass REAL NOT NULL,
       cargo_capacity REAL NOT NULL,
@@ -168,6 +170,18 @@ function migrate(db: HaystackDb): void {
     "ships",
     "cruise_lock",
     "ALTER TABLE ships ADD COLUMN cruise_lock INTEGER NOT NULL DEFAULT 0",
+  );
+  ensureColumn(
+    db,
+    "ships",
+    "nav_lights",
+    "ALTER TABLE ships ADD COLUMN nav_lights INTEGER NOT NULL DEFAULT 0",
+  );
+  ensureColumn(
+    db,
+    "ships",
+    "flashlight",
+    "ALTER TABLE ships ADD COLUMN flashlight INTEGER NOT NULL DEFAULT 0",
   );
 }
 

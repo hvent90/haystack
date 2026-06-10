@@ -155,6 +155,7 @@ export function EveApp(): ReactNode {
   const [mouseDeflection, setMouseDeflection] = useState<Vector3>({ x: 0, y: 0, z: 0 });
   const [flightInputScale, setFlightInputScale] = useState(flightInputScaleMax);
   const [flashlightOn, setFlashlightOn] = useState(false);
+  const [navLightsOn, setNavLightsOn] = useState(false);
   const [scanNonce, setScanNonce] = useState(0);
   const streamRef = useRef<WebSocket | null>(null);
   const sessionRef = useRef<Session | null>(null);
@@ -168,6 +169,9 @@ export function EveApp(): ReactNode {
   const mouseDeflectionRef = useRef<Vector3>({ x: 0, y: 0, z: 0 });
   const flightInputScaleRef = useRef(flightInputScaleMax);
   const flightStateRef = useRef({ throttle: 0, cruiseLock: false });
+  // Ship light toggles (replicated): read by buildFlightInput so every input command
+  // carries the current on/off state, mirroring how cruiseLock stays sticky server-side.
+  const lightsRef = useRef({ navLights: false, flashlight: false });
   const oneShotRef = useRef<OneShotFlightInput>({ boost: false });
   const lastFlightActiveRef = useRef(false);
   const syncedFlightPilotRef = useRef<string | null>(null);
@@ -497,12 +501,18 @@ export function EveApp(): ReactNode {
         return;
       }
 
-      // Flashlight toggle (F) and scan pulse (V) work in any mode, as long as the user is not
-      // typing into a field. Placed before the flight-key gate so they fire in cursor mode too.
+      // Flashlight toggle (F), nav lights (L), and scan pulse (V) work in any mode, as long as
+      // the user is not typing into a field. Placed before the flight-key gate so they fire in
+      // cursor mode too.
       if (!isEditableTarget(event.target) && !event.repeat) {
         if (event.code === "KeyF") {
           event.preventDefault();
-          setFlashlightOn((on) => !on);
+          toggleFlashlight();
+          return;
+        }
+        if (event.code === "KeyL") {
+          event.preventDefault();
+          toggleNavLights();
           return;
         }
         if (event.code === "KeyV") {
@@ -609,6 +619,9 @@ export function EveApp(): ReactNode {
     flightRenderStore.resetOwned(myShip);
     setThrottle(myShip.throttle);
     setCruiseLock(myShip.cruiseLock);
+    lightsRef.current = { navLights: myShip.navLightsOn, flashlight: myShip.flashlightOn };
+    setNavLightsOn(myShip.navLightsOn);
+    setFlashlightOn(myShip.flashlightOn);
   }, [myShip]);
 
   const meCard = useMemo(() => {
@@ -774,6 +787,8 @@ export function EveApp(): ReactNode {
       data-owned-z={myShip.position.z.toFixed(3)}
       data-prediction-tick={predictionRef.current.currentPredictionTick}
       data-ack-tick={predictionRef.current.lastAcknowledgedTick}
+      data-owned-nav-lights={navLightsOn}
+      data-owned-flashlight={flashlightOn}
     >
       <WorldView
         bracketRows={bracketRows}
@@ -914,6 +929,8 @@ export function EveApp(): ReactNode {
         flightMode={flightMode}
         throttle={effectiveThrottle}
         cruiseLock={cruiseLock}
+        flashlightOn={flashlightOn}
+        navLightsOn={navLightsOn}
         onThrust={sendFlightCommand}
         onThrottleDown={() => adjustFlightThrottle(-throttleStep, true)}
         onThrottleZero={() => setFlightThrottle(0, true)}
@@ -1291,6 +1308,8 @@ export function EveApp(): ReactNode {
       kind: "flight",
       throttle: commandThrottle,
       cruiseLock: flightStateRef.current.cruiseLock,
+      navLights: lightsRef.current.navLights,
+      flashlight: lightsRef.current.flashlight,
       active,
       strafe: active
         ? {
@@ -1354,6 +1373,24 @@ export function EveApp(): ReactNode {
 
   function adjustFlightThrottle(delta: number, sendNow = false): void {
     setFlightThrottle(flightStateRef.current.throttle + delta, sendNow);
+  }
+
+  // Light toggles update local state for instant feedback (own beam, HUD hint) and
+  // immediately send a flight input so the server replicates the new state to other
+  // players. The fields ride along on every later input too (see buildFlightInput),
+  // so the server state stays sticky exactly like cruiseLock.
+  function toggleFlashlight(): void {
+    const next = !lightsRef.current.flashlight;
+    lightsRef.current = { ...lightsRef.current, flashlight: next };
+    setFlashlightOn(next);
+    sendFlightInput(buildFlightInput(flightModeRef.current === "flight"));
+  }
+
+  function toggleNavLights(): void {
+    const next = !lightsRef.current.navLights;
+    lightsRef.current = { ...lightsRef.current, navLights: next };
+    setNavLightsOn(next);
+    sendFlightInput(buildFlightInput(flightModeRef.current === "flight"));
   }
 
   function toggleFlightCruiseLock(sendNow = false): void {

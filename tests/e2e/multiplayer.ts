@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { chromium, type Browser, type Page } from "playwright";
 
 import type { Pilot, Ship, WorldSnapshot } from "../../src/shared/types";
+import { webgpuLaunchOptions } from "./helpers";
 
 const serverPort = 8799;
 const clientPort = 5199;
@@ -72,7 +73,7 @@ try {
     })
   ).pilot;
 
-  browser = await chromium.launch();
+  browser = await chromium.launch(webgpuLaunchOptions);
   const scoutContext = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   const haulerContext = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   const scoutPage = await scoutContext.newPage();
@@ -134,6 +135,43 @@ try {
       })}`,
     );
   }
+
+  // Light toggles: hauler presses F (flashlight) and L (nav lights); the scout's view of
+  // the world (same delta stream every remote client consumes) must flip both flags on,
+  // then back off. The hauler's own HUD hint must reflect the local state immediately.
+  await haulerPage.keyboard.press("f");
+  await haulerPage.keyboard.press("l");
+  await haulerPage.waitForFunction(() => {
+    const app = document.querySelector("[data-testid='haystack-app']");
+    return (
+      app?.getAttribute("data-owned-flashlight") === "true" &&
+      app?.getAttribute("data-owned-nav-lights") === "true"
+    );
+  });
+  await haulerPage.waitForFunction(
+    () =>
+      document.querySelector("[data-testid='hud-keybind-nav-lights']")?.getAttribute("data-on") ===
+        "true" &&
+      document.querySelector("[data-testid='hud-keybind-flashlight']")?.getAttribute("data-on") ===
+        "true",
+  );
+  await waitForShipState(
+    scout.id,
+    hauler.id,
+    (ship) => ship.navLightsOn && ship.flashlightOn,
+    "remote ship lights on",
+  );
+  await waitForRemoteShipLights(scoutPage, hauler.id, true);
+
+  await haulerPage.keyboard.press("f");
+  await haulerPage.keyboard.press("l");
+  await waitForShipState(
+    scout.id,
+    hauler.id,
+    (ship) => !ship.navLightsOn && !ship.flashlightOn,
+    "remote ship lights off",
+  );
+  await waitForRemoteShipLights(scoutPage, hauler.id, false);
 
   console.log(
     JSON.stringify(
@@ -209,6 +247,43 @@ async function assertNoCommsLocal(page: Page, pilotId: string): Promise<void> {
 
 async function waitForMovedShip(observerPilotId: string, movedPilotId: string): Promise<Ship> {
   return await waitForShipVelocity(observerPilotId, movedPilotId, (ship) => ship.velocity.x >= 3.9);
+}
+
+async function waitForShipState(
+  observerPilotId: string,
+  targetPilotId: string,
+  predicate: (ship: Ship) => boolean,
+  label: string,
+): Promise<Ship> {
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
+    const query = new URLSearchParams({ pilotId: observerPilotId });
+    const snapshot = await api<WorldSnapshot>(`/api/world?${query.toString()}`);
+    const targetShip = snapshot.ships.find((ship) => ship.pilotId === targetPilotId);
+    if (targetShip !== undefined && predicate(targetShip)) {
+      return targetShip;
+    }
+    await Bun.sleep(250);
+  }
+  throw new Error(`Timed out waiting for ${label} in shared world snapshot.`);
+}
+
+// The observer page's OtherShipMesh writes the light state it renders for each remote
+// ship to window.__probeRemoteLights — proving the flags rode the delta stream into the
+// remote client's scene gates, not just the server snapshot.
+async function waitForRemoteShipLights(page: Page, pilotId: string, on: boolean): Promise<void> {
+  await page.waitForFunction(
+    ({ targetPilotId, expected }) => {
+      const probe = (
+        window as unknown as {
+          __probeRemoteLights?: Record<string, { nav: boolean; flash: boolean }>;
+        }
+      ).__probeRemoteLights?.[targetPilotId];
+      return probe !== undefined && probe.nav === expected && probe.flash === expected;
+    },
+    { targetPilotId: pilotId, expected: on },
+    { timeout: 20000 },
+  );
 }
 
 async function waitForShipVelocity(

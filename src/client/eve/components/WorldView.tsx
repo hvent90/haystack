@@ -2,7 +2,10 @@ import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode, RefObject } from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
+  AdditiveBlending,
+  CanvasTexture,
   DodecahedronGeometry,
+  DoubleSide,
   IcosahedronGeometry,
   Matrix4,
   Object3D,
@@ -11,6 +14,9 @@ import {
   TetrahedronGeometry,
   Vector3 as ThreeVector3,
   type Camera,
+  type Sprite,
+  type SpotLight,
+  type Texture,
 } from "three";
 import type { Asteroid, Ship, Structure, Vector3 } from "../../../shared/types";
 import {
@@ -22,7 +28,28 @@ import { flightInputScaleMax, flightInputScaleMin } from "../constants";
 import { clamp, formatDistance, toScene, vectorMagnitude } from "../vector";
 import { sameSelection } from "../overview";
 import { flightRenderStore } from "../renderStore";
-import { fogColor, fogFar, fogNear } from "../lighting";
+import {
+  flashlightColor,
+  fogColor,
+  fogFar,
+  fogNear,
+  navBeaconAngularSize,
+  navBeaconColor,
+  navBeaconMaxScale,
+  navBeaconMinScale,
+  navHullLightDistance,
+  navHullLightIntensity,
+  navLightPortColor,
+  navLightStarboardColor,
+  navLightTailColor,
+  remoteBeamLength,
+  remoteBeamOpacity,
+  remoteBeamRadius,
+  remoteFlashlightAngle,
+  remoteFlashlightDistance,
+  remoteFlashlightIntensity,
+  remoteFlashlightPenumbra,
+} from "../lighting";
 import { getRenderDebugControls, renderStats } from "../render-stats";
 import { AudioListenerRig, RemoteShipAudio } from "./SpatialAudio";
 import { ShipFlashlight, SunDisc, SunLight } from "./SceneLighting";
@@ -1326,6 +1353,21 @@ function OtherShipMesh({
     return () => flightRenderStore.removeRemote(pilotId);
   }, [ship.pilotId]);
 
+  // E2E probe: what light state this client is actually rendering for the remote ship
+  // (the 3D gates below are not observable from the DOM).
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const probeWindow = window as unknown as {
+      __probeRemoteLights?: Record<string, { nav: boolean; flash: boolean }>;
+    };
+    probeWindow.__probeRemoteLights = {
+      ...(probeWindow.__probeRemoteLights ?? {}),
+      [ship.pilotId]: { nav: ship.navLightsOn, flash: ship.flashlightOn },
+    };
+  }, [ship.pilotId, ship.navLightsOn, ship.flashlightOn]);
+
   useFrame(() => {
     const group = groupRef.current;
     if (group === null) {
@@ -1348,8 +1390,148 @@ function OtherShipMesh({
         <coneGeometry args={[0.6, 1.4, 4]} />
         <meshStandardMaterial color="#b54f57" roughness={0.7} />
       </mesh>
+      {ship.navLightsOn ? <ShipNavLights /> : null}
+      {ship.flashlightOn ? <RemoteShipFlashlight /> : null}
       {audioContext !== null ? <RemoteShipAudio ctx={audioContext} state={audioState} /> : null}
     </group>
+  );
+}
+
+// Soft round dot for the nav strobe beacon (a textureless sprite renders as a hard
+// square). Built lazily once and shared by every remote ship.
+let beaconDotTexture: Texture | null = null;
+function getBeaconDotTexture(): Texture {
+  if (beaconDotTexture !== null) {
+    return beaconDotTexture;
+  }
+  const size = 64;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext("2d");
+  if (context !== null) {
+    const gradient = context.createRadialGradient(
+      size / 2,
+      size / 2,
+      0,
+      size / 2,
+      size / 2,
+      size / 2,
+    );
+    gradient.addColorStop(0, "rgba(255,255,255,1)");
+    gradient.addColorStop(0.4, "rgba(255,255,255,0.85)");
+    gradient.addColorStop(1, "rgba(255,255,255,0)");
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, size, size);
+  }
+  beaconDotTexture = new CanvasTexture(canvas);
+  return beaconDotTexture;
+}
+
+// Ship visibility (nav) lights, replicated via Ship.navLightsOn. Three steady hull
+// markers read the ship's extent up close; the strobe beacon is rescaled every frame to
+// a fixed apparent size so the ship stays findable against the black field at multi-km
+// range (a hull-sized bulb would vanish past a few hundred meters). All marker materials
+// are unlit and fog-exempt — these are light sources, not lit surfaces.
+function ShipNavLights(): ReactNode {
+  const beaconRef = useRef<Sprite>(null);
+  const beaconWorld = useMemo(() => new ThreeVector3(), []);
+  const texture = useMemo(() => getBeaconDotTexture(), []);
+
+  useFrame((state) => {
+    const beacon = beaconRef.current;
+    if (beacon === null) {
+      return;
+    }
+    beacon.getWorldPosition(beaconWorld);
+    const range = beaconWorld.distanceTo(state.camera.position);
+    const scale = clamp(range * navBeaconAngularSize, navBeaconMinScale, navBeaconMaxScale);
+    beacon.scale.setScalar(scale);
+    // Aircraft-style double strobe: two short flashes per ~1.7 s period, dim in between
+    // so the marker never fully disappears while you are trying to track it.
+    const phase = state.clock.elapsedTime % 1.7;
+    const flash = phase < 0.13 || (phase > 0.3 && phase < 0.43);
+    beacon.material.opacity = flash ? 1 : 0.55;
+  });
+
+  return (
+    <>
+      <mesh position={[0.055, 0, 0]} scale={0.014}>
+        <sphereGeometry args={[1, 8, 8]} />
+        <meshBasicMaterial color={navLightStarboardColor} toneMapped={false} fog={false} />
+      </mesh>
+      <mesh position={[-0.055, 0, 0]} scale={0.014}>
+        <sphereGeometry args={[1, 8, 8]} />
+        <meshBasicMaterial color={navLightPortColor} toneMapped={false} fog={false} />
+      </mesh>
+      <mesh position={[0, -0.05, 0]} scale={0.012}>
+        <sphereGeometry args={[1, 8, 8]} />
+        <meshBasicMaterial color={navLightTailColor} toneMapped={false} fog={false} />
+      </mesh>
+      <sprite ref={beaconRef} position={[0, 0.07, 0]}>
+        <spriteMaterial
+          map={texture}
+          color={navBeaconColor}
+          blending={AdditiveBlending}
+          depthWrite={false}
+          transparent
+          toneMapped={false}
+          fog={false}
+        />
+      </sprite>
+      {/* Hull wash so the lit ship's body is visible in the zero-ambient vacuum. */}
+      <pointLight
+        position={[0, 0.12, 0]}
+        intensity={navHullLightIntensity}
+        distance={navHullLightDistance}
+        decay={1.6}
+        color="#dfe8ff"
+      />
+    </>
+  );
+}
+
+// A remote player's flashlight, replicated via Ship.flashlightOn: a shadowless,
+// shorter-reach spotlight (N of these can be live at once) plus a faint additive cone so
+// the beam itself is visible even when it hits nothing. Mounted inside the ship group, so
+// the interpolated remote transform aims it along the ship's forward (-Z) axis for free.
+function RemoteShipFlashlight(): ReactNode {
+  const lightRef = useRef<SpotLight>(null);
+  const targetRef = useRef<Object3D>(null);
+
+  useLayoutEffect(() => {
+    if (lightRef.current !== null && targetRef.current !== null) {
+      lightRef.current.target = targetRef.current;
+    }
+  }, []);
+
+  return (
+    <>
+      <spotLight
+        ref={lightRef}
+        position={[0, 0.02, -0.06]}
+        angle={remoteFlashlightAngle}
+        penumbra={remoteFlashlightPenumbra}
+        distance={remoteFlashlightDistance}
+        decay={0.85}
+        intensity={remoteFlashlightIntensity}
+        color={flashlightColor}
+      />
+      <object3D ref={targetRef} position={[0, 0.02, -remoteFlashlightDistance]} />
+      <mesh position={[0, 0.02, -(0.06 + remoteBeamLength / 2)]} rotation={[-Math.PI / 2, 0, 0]}>
+        <coneGeometry args={[remoteBeamRadius, remoteBeamLength, 16, 1, true]} />
+        <meshBasicMaterial
+          color={flashlightColor}
+          transparent
+          opacity={remoteBeamOpacity}
+          blending={AdditiveBlending}
+          depthWrite={false}
+          side={DoubleSide}
+          toneMapped={false}
+          fog={false}
+        />
+      </mesh>
+    </>
   );
 }
 

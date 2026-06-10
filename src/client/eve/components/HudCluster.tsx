@@ -18,6 +18,8 @@ export function HudCluster({
   flightMode,
   throttle,
   cruiseLock,
+  flashlightOn,
+  navLightsOn,
   onThrust,
   onThrottleDown,
   onThrottleZero,
@@ -30,6 +32,8 @@ export function HudCluster({
   flightMode: FlightMode;
   throttle: number;
   cruiseLock: boolean;
+  flashlightOn: boolean;
+  navLightsOn: boolean;
   onThrust: (impulse: Vector3, stabilize?: boolean) => void;
   onThrottleDown: () => void;
   onThrottleZero: () => void;
@@ -192,6 +196,22 @@ export function HudCluster({
         >
           <Gauge size={15} />
         </button>
+      </div>
+      <div className="hud-keybinds" data-testid="hud-keybinds">
+        <span
+          className={flashlightOn ? "hud-keybind on" : "hud-keybind"}
+          data-testid="hud-keybind-flashlight"
+          data-on={flashlightOn}
+        >
+          <kbd>F</kbd> flashlight {flashlightOn ? "on" : "off"}
+        </span>
+        <span
+          className={navLightsOn ? "hud-keybind on" : "hud-keybind"}
+          data-testid="hud-keybind-nav-lights"
+          data-on={navLightsOn}
+        >
+          <kbd>L</kbd> nav lights {navLightsOn ? "on" : "off"}
+        </span>
       </div>
     </section>
   );

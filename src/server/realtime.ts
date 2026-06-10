@@ -425,11 +425,15 @@ function isFlightInputCommand(value: unknown): value is FlightInputCommand {
   const stabilize = value["stabilize"];
   const boost = value["boost"];
   const cruiseLock = value["cruiseLock"];
+  const navLights = value["navLights"];
+  const flashlight = value["flashlight"];
   return (
     (active === undefined || typeof active === "boolean") &&
     (stabilize === undefined || typeof stabilize === "boolean") &&
     (boost === undefined || typeof boost === "boolean") &&
-    (cruiseLock === undefined || typeof cruiseLock === "boolean")
+    (cruiseLock === undefined || typeof cruiseLock === "boolean") &&
+    (navLights === undefined || typeof navLights === "boolean") &&
+    (flashlight === undefined || typeof flashlight === "boolean")
   );
 }
 

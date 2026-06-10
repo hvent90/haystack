@@ -66,6 +66,8 @@ type ShipRow = {
   wz: number;
   throttle: number;
   cruise_lock: number;
+  nav_lights: number;
+  flashlight: number;
   heat: number;
   cargo_mass: number;
   cargo_capacity: number;
@@ -126,6 +128,14 @@ export class ShipActor extends Actor {
       get: (actor) => ((actor as ShipActor).cruiseLock ? 1 : 0),
     },
     {
+      name: "navLights",
+      get: (actor) => ((actor as ShipActor).navLightsOn ? 1 : 0),
+    },
+    {
+      name: "flashlight",
+      get: (actor) => ((actor as ShipActor).flashlightOn ? 1 : 0),
+    },
+    {
       name: "heat",
       get: (actor) => (actor as ShipActor).heat,
     },
@@ -144,6 +154,8 @@ export class ShipActor extends Actor {
   angularVelocity: Vector3;
   throttle: number;
   cruiseLock: boolean;
+  navLightsOn: boolean;
+  flashlightOn: boolean;
   heat: number;
   cargoMass: number;
   cargoCapacity: number;
@@ -163,6 +175,8 @@ export class ShipActor extends Actor {
     this.angularVelocity = { x: row.wx, y: row.wy, z: row.wz };
     this.throttle = clamp(row.throttle, -1, 1);
     this.cruiseLock = row.cruise_lock === 1;
+    this.navLightsOn = row.nav_lights === 1;
+    this.flashlightOn = row.flashlight === 1;
     this.heat = row.heat;
     this.cargoMass = row.cargo_mass;
     this.cargoCapacity = row.cargo_capacity;
@@ -179,6 +193,8 @@ export class ShipActor extends Actor {
     this.angularVelocity = { x: row.wx, y: row.wy, z: row.wz };
     this.throttle = clamp(row.throttle, -1, 1);
     this.cruiseLock = row.cruise_lock === 1;
+    this.navLightsOn = row.nav_lights === 1;
+    this.flashlightOn = row.flashlight === 1;
     this.heat = row.heat;
     this.cargoMass = row.cargo_mass;
     this.cargoCapacity = row.cargo_capacity;
@@ -240,6 +256,8 @@ export class ShipActor extends Actor {
       angularVelocity: cloneVector(this.angularVelocity),
       throttle: this.throttle,
       cruiseLock: this.cruiseLock,
+      navLightsOn: this.navLightsOn,
+      flashlightOn: this.flashlightOn,
       heat: this.heat,
       cargoMass: this.cargoMass,
       cargoCapacity: this.cargoCapacity,
@@ -256,6 +274,8 @@ export class ShipActor extends Actor {
     this.angularVelocity = cloneVector(ship.angularVelocity);
     this.throttle = clamp(ship.throttle, -1, 1);
     this.cruiseLock = ship.cruiseLock;
+    this.navLightsOn = ship.navLightsOn;
+    this.flashlightOn = ship.flashlightOn;
     this.heat = ship.heat;
     this.cargoMass = ship.cargoMass;
     this.cargoCapacity = ship.cargoCapacity;
@@ -472,7 +492,8 @@ export class ServerWorld {
     const update = this.db.query(
       `UPDATE ships
           SET x = ?, y = ?, z = ?, vx = ?, vy = ?, vz = ?, qx = ?, qy = ?, qz = ?, qw = ?,
-              wx = ?, wy = ?, wz = ?, throttle = ?, cruise_lock = ?, heat = ?
+              wx = ?, wy = ?, wz = ?, throttle = ?, cruise_lock = ?, nav_lights = ?,
+              flashlight = ?, heat = ?
         WHERE pilot_id = ?`,
     );
     for (const ship of this.shipActors.values()) {
@@ -493,6 +514,8 @@ export class ServerWorld {
         ship.angularVelocity.z,
         ship.throttle,
         ship.cruiseLock ? 1 : 0,
+        ship.navLightsOn ? 1 : 0,
+        ship.flashlightOn ? 1 : 0,
         ship.heat,
         ship.id,
       );
