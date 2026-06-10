@@ -134,7 +134,7 @@ function buildAssets(belt: BeltField): FarFieldAssets {
   // Fade in past the derive bubble (~25 km) and slightly with extreme distance.
   const nearFade = smoothstep(float(22), float(95), camDist);
   const hazeColor = mix(vec3(0.32, 0.36, 0.45), vec3(0.78, 0.72, 0.6), clamp(d.mul(1.6), 0, 1));
-  hazeMat.colorNode = vec4(hazeColor, d.mul(0.38).mul(nearFade));
+  hazeMat.colorNode = vec4(hazeColor, d.mul(0.13).mul(nearFade));
   const haze = new THREE.Mesh(hazeGeo, hazeMat);
   haze.frustumCulled = false;
   haze.renderOrder = -10;
@@ -173,7 +173,7 @@ function buildAssets(belt: BeltField): FarFieldAssets {
   speckMat.fog = false;
   const speckDist = sub(positionWorld, cameraPosition).length();
   const speckFade = smoothstep(float(28), float(120), speckDist);
-  speckMat.colorNode = vec4(vec3(0.55, 0.55, 0.58), speckFade.mul(0.55));
+  speckMat.colorNode = vec4(vec3(0.5, 0.5, 0.53), speckFade.mul(0.2));
   speckMat.sizeNode = clamp(speckDist.mul(0.004), float(1.0), float(3.2));
   const speckles = new THREE.Points(speckGeo, speckMat);
   speckles.frustumCulled = false;
