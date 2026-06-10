@@ -173,8 +173,15 @@ def bake(run_dir: str | Path) -> list[Path]:
     written.append(p)
 
     # --- metadata ---------------------------------------------------------------
+    # Content-addressed id: clients append it as a cache-busting query param so a fresh
+    # belt-meta.json can never pair with a stale cached binary (the lengths guard in the
+    # runtime decoder turns that mismatch into a hard error).
+    import hashlib
+
+    bake_id = hashlib.sha1(density_u8.tobytes() + heroes.tobytes()).hexdigest()[:12]
     meta = {
         "formatVersion": FORMAT_VERSION,
+        "bakeId": bake_id,
         "preset": meta_in["preset"]["name"] if isinstance(meta_in["preset"], dict) else str(meta_in["preset"]),
         "seed": preset.seed,
         "counts": {"heroes": int(hero_idx.size), "background": int(rest_idx.size)},
