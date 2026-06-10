@@ -1622,6 +1622,150 @@ tr:focus-visible {
   }
 }
 
+/* --- touch UI fit (.touch-ui set on .app-shell for touch devices) -------------------
+   Width media queries can't see "this is a phone" (a landscape phone is 800-950px
+   wide); the capability probe can. These rules make the UI thumb-operable: windows
+   become full-screen static sheets, the HUD sheds its redundant button grid (the
+   sticks replaced it), and every interactive target is ≥44px. */
+
+/* Windows: fixed full-screen sheets between the rails, safe-area aware. WindowFrame
+   gets static={true} on touch (no drag/resize), so the inline left/top/width/height
+   are dead values — override them wholesale. */
+/* Beats the ≤720px media block (lower specificity) on narrow touch devices. */
+.app-shell.touch-ui .window-layer {
+  position: absolute;
+  inset: 0;
+  display: block;
+  padding: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.app-shell.touch-ui .window-frame {
+  position: absolute !important;
+  left: calc(52px + var(--safe-left)) !important;
+  top: calc(52px + var(--safe-top)) !important;
+  right: calc(8px + var(--safe-right)) !important;
+  bottom: calc(8px + var(--safe-bottom)) !important;
+  width: auto !important;
+  max-width: none !important;
+  height: auto !important;
+}
+
+/* Sheets have a close button; minimize (first control) is a desktop affordance. */
+.app-shell.touch-ui .window-controls button:first-child {
+  display: none;
+}
+
+.app-shell.touch-ui .window-titlebar {
+  min-height: 44px;
+}
+
+.app-shell.touch-ui .winctl {
+  width: 44px;
+  height: 36px;
+}
+
+.app-shell.touch-ui .neocom {
+  width: calc(52px + var(--safe-left));
+}
+
+.app-shell.touch-ui .neocom button {
+  width: 44px;
+  height: 44px;
+}
+
+/* The HUD thrust/throttle button grid is redundant next to the sticks + touch button
+   columns — keep the gauges and the two headline readouts, drop the rest. */
+.app-shell.touch-ui .hud-buttons,
+.app-shell.touch-ui .hud-keybinds,
+.app-shell.touch-ui [data-testid="hud-velocity"],
+.app-shell.touch-ui [data-testid="hud-position"] {
+  display: none;
+}
+
+.app-shell.touch-ui .hud-cluster {
+  bottom: calc(10px + var(--safe-bottom));
+  grid-template-columns: 54px auto;
+  gap: 8px;
+  padding: 6px 10px;
+}
+
+.app-shell.touch-ui .heat-gauge {
+  width: 50px;
+  height: 50px;
+}
+
+/* Selected-item actions move to the top right (under the rail, clear of the right
+   stick zone's resting area and the edge button column). */
+.app-shell.touch-ui .selected-item {
+  top: calc(60px + var(--safe-top));
+  right: calc(74px + var(--safe-right));
+  bottom: auto;
+  width: 250px;
+}
+
+.app-shell.touch-ui .selected-item button,
+.app-shell.touch-ui .context-menu button {
+  min-height: 40px;
+}
+
+/* Full-screen sheets must cover the floating HUD/overlay clusters: on touch-ui those
+   drop below the window layer (z 100+) instead of floating above it like on desktop —
+   while a sheet is open you are managing windows, not flying. */
+.app-shell.touch-ui .hud-cluster,
+.app-shell.touch-ui .selected-item,
+.app-shell.touch-ui .touch-btn-col,
+.app-shell.touch-ui .audio-controls {
+  z-index: 90;
+}
+
+/* The mixer is a desktop debug affordance; on touch keep only the head (mute toggle +
+   unlock hint) so the panel stops covering the right stick zone. */
+.app-shell.touch-ui .audio-controls__row {
+  display: none;
+}
+
+/* Rail declutter: the index/position/flight-mode metrics are diagnostics; dropping
+   them keeps the rail to one row on phone widths (the sheet/zone tops assume ~52px). */
+.app-shell.touch-ui [data-testid="rail-metric-field"],
+.app-shell.touch-ui [data-testid="rail-metric-position"],
+.app-shell.touch-ui [data-testid="rail-metric-flight-mode"] {
+  display: none;
+}
+
+/* Portrait on a touch device: full-screen rotate prompt (see RotatePrompt.tsx). */
+.rotate-prompt {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 10px;
+  padding: 24px;
+  background: rgb(8 9 8 / 94%);
+  text-align: center;
+}
+
+.rotate-prompt-glyph {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--accent-cyan);
+}
+
+.rotate-prompt-title {
+  color: var(--accent-amber);
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.rotate-prompt-body {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
 /* --- touch flight controls (touch devices only; see TouchFlightControls.tsx) -------- */
 
 .touch-controls {
@@ -1686,12 +1830,14 @@ tr:focus-visible {
   pointer-events: none;
 }
 
+/* Resting hints sit clear of the edge button columns (left col ends ~210px in with a
+   wide notch; right col is ~62px deep). */
 .touch-stick-hint-left {
-  left: calc(76px + var(--safe-left));
+  left: calc(190px + var(--safe-left));
 }
 
 .touch-stick-hint-right {
-  right: calc(28px + var(--safe-right));
+  right: calc(100px + var(--safe-right));
 }
 
 .touch-btn-col {

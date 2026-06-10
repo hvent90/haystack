@@ -8,6 +8,10 @@ export function WindowFrame({
   definition,
   state,
   focused,
+  // Touch layout: the frame is a fixed full-screen sheet (styles.css .touch-ui rules
+  // own the geometry), so free-dragging and edge-resizing are disabled — a thumb can't
+  // meaningfully drag a window it can barely see, and resize handles are sub-44px.
+  static: isStatic = false,
   children,
   onFocus,
   onPatch,
@@ -16,6 +20,7 @@ export function WindowFrame({
   definition: WindowDefinition;
   state: WindowState;
   focused: boolean;
+  static?: boolean;
   children: ReactNode;
   onFocus: () => void;
   onPatch: (patch: Partial<WindowState>) => void;
@@ -31,7 +36,7 @@ export function WindowFrame({
   } satisfies CSSProperties;
 
   function beginDrag(event: ReactPointerEvent<HTMLDivElement>): void {
-    if (event.button !== 0) {
+    if (isStatic || event.button !== 0) {
       return;
     }
     event.preventDefault();
@@ -52,7 +57,7 @@ export function WindowFrame({
   }
 
   function beginResize(direction: string, event: ReactPointerEvent<HTMLDivElement>): void {
-    if (event.button !== 0) {
+    if (isStatic || event.button !== 0) {
       return;
     }
     event.preventDefault();
@@ -141,14 +146,16 @@ export function WindowFrame({
           {children}
         </div>
       ) : null}
-      {(["n", "s", "e", "w", "ne", "nw", "se", "sw"] as const).map((direction) => (
-        <div
-          key={direction}
-          className={`resize-handle resize-${direction}`}
-          data-testid={`window-${definition.key}-resize-${direction}`}
-          onPointerDown={(event) => beginResize(direction, event)}
-        />
-      ))}
+      {isStatic
+        ? null
+        : (["n", "s", "e", "w", "ne", "nw", "se", "sw"] as const).map((direction) => (
+            <div
+              key={direction}
+              className={`resize-handle resize-${direction}`}
+              data-testid={`window-${definition.key}-resize-${direction}`}
+              onPointerDown={(event) => beginResize(direction, event)}
+            />
+          ))}
     </section>
   );
 }

@@ -71,6 +71,7 @@ import { isEditableTarget, isFlightKey } from "./flight";
 import { isTouchDevice } from "./mobile";
 import { createTouchFlightState, resetTouchFlightAxes, touchFlightEngaged } from "./touch-input";
 import { TouchFlightControls } from "./components/TouchFlightControls";
+import { RotatePrompt } from "./components/RotatePrompt";
 import {
   clampLayout,
   createDefaultLayout,
@@ -893,8 +894,9 @@ export function EveApp(): ReactNode {
 
   return (
     <main
-      className="app-shell"
+      className={touchUi ? "app-shell touch-ui" : "app-shell"}
       data-testid="haystack-app"
+      data-touch-ui={touchUi}
       data-flight-mode={flightMode}
       data-view-mode={viewMode}
       data-flight-input-scale={flightInputScale.toFixed(4)}
@@ -963,6 +965,7 @@ export function EveApp(): ReactNode {
                 key={definition.key}
                 definition={definition}
                 state={state}
+                static={touchUi}
                 focused={focusedWindow === definition.key}
                 onFocus={() => focusWindow(definition.key)}
                 onPatch={(patch) => patchWindow(definition.key, patch)}
@@ -1066,6 +1069,7 @@ export function EveApp(): ReactNode {
           onBoost={sendBoostInput}
           onCruiseToggle={() => toggleFlightCruiseLock(true)}
         />
+        {touchUi ? <RotatePrompt /> : null}
         {touchUi ? (
           <TouchFlightControls
             state={touchFlightRef.current}
