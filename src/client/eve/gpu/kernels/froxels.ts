@@ -161,17 +161,21 @@ export type FroxelTuning = {
 // (shared/belt/field.ts) pins everything meaningfully in-band to ~RAMP_TARGET (0.9), so
 // the milk no longer rides each bake's density normalization (the 2026-06-10 "no haze
 // at all on saturn" calibration trap: spawn band read 0.19 of saturn's peak vs 0.7 of
-// legacy's, needing sigmaScale 2.5). 1.75 is the hv-picked rung of the 2026-06-10
-// fog-ladder A/B (scripts/bench/fog-ladder.mjs): in-band sigma_t ≈ 1.75 x 0.8 ≈ 1.4/km,
-// rocks dissolve into the milk by ~2 km — the ED claustrophobic ring feel. Gaps stay
-// at sigmaFloor.
+// legacy's, needing sigmaScale 2.5). hv spec (2026-06-10): rocks dissolve into the milk
+// ~20 km out, matching ED's 15-20 km in-ring visibility (research doc §1) — optical
+// depth 3 at 20 km -> in-band sigma_t ≈ 0.15/km -> sigmaScale 0.17 at remapped density
+// 0.9. (The 1.75 rung of the fog-ladder A/B read as ~2 km visibility: too small.)
+// At that extinction the GLOW carries the milk, so in-scatter is SUN-WEIGHTED (the
+// hv-picked glow-ladder rung): sunStrength 1.5 with broader hgG 0.3, ambient 0.03 —
+// bright toward the sun, ED god-ray feel. Gaps stay at sigmaFloor. Re-ladder with
+// scripts/bench/fog-ladder.mjs (SIGMAS= csv or TUNES= JSON array).
 export const FROXEL_DEFAULTS: FroxelTuning = {
-  sigmaScale: 1.75,
+  sigmaScale: 0.17,
   sigmaFloor: 0.01,
   albedo: { r: 0.66, g: 0.58, b: 0.47 },
-  ambient: 0.012,
-  sunStrength: 1.0,
-  hgG: 0.45,
+  ambient: 0.03,
+  sunStrength: 1.5,
+  hgG: 0.3,
   flashStrength: 1,
   mix: 1,
 };
