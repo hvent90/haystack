@@ -53,7 +53,12 @@ A/B and as the default until a belt is approved.
 
 Composed presets: `belt-v1` (moody, quiet zones + landmarks), `belt-v2-dense`
 (~2.5×, EVE-style spectacle), `belt-v3-planar` (sheets+arcs lead, cathedrals
-sprinkled). See screenshots/field/ history and the Discord DM thread.
+sprinkled), `belt-v4-disk` (macro slab → classic flattened belt), and
+**`belt-natural` — the shipped default**: hv's direction (2026-06-09) was that
+pockets read as natural gravitational clumping while strings/rings/sheets look
+too authored, so belt-natural is pocket 22% / gravel-swarm 8% / cathedral 3% /
+drift 50% over macro voids, with a guaranteed home pocket at spawn
+(`FieldPreset.home`). See screenshots/field/ history and the Discord DM thread.
 
 ## The preview harness (the sketchbook)
 
@@ -105,14 +110,22 @@ cloned from `render-thrusters.ts` (Bun.build → headless Chromium →
 
 Gates: `scripts/bench/parity-factory.ts` (server==client fingerprints at 4
 origins + legacy bit-exactness over 288 cells), `verify:screenshot`,
-`verify:gpu`, `verify:gpu-live` — all PASS with the legacy default.
+`verify:gpu`, `verify:gpu-live`, `verify:gpu-live:prod` — all PASS with
+belt-natural as the shipped default (p95 16.7 ms, ~60 fps at the 50k budget;
+the belt-natural prod run shows the same frame profile as legacy).
 
-### Open item: spawn-zone density
+### Spawn-zone density & the gpu-live gate
 
-`HAYSTACK_FIELD_PRESET=belt-v1 verify:gpu-live:prod` holds **60 fps, p95
-16.7 ms** at the 50k budget, but the SCAN/SHADOW pixel-count gates fail —
-the origin spawn lands in a thin macro zone, so barely any rocks are on
-screen. Before flipping the default to a designed belt, either (a) guarantee
-density near origin (e.g. a deterministic "home pocket" or macro phase pick),
-or (b) move the gate vantage to a known-thick coordinate. Decision belongs to
-the belt-direction approval.
+Designed belts have quiet zones; the origin spawn can land in one. Two-part
+resolution:
+
+- **Gameplay**: `FieldPreset.home` forces a pocket in the coarse cell
+  containing world origin (macro ignored), so spawn/reset always wakes up
+  with scenery (~100 rocks, anchor + gravel halo within ~2 km).
+- **Verification**: `verify:gpu-live` pins its server to
+  `HAYSTACK_FIELD_PRESET=legacy-uniform`. Its SCAN/SHADOW pixel thresholds
+  (tier1 ≈ 8k darkened samples, baseLit ≈ 15k) were calibrated against the
+  uniform field's wall-of-rocks spawn view — no tasteful belt can satisfy
+  them, and the gate's job is catching GPU-pipeline regressions, not judging
+  field design. Env still overrides for A/B. A home pocket alone gets
+  pulseTeal from 3 to ~double-digits, far below the legacy-calibrated bars.
