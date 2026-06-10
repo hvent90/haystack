@@ -3,7 +3,7 @@ import type {
   PointerEvent as ReactPointerEvent,
   ReactNode,
 } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { StrictMode, useEffect, useMemo, useRef, useState } from "react";
 import type {
   Asteroid,
   CharacterCard,
@@ -20,6 +20,8 @@ import type {
   WorldSnapshot,
 } from "../../shared/types";
 import { makeShipCollisionEnvironment } from "../../shared/collision";
+import { shipFixedDt } from "../../shared/ship-motion";
+import { predictionDebug } from "./prediction-debug";
 import {
   buildBase,
   createPilot,
@@ -57,6 +59,8 @@ import {
   flightInputScaleWheelDivisor,
   flightInputIntervalMs,
   localPilotKey,
+  maxFlightCatchupSec,
+  maxFlightStepsPerTick,
   mouseSensitivity,
   relativeMouseDecay,
   throttleStep,
@@ -209,6 +213,12 @@ export function EveApp(): ReactNode {
   const lightsRef = useRef({ navLights: false, flashlight: false });
   const oneShotRef = useRef<OneShotFlightInput>({ boost: false });
   const lastFlightActiveRef = useRef(false);
+  // Wall-clock fixed-step accumulator for owned-ship prediction. Each input-timer
+  // fire drains `floor(elapsed / shipFixedDt)` steps, so the client advances the
+  // SAME number of 1/60 steps per wall-second as the server regardless of timer
+  // jitter (see maxFlightCatchupSec in constants.ts and the cadence regression test).
+  const predictAccumulatorRef = useRef(0);
+  const predictClockRef = useRef(0); // performance.now() at the last fire (0 = idle/reset)
   const syncedFlightPilotRef = useRef<string | null>(null);
   const myShipRef = useRef<Ship | null>(null);
   const previousChatIdsRef = useRef<Set<string>>(new Set());
@@ -417,6 +427,7 @@ export function EveApp(): ReactNode {
             const outcome = predictionRef.current.reconcile(message.ackClientTick, message.ship);
             if (outcome.corrected) {
               predictionCorrectionsRef.current += 1;
+              predictionDebug.noteCorrection();
               flightRenderStore.correctOwned(outcome.ship);
             } else {
               flightRenderStore.setOwnedPredicted(outcome.ship);
@@ -610,10 +621,38 @@ export function EveApp(): ReactNode {
       const active = flightModeRef.current === "flight";
       const hasOneShot = oneShotRef.current.boost;
       if (!active && !lastFlightActiveRef.current && !hasOneShot) {
+        // Idle: stop accumulating wall time so resuming flight doesn't dump a
+        // catch-up burst built from the idle gap.
+        predictAccumulatorRef.current = 0;
+        predictClockRef.current = 0;
         return;
       }
+      // Advance prediction by ELAPSED WALL TIME, not once per fire. A starved timer
+      // (localhost CPU contention) fires late; draining the accumulator here keeps
+      // the client at ~60 steps/wall-second to match the server, so the predicted
+      // pose stops lagging and acks stop snapping. send+predict stays 1:1 per step;
+      // only the COUNT per wall-second changes. One-shots (boost) fire on the first
+      // step only — the server applies them once too (a single forced tick).
+      const now = performance.now();
+      const elapsedSec =
+        predictClockRef.current === 0 ? shipFixedDt : (now - predictClockRef.current) / 1000;
+      predictClockRef.current = now;
+      predictAccumulatorRef.current += Math.min(elapsedSec, maxFlightCatchupSec);
+      let steps = 0;
+      while (predictAccumulatorRef.current >= shipFixedDt && steps < maxFlightStepsPerTick) {
+        predictAccumulatorRef.current -= shipFixedDt;
+        steps += 1;
+      }
+      predictionDebug.noteFire(steps);
       const flightInput = buildFlightInput(active);
-      sendFlightInput(flightInput);
+      if (steps === 0) {
+        // Timer fired faster than the fixed step; keep the just-built one-shot for
+        // the next fire instead of dropping it.
+        oneShotRef.current.boost = oneShotRef.current.boost || flightInput.boost === true;
+      }
+      for (let step = 0; step < steps; step += 1) {
+        sendFlightInput(step === 0 ? flightInput : withoutOneShots(flightInput));
+      }
       lastFlightActiveRef.current = active;
       const nextMouseDeflection = {
         x: mouseDeflectionRef.current.x * relativeMouseDecay,
@@ -875,183 +914,190 @@ export function EveApp(): ReactNode {
         audioVolume={spatialMasterVolume(audio.mix)}
       />
 
-      <TopRail
-        snapshot={snapshot}
-        myShip={myShip}
-        flightMode={flightMode}
-        throttle={effectiveThrottle}
-        cruiseLock={cruiseLock}
-        error={error}
-      />
-      <Neocom
-        layout={layout}
-        unreadComms={unreadComms}
-        onToggle={toggleWindow}
-        onReset={resetLayout}
-      />
-
-      <div className="window-layer">
-        {windowDefinitions.map((definition) => {
-          const state = layout[definition.key];
-          if (!state.open) {
-            return null;
-          }
-          return (
-            <WindowFrame
-              key={definition.key}
-              definition={definition}
-              state={state}
-              focused={focusedWindow === definition.key}
-              onFocus={() => focusWindow(definition.key)}
-              onPatch={(patch) => patchWindow(definition.key, patch)}
-              onClose={() => patchWindow(definition.key, { open: false })}
-            >
-              {definition.key === "flight" ? (
-                <FlightWindow
-                  myShip={myShip}
-                  flightMode={flightMode}
-                  throttle={effectiveThrottle}
-                  cruiseLock={cruiseLock}
-                  canUse={canUse}
-                  onRequestFlightLock={requestFlightLock}
-                  onThrust={sendFlightCommand}
-                  onThrottleDown={() => adjustFlightThrottle(-throttleStep, true)}
-                  onThrottleZero={() => setFlightThrottle(0, true)}
-                  onThrottleUp={() => adjustFlightThrottle(throttleStep, true)}
-                  onBoost={sendBoostInput}
-                  onCruiseToggle={() => toggleFlightCruiseLock(true)}
-                  onResetToOrigin={resetToOrigin}
-                />
-              ) : definition.key === "scanner" ? (
-                <ScannerWindow
-                  model={overviewModel}
-                  selected={selection}
-                  sort={sort}
-                  filter={overviewFilter}
-                  scanMode={scanMode}
-                  loading={isBusy("scan")}
-                  onSort={sortBy}
-                  onFilter={setOverviewFilter}
-                  onScanMode={setScanMode}
-                  onScan={() => runScan()}
-                  onSelect={selectTarget}
-                  onContextMenu={openContextMenu}
-                />
-              ) : definition.key === "cargo" ? (
-                <CargoWindow
-                  snapshot={snapshot}
-                  myShip={myShip}
-                  selectedAsteroidId={selectedAsteroidId}
-                  deposits={selectedSurfaceDeposits}
-                  canUse={canUse}
-                  busyActions={busyActions}
-                  onMine={mineDeposit}
-                  onSell={sellAllCargo}
-                />
-              ) : definition.key === "comms" ? (
-                <CommsWindow
-                  snapshot={snapshot}
-                  me={meCard}
-                  channel={chatChannel}
-                  targetPilotId={chatTargetPilotId}
-                  draft={chatDraft}
-                  messages={visibleChat}
-                  busy={isBusy("send-chat")}
-                  onChannel={setChatChannel}
-                  onTarget={setChatTargetPilotId}
-                  onDraft={setChatDraft}
-                  onSend={sendChat}
-                />
-              ) : definition.key === "character" ? (
-                <CharacterWindow
-                  snapshot={snapshot}
-                  me={meCard}
-                  myShip={myShip}
-                  onShowInfo={openShowInfo}
-                />
-              ) : (
-                <BasesWindow
-                  snapshot={snapshot}
-                  myShip={myShip}
-                  canUse={canUse}
-                  busyActions={busyActions}
-                  fieldStats={fieldStats}
-                  onDeploy={deployHab}
-                  onInspectField={inspectField}
-                  onUpgrade={upgrade}
-                />
-              )}
-            </WindowFrame>
-          );
-        })}
-      </div>
-
-      <HudCluster
-        myShip={myShip}
-        canUse={canUse}
-        flightMode={flightMode}
-        viewMode={viewMode}
-        throttle={effectiveThrottle}
-        cruiseLock={cruiseLock}
-        flashlightOn={flashlightOn}
-        navLightsOn={navLightsOn}
-        onThrust={sendFlightCommand}
-        onThrottleDown={() => adjustFlightThrottle(-throttleStep, true)}
-        onThrottleZero={() => setFlightThrottle(0, true)}
-        onThrottleUp={() => adjustFlightThrottle(throttleStep, true)}
-        onBoost={sendBoostInput}
-        onCruiseToggle={() => toggleFlightCruiseLock(true)}
-      />
-      <SelectedItemPanel
-        row={selectedRow}
-        snapshot={snapshot}
-        markerActive={waypoint !== null}
-        onShowInfo={() => selectedRow !== null && openShowInfo(selectedRow)}
-        onScan={() =>
-          selectedRow?.kind === "asteroid" ? runScan(selectedRow.id) : runScan(selectedAsteroidId)
-        }
-        onMine={mineSelectedDeposit}
-        onSetFocus={() =>
-          selectedRow?.kind === "asteroid" && setSelection({ kind: "asteroid", id: selectedRow.id })
-        }
-        onSetMarker={() => selectedRow !== null && setMarker(selectedRow)}
-        onClearMarker={() => setWaypoint(null)}
-        onInspectBase={openBases}
-      />
-
-      {showInfoTarget !== null ? (
-        <ShowInfoCard
-          target={showInfoTarget}
+      {/* StrictMode wraps ONLY the React/DOM UI overlay — never WorldView above. React's dev
+          double-mount tears down + re-creates the host tree, which for R3F's WebGPU <Canvas>
+          races a delayed dispose(scene) against the reused renderer (see main.tsx). The HUD,
+          rails, and windows are plain React and keep StrictMode's effect-cleanup checks. */}
+      <StrictMode>
+        <TopRail
           snapshot={snapshot}
-          row={
-            overviewModel === null
-              ? null
-              : materializeRowByKey(overviewModel, `${showInfoTarget.kind}:${showInfoTarget.id}`)
-          }
-          onClose={() => setShowInfoTarget(null)}
+          myShip={myShip}
+          flightMode={flightMode}
+          throttle={effectiveThrottle}
+          cruiseLock={cruiseLock}
+          error={error}
         />
-      ) : null}
+        <Neocom
+          layout={layout}
+          unreadComms={unreadComms}
+          onToggle={toggleWindow}
+          onReset={resetLayout}
+        />
 
-      {contextMenu !== null ? (
-        <ContextMenu
-          state={contextMenu}
-          row={contextMenuRow}
+        <div className="window-layer">
+          {windowDefinitions.map((definition) => {
+            const state = layout[definition.key];
+            if (!state.open) {
+              return null;
+            }
+            return (
+              <WindowFrame
+                key={definition.key}
+                definition={definition}
+                state={state}
+                focused={focusedWindow === definition.key}
+                onFocus={() => focusWindow(definition.key)}
+                onPatch={(patch) => patchWindow(definition.key, patch)}
+                onClose={() => patchWindow(definition.key, { open: false })}
+              >
+                {definition.key === "flight" ? (
+                  <FlightWindow
+                    myShip={myShip}
+                    flightMode={flightMode}
+                    throttle={effectiveThrottle}
+                    cruiseLock={cruiseLock}
+                    canUse={canUse}
+                    onRequestFlightLock={requestFlightLock}
+                    onThrust={sendFlightCommand}
+                    onThrottleDown={() => adjustFlightThrottle(-throttleStep, true)}
+                    onThrottleZero={() => setFlightThrottle(0, true)}
+                    onThrottleUp={() => adjustFlightThrottle(throttleStep, true)}
+                    onBoost={sendBoostInput}
+                    onCruiseToggle={() => toggleFlightCruiseLock(true)}
+                    onResetToOrigin={resetToOrigin}
+                  />
+                ) : definition.key === "scanner" ? (
+                  <ScannerWindow
+                    model={overviewModel}
+                    selected={selection}
+                    sort={sort}
+                    filter={overviewFilter}
+                    scanMode={scanMode}
+                    loading={isBusy("scan")}
+                    onSort={sortBy}
+                    onFilter={setOverviewFilter}
+                    onScanMode={setScanMode}
+                    onScan={() => runScan()}
+                    onSelect={selectTarget}
+                    onContextMenu={openContextMenu}
+                  />
+                ) : definition.key === "cargo" ? (
+                  <CargoWindow
+                    snapshot={snapshot}
+                    myShip={myShip}
+                    selectedAsteroidId={selectedAsteroidId}
+                    deposits={selectedSurfaceDeposits}
+                    canUse={canUse}
+                    busyActions={busyActions}
+                    onMine={mineDeposit}
+                    onSell={sellAllCargo}
+                  />
+                ) : definition.key === "comms" ? (
+                  <CommsWindow
+                    snapshot={snapshot}
+                    me={meCard}
+                    channel={chatChannel}
+                    targetPilotId={chatTargetPilotId}
+                    draft={chatDraft}
+                    messages={visibleChat}
+                    busy={isBusy("send-chat")}
+                    onChannel={setChatChannel}
+                    onTarget={setChatTargetPilotId}
+                    onDraft={setChatDraft}
+                    onSend={sendChat}
+                  />
+                ) : definition.key === "character" ? (
+                  <CharacterWindow
+                    snapshot={snapshot}
+                    me={meCard}
+                    myShip={myShip}
+                    onShowInfo={openShowInfo}
+                  />
+                ) : (
+                  <BasesWindow
+                    snapshot={snapshot}
+                    myShip={myShip}
+                    canUse={canUse}
+                    busyActions={busyActions}
+                    fieldStats={fieldStats}
+                    onDeploy={deployHab}
+                    onInspectField={inspectField}
+                    onUpgrade={upgrade}
+                  />
+                )}
+              </WindowFrame>
+            );
+          })}
+        </div>
+
+        <HudCluster
+          myShip={myShip}
+          canUse={canUse}
+          flightMode={flightMode}
+          viewMode={viewMode}
+          throttle={effectiveThrottle}
+          cruiseLock={cruiseLock}
+          flashlightOn={flashlightOn}
+          navLightsOn={navLightsOn}
+          onThrust={sendFlightCommand}
+          onThrottleDown={() => adjustFlightThrottle(-throttleStep, true)}
+          onThrottleZero={() => setFlightThrottle(0, true)}
+          onThrottleUp={() => adjustFlightThrottle(throttleStep, true)}
+          onBoost={sendBoostInput}
+          onCruiseToggle={() => toggleFlightCruiseLock(true)}
+        />
+        <SelectedItemPanel
+          row={selectedRow}
+          snapshot={snapshot}
           markerActive={waypoint !== null}
-          onClose={() => setContextMenu(null)}
-          onSelect={selectTarget}
-          onShowInfo={openShowInfo}
-          onScan={(row) => runScan(row.kind === "asteroid" ? row.id : row.asteroidId)}
-          onMine={() => contextMenuRow?.kind === "deposit" && mineDepositById(contextMenuRow.id)}
-          onSetMarker={setMarker}
-          onClearSelection={() => setSelection(null)}
+          onShowInfo={() => selectedRow !== null && openShowInfo(selectedRow)}
+          onScan={() =>
+            selectedRow?.kind === "asteroid" ? runScan(selectedRow.id) : runScan(selectedAsteroidId)
+          }
+          onMine={mineSelectedDeposit}
+          onSetFocus={() =>
+            selectedRow?.kind === "asteroid" &&
+            setSelection({ kind: "asteroid", id: selectedRow.id })
+          }
+          onSetMarker={() => selectedRow !== null && setMarker(selectedRow)}
           onClearMarker={() => setWaypoint(null)}
-          onDeployBase={deployHab}
-          onPulseScan={() => runScan()}
-          onOpenDm={openDmFor}
           onInspectBase={openBases}
         />
-      ) : null}
-      <AudioControls mix={audio.mix} unlocked={audio.unlocked} onChange={audio.setMix} />
+
+        {showInfoTarget !== null ? (
+          <ShowInfoCard
+            target={showInfoTarget}
+            snapshot={snapshot}
+            row={
+              overviewModel === null
+                ? null
+                : materializeRowByKey(overviewModel, `${showInfoTarget.kind}:${showInfoTarget.id}`)
+            }
+            onClose={() => setShowInfoTarget(null)}
+          />
+        ) : null}
+
+        {contextMenu !== null ? (
+          <ContextMenu
+            state={contextMenu}
+            row={contextMenuRow}
+            markerActive={waypoint !== null}
+            onClose={() => setContextMenu(null)}
+            onSelect={selectTarget}
+            onShowInfo={openShowInfo}
+            onScan={(row) => runScan(row.kind === "asteroid" ? row.id : row.asteroidId)}
+            onMine={() => contextMenuRow?.kind === "deposit" && mineDepositById(contextMenuRow.id)}
+            onSetMarker={setMarker}
+            onClearSelection={() => setSelection(null)}
+            onClearMarker={() => setWaypoint(null)}
+            onDeployBase={deployHab}
+            onPulseScan={() => runScan()}
+            onOpenDm={openDmFor}
+            onInspectBase={openBases}
+          />
+        ) : null}
+        <AudioControls mix={audio.mix} unlocked={audio.unlocked} onChange={audio.setMix} />
+      </StrictMode>
     </main>
   );
 
@@ -1485,6 +1531,17 @@ export function EveApp(): ReactNode {
       ...(active && keys.has("KeyX") ? { stabilize: true } : {}),
       ...(oneShot.boost ? { boost: true } : {}),
     };
+  }
+
+  // The held part of a command, with one-shot impulses removed. Catch-up prediction
+  // steps within a single timer fire replay only the held thrust — the server applies
+  // a one-shot (boost) exactly once (one forced tick), so the client must too.
+  function withoutOneShots(command: FlightInputCommand): FlightInputCommand {
+    if (command.boost !== true) {
+      return command;
+    }
+    const { boost: _boost, ...held } = command;
+    return held;
   }
 
   function syncKeyboardThrottle(): void {
