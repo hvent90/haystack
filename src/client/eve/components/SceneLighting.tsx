@@ -9,6 +9,7 @@ import {
   Vector3 as ThreeVector3,
 } from "three";
 import type { Quaternion } from "../../../shared/types";
+import { setFroxelFlashlight } from "../gpu/kernels/froxels";
 import { flightRenderStore } from "../renderStore";
 import {
   flashlightAngle,
@@ -182,6 +183,9 @@ export function ShipFlashlight({
       cockpitWorld.y + forward.y * flashlightDistance,
       cockpitWorld.z + forward.z * flashlightDistance,
     );
+    // Mirror the pose into the froxel volumetric beam (architecture §6.5 phase 2) so the
+    // scattering cone stays locked to the same cockpit transform as the real spotlight.
+    setFroxelFlashlight(cockpitWorld, forward, on);
   });
 
   return (

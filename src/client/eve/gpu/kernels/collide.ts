@@ -90,6 +90,11 @@ export type CollisionPipeline = {
   // The per-frame dispatch list, in order (§3.3: submit all via renderer.compute, never
   // computeAsync in the hot loop).
   dispatches: ComputeKernel[];
+  // Split lists (§1.3/§6.3): the froxel sun-shadow march READS the collision world grid,
+  // so the binner half runs EVERY frame (the grid must exist even when nothing collides);
+  // the resolve half (narrow + apply) keeps the §3.4 Nc==0 gate.
+  binnerDispatches: ComputeKernel[];
+  resolveDispatches: ComputeKernel[];
 };
 
 export function makeCollisionPipeline(): CollisionPipeline {
@@ -222,7 +227,7 @@ export function makeCollisionPipeline(): CollisionPipeline {
     });
   })().compute(MAX_RESIDENT, [WORKGROUP]);
 
-  const dispatches = [
+  const binnerDispatches = [
     binner.clearCounts,
     binner.count,
     binner.scanPerBlock,
@@ -230,9 +235,9 @@ export function makeCollisionPipeline(): CollisionPipeline {
     binner.addBlockOffsets,
     binner.initCursor,
     binner.scatter,
-    narrow,
-    apply,
   ];
+  const resolveDispatches = [narrow, apply];
+  const dispatches = [...binnerDispatches, ...resolveDispatches];
 
-  return { binner, narrow, apply, dp, dv, dispatches };
+  return { binner, narrow, apply, dp, dv, dispatches, binnerDispatches, resolveDispatches };
 }

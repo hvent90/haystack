@@ -81,14 +81,14 @@ export const shadowSoftRadius = 1;
 export const shadowBubbleFadeNear = 5;
 export const shadowBubbleFadeFar = 8;
 
-// Distance fog: a gentle far extinction toward the background colour (NOT a hard cutoff).
-// Tightened from the old 30/90 to fully extinguish rocks by the render distance, so the
-// per-chunk distance cull (WorldView MAX_DRAW_SCENE) drops only rocks that have already
-// faded to the background — no visible pop as chunks page out. Near 9 km stays clear, so
-// the gameplay-relevant near field is untouched, and the default-play 2000-rock field
-// (~9 km ball) sits inside the near plane so its look is essentially unchanged.
+// RETIRED as atmosphere (froxel volumetrics, architecture §6): the old 9..18 km linear
+// fog band is superseded by the froxel participating medium, whose extinction follows the
+// baked belt density (thick in clumps, clear in voids). What remains here is ONLY a
+// narrow draw-distance dissolve: the GPU cull retires rocks at MAX_DRAW_SCENE (18 km,
+// cull-cpu.ts — math the froxel work must not touch), and in a near-void the structured
+// medium is too thin to hide that pop, so the last 3.5 km blend to the background colour.
 export const fogColor = "#03040a";
-export const fogNear = 9;
+export const fogNear = 14.5;
 export const fogFar = 18;
 
 // Rotate the canonical camera-forward axis (0, 0, -1) by an orientation quaternion.

@@ -155,6 +155,129 @@ multiply vs idle (HUD-off captures; idle 0 → pulse ~6000+ on Metal). 60 fps he
 
 ---
 
+## SESSION 4 (2026-06-10) — step 9: froxel volumetric lighting, built + gated
+
+> Orchestrator: Claude Fable 5, worktree `haystack-froxels`, branch `froxels/impl`.
+> Every claim below was actually run; perf numbers are real Metal (system Chrome), prod build
+> where stated. Architecture §6 updated future→implemented in the same change.
+
+### What was built (3 commits)
+
+- **Phase 1 — the medium** (`kernels/froxels.ts`, CPU spec `froxels-cpu.ts`): 160·90·64
+  view-space froxels, Z = log shells of RADIAL camera distance (0.05→24 scene units) so the
+  composite's depth lookup re-derives the same metric (`length(getViewPosition(...))`) — the
+  §5 floating-origin discipline, not `-getViewZ`. Baked belt density uploaded ONCE at full
+  1024·1024·8 resolution as packed-u32 words (8.4 MB; NOT a 3D texture — `textureSample` is
+  fragment-only in WGSL compute), sampled with a manual theta-wrapped polar trilinear per
+  froxel center → σ_t. `froxelScatter` (one lane/froxel) + `froxelIntegrate` (one lane per
+  X/Y column, IN-PLACE front-to-back prefix: accum[z] becomes cumulative-to-far-edge) join
+  the single per-frame compute submission; `froxelComposite` (fragment, read-only storage
+  view of froxelAccum — one node carries one WGSL access mode, so the compute-side
+  instancedArray gets a second `storage(...).toReadOnly()` view over the same attribute)
+  slots after ScanPulse, before bloom. Old 9–18 km linear fog retired; the remaining
+  14.5–18 km scene-fog band is ONLY the draw-distance dissolve over the untouched
+  `MAX_DRAW_SCENE` cull (in a near-void the structured medium is too thin to hide that pop).
+- **Phase 2 — lighting**: the `sun-occlusion.ts` `computeSunlit` march ported per froxel
+  against the COLLISION world grid — the §6.3 affinity made real. The collision BINNER half
+  now runs every frame (split `binnerDispatches`/`resolveDispatches`; narrow+apply keep the
+  §3.4 Nc==0 gate) so the grid exists for the march; froxels only read it (§6.4). Half-cell
+  (384 m) steps ≈5.4 km up-sun, product-of-(1−cover), capped penumbra, TRANS_FLOOR
+  early-out, HG phase g=0.45. Flashlight: analytic spot cone in scene space, pose pushed by
+  `ShipFlashlight` each frame; the own-ship fake additive beam cone retired (remote ships
+  keep theirs). Lights skip σ_t≈0 froxels.
+- **Tuning**: `FROXEL_DEFAULTS` (sigmaScale 0.22/km·density, floor 0.01, albedo
+  0.5/0.56/0.74, ambient 0.008, sunStrength 0.65, hgG 0.45, flashStrength 1) with live
+  `__HAYSTACK_RENDER_DEBUG__.froxel({...})` overrides; `scripts/bench/froxel-captures.mjs`
+  shoots spawn/dense/void/edge/up-sun/40°-shaft/beam vantages headless on Metal.
+
+### Deliberate deltas from the §6 sketch (recorded in the doc too)
+
+1. **No froxel binner instance.** Rocks never need binning into view-space cells: the value
+   is (a) the baked-density medium and (b) the up-sun march through the WORLD grid. The
+   reserved `cellIndexOf` re-instantiation stays unused (two lights ⇒ no light culling —
+   §6.3's own argument).
+2. **March visits only ray-path cells** (with a consecutive-cell dedupe), not computeSunlit's
+   27-neighbour sweep: full-sweep parity would be 921600 froxels × 27 cells × 14 steps ≈
+   GB/frame of grid reads. A rock in a cell the ray never enters can clip the penumbra cone
+   unseen — accepted soft under-shadowing, pinned by an explicit DOCUMENTED-LIMITATION test.
+3. **Composite applies after ScanPulse** (medium in front of the scan shell), matching the
+   §1.3 chain order.
+
+### Verification (all green, real Metal)
+
+- CPU spec pins: `tests/integration/gpu-froxels.test.ts` — 22 pass (grid geometry inverse,
+  polar trilinear incl. the theta seam, ray reconstruction vs three's own Matrix4 math, HG
+  normalization, march cover/product/limitation, scatter+integrate closed forms).
+- **New `verifyFroxels` device gate in `verify:gpu`**: GPU scatter+integrate (march +
+  flashlight included) vs the CPU spec on identical inputs — synthetic smooth polar density +
+  64-rock cluster, the grid image (cellStart/cellCount/sortedItems/pos) read BACK from the
+  device so both sides march the same f32 bytes. **PASS on Metal: 100.00% of 3,686,400
+  floats within 0.03, worst |Δ| = 0.0010; shadowed columns present (last-slice in-scatter
+  min/max 0.0116/0.0826); beam column 5.5× over off-cone (0.0686/0.0124).** Full
+  `verify:gpu`: ALL PASS (9 gates incl. all pre-existing).
+- Suites: `bun run verify` 165 pass / 0 fail (the old server.test.ts:921 failure no longer
+  exists on this base).
+- Visual gates (screenshots, real Metal): dense-pocket depth haze vs CLEAR resonance-gap
+  void vs belt-edge structure; up-sun forward-scatter glare; 40°-off-sun shaft view with
+  down-sun darkening behind rocks; flashlight halo dead-on + oblique cone. DM'd to hv at
+  each milestone.
+
+### Perf (prod = vite build + preview, real Metal, froxels + every-frame binner live)
+
+- **`verify:gpu-live:prod`: GPU_LIVE_RESULT=PASS — 60.1 fps, p95 16.7 ms, max 16.8 ms,**
+  scan gate PASS, shadow gate PASS (tier1=604 tier2=373 noise=125 baseLit=3698
+  blendLit=3044), console free of Dawn errors. The whole froxel slice (scatter with the
+  march + integrate + composite) plus the now-unconditional collision binner fits inside
+  the same 16.7 ms frame the pre-froxel build held — no measurable budget loss at the
+  spawn pocket.
+- **`bench:gpu-cross:prod` (cell-cross regression): 718 frames median 16.7 ms, p99
+  16.8 ms, over33=0, over50=0; worst cross bucket 23.4 ms — vs CURRENT MAIN measured
+  back-to-back on the same machine: 28.3 ms (716 frames, over33=0).** No new hitches; the
+  froxel pass adds zero main-thread field work (the old 13.9–14.3 ms session-3 numbers
+  reflect a quieter machine, hence the same-day A/B).
+- Froxel cost structure: scatter 921,600 lanes × (8-tap trilinear + ≤14-step march when
+  σ_t > 1e-4, TRANS_FLOOR early-out, lights skipped in vacuum froxels) + integrate 14,400
+  lanes × 64 slices; ~50–100 MB/frame of grid reads worst-case; froxelAccum 14.7 MB +
+  density 8.4 MB resident. No temporal accumulation needed at 60 fps — deferred until a
+  platform misses budget (watch for flashlight-swing smearing if ever added).
+
+### The live shadow gate, made fog-aware + recalibrated (two real findings)
+
+1. **The shadow A/B now runs with the froxel composite OFF** (`dbg.froxel({mix: 0})`,
+   restored after): the medium's extinction dims lit faces below the gate's 90-lum baseline
+   cut and its in-scatter lifts blacks above the 18-lum "darkened" cut — post-froxel the
+   baseline collapsed 15k → 470 lit samples and every threshold lost meaning. The gate's
+   job is detecting silently-dead SHADOW tiers; the froxel pass has its own device gate.
+2. **The gate's floors were stale against CURRENT MAIN** — with fog isolated, the branch
+   still failed (baseLit 3234 > floor 4000? no — under it), so the pre-froxel baseline was
+   A/B'd in a clean worktree of main (99b1c8c): **main itself FAILS the gate identically**
+   (tier1=555 tier2=295 baseLit=3008 vs the branch's 572/278/3234 — the branch is
+   marginally brighter). Root cause: the power-law background-rock radii (a81c400) shrank
+   the lit-sample population ~2.5× after the floors were tuned (≈7800-era). Recalibrated
+   floors (baseLit > 2000, tier1 > max(0.12·baseLit, 3·noise), tier2 > max(0.06·baseLit,
+   2·noise) — tier2's signal on this field is only ~2.3–3.6× the tumble-noise floor, so a
+   3·noise arm fails main itself; upper bounds and the noise cap unchanged) keep the
+   detection power: a dead tier measures ≈ 1×noise ≈ 0.03–0.04·baseLit, an all-dark
+   regression ≈ 1.0 — both still fail. Evidence + per-run numbers in the gate comment.
+
+### Suite status (honest baseline)
+
+`verify` (165 pass), `verify:gpu` (Metal AND SwiftShader, all 9 gates), the prod live gate,
+the prod cross bench, and `verify:screenshot` are green on this branch. **`verify:ui` fails
+on this machine — and fails IDENTICALLY on a clean worktree of current main** (the
+`verifyHudAndFlight` thrust-click poll at ui.ts:267 / aim-delta wait at :390; not in this
+task's hard-constraint suite list, A/B'd for attribution only): pre-existing, not a froxel
+regression, left for its own investigation.
+
+### Environment gotcha (for the next runner)
+
+`verify:gpu-live[:prod]` defaults to server port 8811/client 5211 — ANOTHER session's dev
+server squatting on 8811 makes the gate silently connect to the WRONG game server and fail
+with `derivedAsteroidCount` stuck at the seeded 30 ("field did not render in time").
+Override with `GPU_LIVE_SERVER_PORT`/`GPU_LIVE_CLIENT_PORT` when sharing a machine.
+
+---
+
 ## SESSION 3 (2026-06-09) — inter-asteroid shadowing: diagnosed, fixed, gated
 
 > Orchestrator: Claude Fable 5. Task: take the two-tier inter-asteroid sun shadowing

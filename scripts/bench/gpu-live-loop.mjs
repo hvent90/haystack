@@ -426,6 +426,12 @@ try {
         const dbg = window.__HAYSTACK_RENDER_DEBUG__;
         dbg.lookDir(d);
         dbg.shadowTiers(t1, t2);
+        // Froxel fog OFF for the shadow A/B: the gate isolates the two SHADOW tiers, and
+        // the volumetric medium (extinction dims lit faces below the 90-lum baseline cut,
+        // in-scatter lifts blacks above 18) would otherwise swamp both thresholds — the
+        // post-froxel baseline collapsed 15k -> 470 lit samples. The froxel pass has its
+        // own device gate (verify:gpu verifyFroxels).
+        dbg.froxel({ mix: 0 });
       },
       [downSun, tier1, tier2],
     );
@@ -493,6 +499,7 @@ try {
     const dbg = window.__HAYSTACK_RENDER_DEBUG__;
     dbg.lookDir(null);
     dbg.shadowTiers(true, true);
+    dbg.froxel(null);
   });
 
   // --- Write all artifacts ---

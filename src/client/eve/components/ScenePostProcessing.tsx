@@ -45,6 +45,7 @@ import {
   vec4,
 } from "three/tsl";
 import { bloomIntensity, bloomLuminanceSmoothing, bloomLuminanceThreshold } from "../lighting";
+import { makeFroxelComposite } from "../gpu/kernels/froxels";
 import {
   scanColor,
   scanFacingPower,
@@ -107,11 +108,16 @@ function buildPostStack(renderer: Renderer, scene: THREE.Scene, camera: THREE.Ca
     return result;
   })();
 
-  const bloomNode = bloom(scanned, bloomIntensity, 0, bloomLuminanceThreshold);
+  // Froxel volumetric composite (architecture §6.5): scene depth -> depth-aware lookup of
+  // the integrated froxel volume -> color·T + inScatter. Slots in AFTER ScanPulse (the
+  // medium sits in front of the scanned shells) and BEFORE bloom, per the §1.3 chain.
+  const fogged = makeFroxelComposite(scanned, depthTex, uv(), camera);
+
+  const bloomNode = bloom(fogged, bloomIntensity, 0, bloomLuminanceThreshold);
   bloomNode.smoothWidth.value = bloomLuminanceSmoothing;
 
   const postProcessing = new THREE.PostProcessing(renderer);
-  postProcessing.outputNode = scanned.add(bloomNode);
+  postProcessing.outputNode = fogged.add(bloomNode);
 
   return {
     postProcessing,
