@@ -9,7 +9,14 @@ import {
   shipFixedDt,
   type HeldFlightInput,
 } from "../shared/ship-motion";
+import {
+  makeShipCollisionEnvironment,
+  resolveShipPairCollision,
+  type ShipCollisionEnvironment,
+} from "../shared/collision";
+import { fieldSummary } from "./field";
 import type { HaystackDb } from "./db";
+import { metrics } from "./metrics";
 
 export enum ActorRole {
   Authoritative = "authoritative",
@@ -65,6 +72,8 @@ type ShipRow = {
   wz: number;
   throttle: number;
   cruise_lock: number;
+  nav_lights: number;
+  flashlight: number;
   heat: number;
   cargo_mass: number;
   cargo_capacity: number;
@@ -125,6 +134,14 @@ export class ShipActor extends Actor {
       get: (actor) => ((actor as ShipActor).cruiseLock ? 1 : 0),
     },
     {
+      name: "navLights",
+      get: (actor) => ((actor as ShipActor).navLightsOn ? 1 : 0),
+    },
+    {
+      name: "flashlight",
+      get: (actor) => ((actor as ShipActor).flashlightOn ? 1 : 0),
+    },
+    {
       name: "heat",
       get: (actor) => (actor as ShipActor).heat,
     },
@@ -143,6 +160,8 @@ export class ShipActor extends Actor {
   angularVelocity: Vector3;
   throttle: number;
   cruiseLock: boolean;
+  navLightsOn: boolean;
+  flashlightOn: boolean;
   heat: number;
   cargoMass: number;
   cargoCapacity: number;
@@ -151,6 +170,9 @@ export class ShipActor extends Actor {
   stabilizerEfficiency: number;
   private heldInput: HeldFlightInput | null = null;
   private inputFreshFor = 0;
+  // Injected by ServerWorld: deterministic nearby-rock lookup (virtual field + seeded DB
+  // rocks). Shared with client prediction so collision response reconciles cleanly.
+  collisionEnvironment: ShipCollisionEnvironment | null = null;
 
   constructor(row: ShipRow) {
     super();
@@ -162,6 +184,8 @@ export class ShipActor extends Actor {
     this.angularVelocity = { x: row.wx, y: row.wy, z: row.wz };
     this.throttle = clamp(row.throttle, -1, 1);
     this.cruiseLock = row.cruise_lock === 1;
+    this.navLightsOn = row.nav_lights === 1;
+    this.flashlightOn = row.flashlight === 1;
     this.heat = row.heat;
     this.cargoMass = row.cargo_mass;
     this.cargoCapacity = row.cargo_capacity;
@@ -178,6 +202,8 @@ export class ShipActor extends Actor {
     this.angularVelocity = { x: row.wx, y: row.wy, z: row.wz };
     this.throttle = clamp(row.throttle, -1, 1);
     this.cruiseLock = row.cruise_lock === 1;
+    this.navLightsOn = row.nav_lights === 1;
+    this.flashlightOn = row.flashlight === 1;
     this.heat = row.heat;
     this.cargoMass = row.cargo_mass;
     this.cargoCapacity = row.cargo_capacity;
@@ -222,7 +248,14 @@ export class ShipActor extends Actor {
       this.inputFreshFor = Math.max(0, this.inputFreshFor - dt);
       heldInput = this.heldInput;
     }
-    this.assignShip(integrateShipTick(this.toUnroundedShip(), dt, heldInput));
+    this.assignShip(
+      integrateShipTick(
+        this.toUnroundedShip(),
+        dt,
+        heldInput,
+        this.collisionEnvironment ?? undefined,
+      ),
+    );
   }
 
   toShip(): Ship {
@@ -239,6 +272,8 @@ export class ShipActor extends Actor {
       angularVelocity: cloneVector(this.angularVelocity),
       throttle: this.throttle,
       cruiseLock: this.cruiseLock,
+      navLightsOn: this.navLightsOn,
+      flashlightOn: this.flashlightOn,
       heat: this.heat,
       cargoMass: this.cargoMass,
       cargoCapacity: this.cargoCapacity,
@@ -255,6 +290,8 @@ export class ShipActor extends Actor {
     this.angularVelocity = cloneVector(ship.angularVelocity);
     this.throttle = clamp(ship.throttle, -1, 1);
     this.cruiseLock = ship.cruiseLock;
+    this.navLightsOn = ship.navLightsOn;
+    this.flashlightOn = ship.flashlightOn;
     this.heat = ship.heat;
     this.cargoMass = ship.cargoMass;
     this.cargoCapacity = ship.cargoCapacity;
@@ -277,6 +314,9 @@ export class ServerWorld {
   private accumulator = 0;
   private lastWallMs: number;
   private timer: ReturnType<typeof setInterval> | null = null;
+  // Built lazily: the field geometry and the seeded DB rocks are both static for the
+  // lifetime of a world, so one environment serves every ship on every tick.
+  private collisionEnvironment: ShipCollisionEnvironment | null = null;
 
   constructor(readonly db: HaystackDb) {
     this.lastWallMs = this.readLastTickMs();
@@ -298,7 +338,11 @@ export class ServerWorld {
   }
 
   advanceToNow(nowMs = Date.now()): void {
-    this.syncShipsFromDatabase();
+    // Counts every advanceToNow invocation. During one publishAll this fires at least twice
+    // (the explicit call + the one nested inside buildSharedWorld) — that is the confirmed
+    // double-advance the metrics make visible.
+    metrics.noteAdvance();
+    metrics.time("sim.syncShips", () => this.syncShipsFromDatabase());
     const elapsed = Math.min(30, Math.max(0, (nowMs - this.lastWallMs) / 1000));
     this.lastWallMs = nowMs;
     if (elapsed <= 0) {
@@ -306,13 +350,18 @@ export class ServerWorld {
     }
 
     this.accumulator += elapsed;
-    while (this.accumulator >= this.fixedDt) {
-      this.tick();
-      this.accumulator -= this.fixedDt;
-    }
+    let steps = 0;
+    metrics.time("sim.step", () => {
+      while (this.accumulator >= this.fixedDt) {
+        this.tick();
+        this.accumulator -= this.fixedDt;
+        steps += 1;
+      }
+    });
+    metrics.gauge("sim.stepsPerAdvance", steps);
 
-    this.persistShips();
-    this.persistLastTick(nowMs);
+    metrics.time("sim.persistShips", () => this.persistShips());
+    metrics.time("sim.persistMeta", () => this.persistLastTick(nowMs));
   }
 
   applyThrust(pilotId: string, command: ThrustCommand): Ship {
@@ -394,9 +443,56 @@ export class ServerWorld {
       }
     }
 
+    this.resolveShipShipCollisions();
     this.collectReplication();
     this.frame += 1;
     this.currentTick += 1;
+  }
+
+  // Ship-vs-ship is server-authoritative only (a client cannot predict the other ship's
+  // inputs); clients absorb the correction through normal reconciliation. Pairs are
+  // processed in sorted-id order so the outcome is deterministic.
+  private resolveShipShipCollisions(): void {
+    if (this.shipActors.size < 2) {
+      return;
+    }
+    const ships = [...this.shipActors.values()].sort((left, right) =>
+      left.id.localeCompare(right.id),
+    );
+    for (let i = 0; i < ships.length; i += 1) {
+      for (let j = i + 1; j < ships.length; j += 1) {
+        const a = ships[i]!;
+        const b = ships[j]!;
+        const resolved = resolveShipPairCollision(
+          { position: a.position, velocity: a.velocity },
+          { position: b.position, velocity: b.velocity },
+        );
+        if (resolved === null) {
+          continue;
+        }
+        a.position = resolved.a.position;
+        a.velocity = resolved.a.velocity;
+        b.position = resolved.b.position;
+        b.velocity = resolved.b.velocity;
+      }
+    }
+  }
+
+  private shipCollisionEnvironment(): ShipCollisionEnvironment {
+    if (this.collisionEnvironment === null) {
+      const rows = this.db
+        .query("SELECT id, x, y, z, radius FROM asteroids ORDER BY id ASC")
+        .all() as Array<{ id: string; x: number; y: number; z: number; radius: number }>;
+      this.collisionEnvironment = makeShipCollisionEnvironment(
+        fieldSummary(),
+        rows.map((row) => ({
+          id: row.id,
+          position: { x: row.x, y: row.y, z: row.z },
+          radius: row.radius,
+        })),
+      );
+    }
+    return this.collisionEnvironment;
   }
 
   private applyPendingInputs(): void {
@@ -439,6 +535,7 @@ export class ServerWorld {
       const existing = this.shipActors.get(row.pilot_id);
       if (existing === undefined) {
         const actor = new ShipActor(row);
+        actor.collisionEnvironment = this.shipCollisionEnvironment();
         this.shipActors.set(row.pilot_id, actor);
         this.actors.push(actor);
       } else {
@@ -462,7 +559,8 @@ export class ServerWorld {
     const update = this.db.query(
       `UPDATE ships
           SET x = ?, y = ?, z = ?, vx = ?, vy = ?, vz = ?, qx = ?, qy = ?, qz = ?, qw = ?,
-              wx = ?, wy = ?, wz = ?, throttle = ?, cruise_lock = ?, heat = ?
+              wx = ?, wy = ?, wz = ?, throttle = ?, cruise_lock = ?, nav_lights = ?,
+              flashlight = ?, heat = ?
         WHERE pilot_id = ?`,
     );
     for (const ship of this.shipActors.values()) {
@@ -483,6 +581,8 @@ export class ServerWorld {
         ship.angularVelocity.z,
         ship.throttle,
         ship.cruiseLock ? 1 : 0,
+        ship.navLightsOn ? 1 : 0,
+        ship.flashlightOn ? 1 : 0,
         ship.heat,
         ship.id,
       );

@@ -40,6 +40,17 @@ import {
 export function SunLight(): ReactNode {
   const lightRef = useRef<DirectionalLight>(null);
   const targetRef = useRef<Object3D>(null);
+  // Fixed orthonormal basis of the shadow camera's image plane (the sun never moves), used
+  // to snap the camera-following ortho window to whole shadow-map texels each frame —
+  // without this, sub-texel window motion makes every shadow edge shimmer during flight.
+  const basis = useMemo(() => {
+    const dir = new ThreeVector3(sunDirection.x, sunDirection.y, sunDirection.z);
+    const up = Math.abs(dir.y) < 0.99 ? new ThreeVector3(0, 1, 0) : new ThreeVector3(1, 0, 0);
+    const right = new ThreeVector3().crossVectors(up, dir).normalize();
+    const trueUp = new ThreeVector3().crossVectors(dir, right).normalize();
+    return { right, up: trueUp };
+  }, []);
+  const snapped = useMemo(() => new ThreeVector3(), []);
 
   useLayoutEffect(() => {
     const light = lightRef.current;
@@ -72,13 +83,21 @@ export function SunLight(): ReactNode {
     if (light === null || target === null) {
       return;
     }
+    // Snap the ortho window center to whole shadow-map texels on the light's image plane
+    // (depth along the sun direction is unconstrained — it doesn't affect texel alignment).
     const cameraPosition = state.camera.position;
+    const texel = (2 * shadowBubbleHalf) / shadowMapSize;
+    const r = basis.right.dot(cameraPosition);
+    const u = basis.up.dot(cameraPosition);
+    const dr = Math.round(r / texel) * texel - r;
+    const du = Math.round(u / texel) * texel - u;
+    snapped.copy(cameraPosition).addScaledVector(basis.right, dr).addScaledVector(basis.up, du);
     light.position.set(
-      cameraPosition.x + sunDirection.x * shadowLightDistance,
-      cameraPosition.y + sunDirection.y * shadowLightDistance,
-      cameraPosition.z + sunDirection.z * shadowLightDistance,
+      snapped.x + sunDirection.x * shadowLightDistance,
+      snapped.y + sunDirection.y * shadowLightDistance,
+      snapped.z + sunDirection.z * shadowLightDistance,
     );
-    target.position.copy(cameraPosition);
+    target.position.copy(snapped);
     target.updateMatrixWorld(true);
   });
 

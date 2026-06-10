@@ -1,5 +1,6 @@
 import type { Asteroid, FieldSummary, Vector3, WorldSnapshot } from "../../shared/types";
 import { renderStats } from "./render-stats";
+import { primeSunlitCells } from "./sun-occlusion";
 import { cellCoords, deriveVirtualField, indexByCell, unpackField } from "./field-core";
 import type { FieldDeriveRequest, FieldDeriveResponse } from "./field-worker";
 
@@ -139,6 +140,9 @@ export class FieldDeriver {
     this.acceptedReqId = response.reqId;
     this.inFlight = false;
     const start = performance.now();
+    // Prime the sun-occlusion cache from the worker's off-thread march BEFORE anything
+    // (the GPU ring streamer) asks for these rocks' aSunlit.
+    primeSunlitCells(response.packed.cells, response.sunlit, response.packed.count);
     const unpacked = unpackField(response.packed, this.virtualByCell);
     this.virtual = unpacked.asteroids;
     this.virtualByCell = unpacked.byCell;
@@ -169,10 +173,12 @@ export class FieldDeriver {
       return this.merged;
     }
 
-    // Cell changed. With no prior field (first paint) or no Worker support, derive
-    // synchronously — there is nothing to show otherwise. Otherwise offload to the worker
-    // and keep showing the previous (stale-by-≤1-cell) field until it returns.
-    const worker = this.virtual.length === 0 ? null : this.ensureWorker();
+    // Cell changed. Offload to the worker and keep showing the previous field until it
+    // returns — on the FIRST derive that means a seeded-only field for a few frames (the
+    // worker round-trip), which beats blocking first paint ~160ms on the synchronous
+    // 50k scan/sort (the boot stall the gpu-live gate caught). Environments without
+    // Worker fall back to the synchronous derive.
+    const worker = this.ensureWorker();
     if (worker === null) {
       const start = performance.now();
       this.virtual = deriveVirtualField(position, field);

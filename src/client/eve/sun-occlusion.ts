@@ -109,6 +109,26 @@ export function computeSunlit(cx: number, cy: number, cz: number): number {
 
 const cache = new Map<string, number>();
 
+// Worker-primed values, keyed by packed cell (same packing idea as field-core's cellKeyOf;
+// safe while cellsPerAxis < 8192). The field worker computes sunlit for every rock it
+// derives (off-thread) and the main thread primes this map from the transferred typed
+// arrays — so sunlitForId never runs the march for worker-delivered rocks (marching 50k
+// cold rocks on the main thread cost ~440ms at boot).
+const PRIME_KEY_BASE = 8192;
+const primedByCell = new Map<number, number>();
+
+function primeKey(cx: number, cy: number, cz: number): number {
+  return (cx * PRIME_KEY_BASE + cy) * PRIME_KEY_BASE + cz;
+}
+
+// Prime `count` cells' sunlit values from the worker's parallel arrays (cells = 3 ints per
+// rock, the PackedField layout). Cheap: one Map.set per rock, no strings.
+export function primeSunlitCells(cells: Int32Array, values: Float64Array, count: number): void {
+  for (let i = 0; i < count; i += 1) {
+    primedByCell.set(primeKey(cells[i * 3]!, cells[i * 3 + 1]!, cells[i * 3 + 2]!), values[i]!);
+  }
+}
+
 // aSunlit for an asteroid id. Virtual field ids encode the cell as "v-x-y-z"; any other id
 // (e.g. a seeded gameplay asteroid) has no cell and is treated as fully sunlit. Cached so
 // steady-state cost is ~0 — only newly seen rocks are marched.
@@ -124,7 +144,8 @@ export function sunlitForId(id: string): number {
     const cy = Number(parts[2]);
     const cz = Number(parts[3]);
     if (Number.isFinite(cx) && Number.isFinite(cy) && Number.isFinite(cz)) {
-      value = computeSunlit(cx, cy, cz);
+      // Prefer a worker-primed value over a main-thread march.
+      value = primedByCell.get(primeKey(cx, cy, cz)) ?? computeSunlit(cx, cy, cz);
     }
   }
   cache.set(id, value);

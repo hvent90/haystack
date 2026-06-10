@@ -29,6 +29,34 @@ export const flashlightAngle = 0.36; // cone half-angle in radians
 export const flashlightPenumbra = 0.45;
 export const flashlightDecay = 0.85; // softened inverse-square so it carries to nearby rocks
 
+// Remote players' flashlights: same beam, dialed down. No shadow casting and a tighter
+// reach than the local light — N of these can be on at once, so each must stay cheap
+// while remaining clearly visible as a beam from the other ship.
+export const remoteFlashlightIntensity = 9;
+export const remoteFlashlightDistance = 8; // scene units (~8 km) of reach
+export const remoteFlashlightAngle = 0.3;
+export const remoteFlashlightPenumbra = 0.5;
+// Visible beam cone (the spotlight itself is invisible in vacuum until it hits a rock).
+export const remoteBeamLength = 2.2; // scene units (~2.2 km)
+export const remoteBeamRadius = 0.55; // base radius at remoteBeamLength
+export const remoteBeamOpacity = 0.05;
+
+// Ship visibility (nav) lights: small always-on hull markers + a camera-distance-scaled
+// strobe beacon so a lit ship reads against the black field at multi-km range. Colors
+// follow aircraft convention: port red, starboard green, tail white.
+export const navLightPortColor = "#ff5346";
+export const navLightStarboardColor = "#46ff7d";
+export const navLightTailColor = "#ffffff";
+export const navBeaconColor = "#cfe7ff";
+// Apparent beacon size: scale = distance * navBeaconAngularSize, clamped. ~0.6 degrees —
+// a dozen-odd pixels at any range, unmistakably a light, never a blob up close.
+export const navBeaconAngularSize = 0.011;
+export const navBeaconMinScale = 0.02;
+export const navBeaconMaxScale = 2.4;
+// Hull wash so the ship body itself is visible when lit (zero-ambient vacuum).
+export const navHullLightIntensity = 2.4;
+export const navHullLightDistance = 0.7; // scene units (~700 m)
+
 // Barely-perceptible bloom — only the sun disc and emissive accents should ever crest the
 // luminance threshold, and even then only faintly.
 export const bloomIntensity = 0.12;
@@ -39,14 +67,14 @@ export const bloomLuminanceSmoothing = 0.18;
 // each frame. The shadow-casting light is placed just up-sun of the camera (a directional
 // light's direction is distance-independent), so the ortho depth range stays tight; the
 // visible SunDisc stays far away at sunDistance, untouched.
-export const shadowMapSize = 2048;
+export const shadowMapSize = 4096; // 3.9 m/texel over the 16 km bubble — crisp edges
 export const shadowBubbleHalf = 8; // ortho half-width in scene units (km)
 export const shadowLightDistance = 12; // units up-sun to place the shadow-casting light
 export const shadowCameraNear = 1;
 export const shadowCameraFar = 24;
 export const shadowBias = 0.0001;
-export const shadowNormalBias = 0.05;
-export const shadowSoftRadius = 2;
+export const shadowNormalBias = 0.03; // ~30 m push — above one texel, below small-rock scale
+export const shadowSoftRadius = 1;
 
 // Crossfade from the near per-pixel shadow map to the far per-instance occlusion scalar,
 // keyed on view-space depth (km). Fully shadow-map at <= near, fully per-instance at >= far.

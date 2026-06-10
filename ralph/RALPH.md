@@ -9,12 +9,14 @@ make the **server** efficient enough that **a single player flying at 5 km/s can
 fixed 30 Hz broadcast cadence** — with no regression to gameplay or quality.
 
 ## Prime directive
+
 Improve **measured** server efficiency by orders of magnitude against the goal,
 while keeping every existing test green and every player-observable behavior
 identical. **No number, no progress.** Re-architect freely; never break
 functionality and never weaken the measurement.
 
 ## The benchmark IS the scoreboard
+
 `bun scripts/bench/world-stream.ts` drives the real `WorldStream.publishAll()` path
 in-process against simulated peers and prints JSON metrics (publishAll p50/p95/max
 ms, MB/s per peer, peak RSS, effective visible asteroid count). Players move at
@@ -25,14 +27,16 @@ ticks), so the field constantly re-pages — the realistic worst case. Knobs:
 The field size cap is `HAYSTACK_RENDERED_LIMIT` (default 2000; the bench drives 100k).
 
 ### Baseline to beat (measured at HEAD, 5 km/s — see progress.txt for full detail)
+
 - 1 player × 100k: publishAll p50 ≈ 90 ms, ~261 MB/s/peer
 - 4 players × 100k: p50 ≈ 359 ms
 - **16 players × 100k: p50 ≈ 2167 ms, p95 ≈ 3651 ms, ~94 MB/s/peer** ← the target workload
-Cost scales ~O(players × field): each peer independently rebuilds AND
-`JSON.stringify`-hashes the full snapshot every tick; cell crossings trigger a cubic
-cell scan; the whole field is re-serialized into deltas on crossings.
+  Cost scales ~O(players × field): each peer independently rebuilds AND
+  `JSON.stringify`-hashes the full snapshot every tick; cell crossings trigger a cubic
+  cell scan; the whole field is re-serialized into deltas on crossings.
 
 ## The bar (objective pass conditions live in `ralph/prd.json`)
+
 1. **Capacity** — a player ends up with ≥100,000 renderable asteroids for their
    location, and gameplay on them works.
 2. **Single-player budget** — at 100k @ 5 km/s, publishAll p95 well under the
@@ -46,6 +50,7 @@ cell scan; the whole field is re-serialized into deltas on crossings.
    failures), e2e (screenshot / multiplayer / ui) green, gameplay invariants intact.
 
 ## Do NOT regress these player-observable invariants
+
 - Mining, all scan modes, asteroid/deposit **discovery** behave as before.
 - Multiplayer: remote ships interpolate smoothly; chat, structures, bases work.
 - The recent client fix stays intact: a **focused** tab drains the stream at ~30 Hz;
@@ -58,6 +63,7 @@ cell scan; the whole field is re-serialized into deltas on crossings.
 - Visual/gameplay fidelity from the player's POV is unchanged.
 
 ## You MAY change the data backend
+
 The per-tick SQLite `SELECT *` pattern is NOT sacred. You may move authoritative
 state in-memory, add indexes, cache aggressively, change the persistence strategy,
 derive the deterministic static field on the client and stream only authoritative
@@ -67,6 +73,7 @@ ship, cargo, credits, structures, discoveries survive a restart); the mechanism 
 yours to choose.
 
 ## Each iteration
+
 1. Read `ralph/prd.json` (source of truth) and the top `## Codebase Patterns` of
    `ralph/progress.txt` — don't re-derive prior learnings.
 2. Pick the single highest-priority item with `passes: false`.
@@ -81,6 +88,7 @@ yours to choose.
 7. If it didn't help or broke something: revert it and record the dead end.
 
 ## Guardrails (do not game the loop)
+
 - Never weaken a `prd.json` pass condition, skip/delete a test, or make the benchmark
   lie to turn an item green. If a target is genuinely wrong, explain in
   `progress.txt` and stop — don't fudge it.
@@ -92,6 +100,7 @@ yours to choose.
 - Protocol changes keep client + server coherent in the same commit; re-run e2e.
 
 ## Progress entry (append to `ralph/progress.txt`)
+
 ```
 ## [ISO timestamp] - [Item ID]
 - Bottleneck targeted (from the profile) + the single change made
@@ -102,8 +111,10 @@ yours to choose.
 ```
 
 ## Stop condition
+
 After flipping a flag, check whether ALL `ralph/prd.json` items are `passes: true`.
+
 - If yes → reply with exactly `<promise>COMPLETE</promise>` as the final standalone line.
 - If no → end normally; the next iteration continues.
-Do not write that literal sentinel anywhere unless you are actually emitting it; to
-discuss the stop condition, say "the COMPLETE signal".
+  Do not write that literal sentinel anywhere unless you are actually emitting it; to
+  discuss the stop condition, say "the COMPLETE signal".

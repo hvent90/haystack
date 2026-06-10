@@ -45,6 +45,11 @@ export function openDatabase(
 
   const db = new Database(path, { create: true });
   db.exec("PRAGMA foreign_keys = ON");
+  // WAL + synchronous=NORMAL: commits stop fsync-ing on every write, which removes the
+  // 100-600ms event-loop freezes the metrics traced to persistShips (the tick stutter).
+  // Durable/crash-safe under WAL. journal_mode is a no-op for :memory: dbs (tests/bench).
+  db.exec("PRAGMA journal_mode = WAL");
+  db.exec("PRAGMA synchronous = NORMAL");
   migrate(db);
   seedWorld(db);
   return db;
@@ -82,6 +87,8 @@ function migrate(db: HaystackDb): void {
       wz REAL NOT NULL DEFAULT 0,
       throttle REAL NOT NULL DEFAULT 0,
       cruise_lock INTEGER NOT NULL DEFAULT 0,
+      nav_lights INTEGER NOT NULL DEFAULT 0,
+      flashlight INTEGER NOT NULL DEFAULT 0,
       heat REAL NOT NULL,
       cargo_mass REAL NOT NULL,
       cargo_capacity REAL NOT NULL,
@@ -163,6 +170,18 @@ function migrate(db: HaystackDb): void {
     "ships",
     "cruise_lock",
     "ALTER TABLE ships ADD COLUMN cruise_lock INTEGER NOT NULL DEFAULT 0",
+  );
+  ensureColumn(
+    db,
+    "ships",
+    "nav_lights",
+    "ALTER TABLE ships ADD COLUMN nav_lights INTEGER NOT NULL DEFAULT 0",
+  );
+  ensureColumn(
+    db,
+    "ships",
+    "flashlight",
+    "ALTER TABLE ships ADD COLUMN flashlight INTEGER NOT NULL DEFAULT 0",
   );
 }
 

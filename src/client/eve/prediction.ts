@@ -5,7 +5,8 @@ import type {
   WorldSnapshot,
   Vector3,
 } from "../../shared/types";
-import { applyShipCommandForPrediction, cloneShip } from "../../shared/ship-motion";
+import { applyShipCommandForPrediction, cloneShip, shipFixedDt } from "../../shared/ship-motion";
+import type { ShipCollisionEnvironment } from "../../shared/collision";
 
 export type OwnedShipCommand = ThrustCommand | FlightInputCommand;
 
@@ -34,6 +35,14 @@ export class OwnedShipPrediction {
   private readonly inputBuffer: PredictionBufferEntry[] = [];
   private predictionTick = 0;
   private lastAckTick = 0;
+  // Deterministic nearby-rock lookup shared with the server's integration. With it set,
+  // predicted ticks and reconciliation replays resolve ship-vs-asteroid collisions the
+  // same way the server does, so flying into a rock feels solid instead of snapping.
+  private collisionEnvironment: ShipCollisionEnvironment | null = null;
+
+  setCollisionEnvironment(environment: ShipCollisionEnvironment | null): void {
+    this.collisionEnvironment = environment;
+  }
 
   get currentPredictionTick(): number {
     return this.predictionTick;
@@ -65,7 +74,12 @@ export class OwnedShipPrediction {
     }
 
     const clientTick = this.predictionTick + 1;
-    const postState = applyShipCommandForPrediction(this.ship, command);
+    const postState = applyShipCommandForPrediction(
+      this.ship,
+      command,
+      shipFixedDt,
+      this.collisionEnvironment ?? undefined,
+    );
     this.predictionTick = clientTick;
     this.ship = cloneShip(postState);
     this.inputBuffer.push({
@@ -137,7 +151,12 @@ export class OwnedShipPrediction {
     const remaining = this.inputBuffer.slice(entryIndex + 1);
     let replayState = cloneShip(authoritativeShip);
     for (const entry of remaining) {
-      replayState = applyShipCommandForPrediction(replayState, entry.command);
+      replayState = applyShipCommandForPrediction(
+        replayState,
+        entry.command,
+        shipFixedDt,
+        this.collisionEnvironment ?? undefined,
+      );
       entry.postState = cloneShip(replayState);
     }
 

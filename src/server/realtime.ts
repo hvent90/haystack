@@ -20,6 +20,7 @@ import {
   getSnapshot,
 } from "./sim";
 import type { SharedWorld } from "./sim";
+import { metrics } from "./metrics";
 import type { ServerWorld } from "./world";
 
 // Snapshot keys whose value is identical for every peer on a tick (no per-pilot overlay), so
@@ -153,21 +154,30 @@ export class WorldStream {
       return;
     }
 
+    const peerCount = this.peers.size;
+    metrics.beginPublishTick(peerCount);
+    const tickStart = performance.now();
     this.publishing = true;
     try {
-      this.world.advanceToNow();
       this.currentTick += 1;
       // Build the shared world — and the change-detection hashes of its peer-identical keys —
       // ONCE per tick. Each peer then only derives its per-pilot overlay, so broadcast cost is
       // O(players) (one delta each) instead of the old O(players^2) (every peer rebuilding and
       // re-hashing the whole shared world). See P2 in ralph/prd.json.
-      const shared = buildSharedWorld(this.world.db, this.activePilotIds());
-      const sharedHashes = computeSharedHashes(shared);
-      for (const peer of this.peers.values()) {
-        this.flushPeer(peer, shared, sharedHashes);
-      }
+      // buildSharedWorld advances the world (advanceWorld -> advanceToNow) itself, so we no
+      // longer advance explicitly here — that was the redundant double-advance (advances/tick 2->1).
+      const shared = metrics.time("publish.buildShared", () =>
+        buildSharedWorld(this.world.db, this.activePilotIds()),
+      );
+      const sharedHashes = metrics.time("publish.computeHashes", () => computeSharedHashes(shared));
+      metrics.time("publish.flushPeers", () => {
+        for (const peer of this.peers.values()) {
+          this.flushPeer(peer, shared, sharedHashes);
+        }
+      });
     } finally {
       this.publishing = false;
+      metrics.endPublishTick(peerCount, performance.now() - tickStart);
     }
   }
 
@@ -230,12 +240,19 @@ export class WorldStream {
       return;
     }
 
-    const snapshot = getPilotView(this.world.db, shared, peer.pilotId);
-    const changed = collectChangedKeys(peer, snapshot, sharedHashes);
-    storeShadow(peer, snapshot, sharedHashes);
+    const snapshot = metrics.time("peer.getPilotView", () =>
+      getPilotView(this.world.db, shared, peer.pilotId),
+    );
+    const changed = metrics.time("peer.hashing", () => {
+      const result = collectChangedKeys(peer, snapshot, sharedHashes);
+      storeShadow(peer, snapshot, sharedHashes);
+      return result;
+    });
     if (changed.length === 0) {
+      metrics.count("peer.emptyDeltas");
       return;
     }
+    metrics.count("peer.deltas");
 
     this.send(peer, {
       type: "delta",
@@ -248,7 +265,8 @@ export class WorldStream {
 
   private send(peer: WorldPeer, message: WorldStreamServerMessage): void {
     if (peer.ws.readyState === 1) {
-      const payload = JSON.stringify(message);
+      const payload = metrics.time("peer.stringify", () => JSON.stringify(message));
+      metrics.gauge("peer.bytes", payload.length);
       const delayMs = streamDelayMs(message);
       if (delayMs > 0) {
         setTimeout(() => {
@@ -258,7 +276,8 @@ export class WorldStream {
         }, delayMs);
         return;
       }
-      peer.ws.send(payload);
+      // The real WebSocket write to a live socket — the cost the in-process bench never paid.
+      metrics.time("peer.send", () => peer.ws.send(payload));
     }
   }
 }
@@ -406,11 +425,15 @@ function isFlightInputCommand(value: unknown): value is FlightInputCommand {
   const stabilize = value["stabilize"];
   const boost = value["boost"];
   const cruiseLock = value["cruiseLock"];
+  const navLights = value["navLights"];
+  const flashlight = value["flashlight"];
   return (
     (active === undefined || typeof active === "boolean") &&
     (stabilize === undefined || typeof stabilize === "boolean") &&
     (boost === undefined || typeof boost === "boolean") &&
-    (cruiseLock === undefined || typeof cruiseLock === "boolean")
+    (cruiseLock === undefined || typeof cruiseLock === "boolean") &&
+    (navLights === undefined || typeof navLights === "boolean") &&
+    (flashlight === undefined || typeof flashlight === "boolean")
   );
 }
 

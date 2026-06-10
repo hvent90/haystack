@@ -1000,6 +1000,13 @@ tr:focus-visible {
   background: rgb(31 38 35 / 55%);
 }
 
+/* Virtualization spacers stand in for the off-screen rows; keep them inert. */
+.overview-table tr.overview-spacer,
+.overview-table tr.overview-spacer:hover {
+  border-left-color: transparent;
+  background: transparent;
+}
+
 .overview-table tr[data-selected="true"] {
   border-left-color: var(--accent-amber);
   background: rgb(64 46 24 / 62%);
@@ -1310,6 +1317,40 @@ tr:focus-visible {
   gap: 5px;
 }
 
+.hud-keybinds {
+  display: flex;
+  grid-column: 1 / -1;
+  gap: 12px;
+  margin-top: 2px;
+  padding-top: 6px;
+  border-top: 1px solid rgb(135 208 189 / 14%);
+  color: var(--text-muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.hud-keybind kbd {
+  display: inline-block;
+  min-width: 14px;
+  padding: 1px 4px;
+  border: 1px solid rgb(135 208 189 / 32%);
+  background: rgb(31 38 35 / 82%);
+  color: #d7ddcf;
+  font-family: inherit;
+  font-size: 10px;
+  text-align: center;
+}
+
+.hud-keybind.on {
+  color: var(--accent-amber);
+}
+
+.hud-keybind.on kbd {
+  border-color: var(--accent-amber);
+  color: var(--accent-amber);
+}
+
 .hud-buttons button {
   width: 34px;
   height: 30px;
@@ -1537,6 +1578,12 @@ tr:focus-visible {
   .hud-buttons {
     grid-column: 1 / -1;
     grid-template-columns: repeat(7, minmax(28px, 1fr));
+  }
+
+  /* Keyboard hints are meaningless on touch layouts — and the extra HUD row would
+     overlap the mobile window layer. */
+  .hud-keybinds {
+    display: none;
   }
 
   .hud-buttons button {

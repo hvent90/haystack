@@ -10,7 +10,9 @@ per-asteroid work** for rendering (its cost must stay independent of how many
 asteroids the client renders).
 
 ## Context you MUST internalize before touching anything (already true at HEAD)
+
 A prior perf run already moved the static field off the wire:
+
 - The asteroid field is a **deterministic pure function of a seed**, generated
   **locally on the client** in `src/client/eve/field-derivation.ts`
   (`deriveVirtualField`, `FieldDeriver`, `virtualAsteroidAt`), mirroring
@@ -23,14 +25,16 @@ A prior perf run already moved the static field off the wire:
 
 So the SERVER half is done. **Your job is the CLIENT render path**, where two real
 gaps remain:
+
 1. `src/client/eve/components/WorldView.tsx` hard-caps rendering at
    `ASTEROID_CAPACITY = 2000` (and the default `HAYSTACK_RENDERED_LIMIT` is 2000).
-   The client *derives* the field but **cannot actually render 100k**.
+   The client _derives_ the field but **cannot actually render 100k**.
 2. Asteroids render as a **single `InstancedMesh` with one bounding sphere**, so
    Three.js frustum-culls **all-or-nothing** — there is effectively **no
    per-instance frustum culling**. At 100k every instance would be submitted.
 
 ## Prime directive
+
 Improve **measured** client rendering against the goal — render 100k+ asteroids with
 real frustum/distance culling at a smooth frame rate — while keeping every existing
 test green, the client↔server field generators in exact parity, all gameplay on
@@ -39,6 +43,7 @@ unchanged**. **No number, no progress.** Re-architect the client render freely;
 never break functionality and never weaken the measurement.
 
 ## The benchmark IS the scoreboard
+
 Item C0 builds `scripts/bench/client-render.ts` — a headless Playwright harness that
 boots the server (`bun src/server/main.ts`) at a chosen `HAYSTACK_RENDERED_LIMIT`,
 boots vite, loads the client in chromium, and reads an app-exposed render-stats hook
@@ -54,7 +59,9 @@ calls, triangles), NOT wall-clock FPS. Frame-time thresholds are secondary/gener
 Expose culled counts so "camera faces empty space ⇒ ~0 submitted" is checkable.
 
 ## The bar (objective pass conditions live in `ralph/prd-client.json`)
+
 Read that file; each item has a checkable condition. Headlines:
+
 - **Capacity**: with `HAYSTACK_RENDERED_LIMIT=100000`, the client derives AND can
   render ≥100,000 asteroids — no 2000 truncation.
 - **Frustum culling is real**: facing the field, submitted-instance count ≪ derived
@@ -70,6 +77,7 @@ Read that file; each item has a checkable condition. Headlines:
   (`bun scripts/bench/parity-check.ts`), gameplay on asteroids works at high density.
 
 ## Do NOT regress these invariants
+
 - **Field parity**: the client generator must stay bit-for-bit in agreement with the
   server (`scripts/bench/parity-check.ts` green). If you touch ids/positions/order,
   fix BOTH sides in the same commit.
@@ -84,6 +92,7 @@ Read that file; each item has a checkable condition. Headlines:
   near field.
 
 ## Each iteration
+
 1. Read `ralph/prd-client.json` (source of truth) and the top `## Codebase Patterns`
    of `ralph/progress-client.txt` — don't re-derive prior learnings.
 2. Pick the single highest-priority item with `passes: false`.
@@ -99,6 +108,7 @@ Read that file; each item has a checkable condition. Headlines:
 7. If it didn't help or broke something: revert it and record the dead end.
 
 ## Guardrails (do not game the loop)
+
 - Never weaken a `prd-client.json` pass condition, skip/delete a test, or make a
   benchmark lie to turn an item green. If a target is genuinely wrong, explain in
   `progress-client.txt` and stop — don't fudge it.
@@ -114,6 +124,7 @@ Read that file; each item has a checkable condition. Headlines:
   re-run parity + e2e.
 
 ## Progress entry (append to `ralph/progress-client.txt`)
+
 ```
 ## [ISO timestamp] - [Item ID]
 - What was measured (the cost) + the single change made
@@ -124,10 +135,12 @@ Read that file; each item has a checkable condition. Headlines:
 ```
 
 ## Stop condition
+
 After flipping a flag, check whether ALL `ralph/prd-client.json` items are
 `passes: true`.
+
 - If yes → reply with exactly `<promise>CLIENT-COMPLETE</promise>` as the final
   standalone line.
 - If no → end normally; the next iteration continues.
-Do not write that literal sentinel anywhere unless you are actually emitting it; to
-discuss the stop condition, say "the COMPLETE signal".
+  Do not write that literal sentinel anywhere unless you are actually emitting it; to
+  discuss the stop condition, say "the COMPLETE signal".

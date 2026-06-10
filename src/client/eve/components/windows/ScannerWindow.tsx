@@ -1,13 +1,20 @@
 import { Radio } from "lucide-react";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ScanMode } from "../../../../shared/types";
 import { scannerModes } from "../../constants";
-import { kindLabel } from "../../overview";
+import { kindLabel, materializeRowAt, type OverviewModel } from "../../overview";
 import type { OverviewFilter, OverviewRow, Selection, SortField, SortState } from "../../types";
 import { formatBearing, formatDistance } from "../../vector";
 
+// Approximate rendered height of one overview <tr> (px). Self-corrected at runtime from
+// the first real row's measured height, so a CSS tweak can't silently break the math.
+const DEFAULT_ROW_HEIGHT = 27;
+// Extra rows rendered above/below the viewport so a fast scroll never shows blank gaps.
+const OVERSCAN = 8;
+
 export function ScannerWindow({
-  rows,
+  model,
   selected,
   sort,
   filter,
@@ -20,7 +27,7 @@ export function ScannerWindow({
   onSelect,
   onContextMenu,
 }: {
-  rows: OverviewRow[];
+  model: OverviewModel | null;
   selected: Selection | null;
   sort: SortState;
   filter: OverviewFilter;
@@ -33,6 +40,64 @@ export function ScannerWindow({
   onSelect: (selection: Selection) => void;
   onContextMenu: (event: ReactMouseEvent<HTMLElement>, target: Selection | null) => void;
 }): ReactNode {
+  // Virtualize the overview: the EVE overview lists every discovered rock, which is the
+  // full derived field (up to 100k rows). Rendering one <tr> per row tanked the main
+  // thread (rebuilt + re-diffed every world commit). We render only the rows inside the
+  // scroll viewport (+overscan) and pad the rest with spacer <tr>s so the scrollbar and
+  // row positions stay correct, while the DOM holds only a few dozen rows.
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const firstRowRef = useRef<HTMLTableRowElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(480);
+  const [rowHeight, setRowHeight] = useState(DEFAULT_ROW_HEIGHT);
+
+  useEffect(() => {
+    const element = wrapRef.current;
+    if (element === null) {
+      return undefined;
+    }
+    const measure = (): void => setViewportHeight(element.clientHeight);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  // Re-anchor to the top of the list whenever the result set is re-ordered or re-filtered
+  // so the visible window always starts at the nearest (sorted-first) rows — and so the
+  // e2e distance-sort check, which reads the rendered rows top-down, sees them in order.
+  useEffect(() => {
+    const element = wrapRef.current;
+    if (element !== null) {
+      element.scrollTop = 0;
+    }
+    setScrollTop(0);
+  }, [filter, sort]);
+
+  // Self-correct the row height from the first rendered row (CSS-resilient).
+  useLayoutEffect(() => {
+    const element = firstRowRef.current;
+    if (element !== null && element.offsetHeight > 0 && element.offsetHeight !== rowHeight) {
+      setRowHeight(element.offsetHeight);
+    }
+  });
+
+  const total = model?.total ?? 0;
+  const start = Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN);
+  const end = Math.min(total, Math.ceil((scrollTop + viewportHeight) / rowHeight) + OVERSCAN);
+  // Materialize ONLY the visible window of rows on demand from the compact model.
+  const windowRows: OverviewRow[] = [];
+  if (model !== null) {
+    for (let i = start; i < end; i += 1) {
+      const row = materializeRowAt(model, i);
+      if (row !== null) {
+        windowRows.push(row);
+      }
+    }
+  }
+  const topPad = start * rowHeight;
+  const bottomPad = Math.max(0, (total - end) * rowHeight);
+
   return (
     <>
       <div className="segmented">
@@ -73,7 +138,12 @@ export function ScannerWindow({
           </button>
         ))}
       </div>
-      <div className="overview-table-wrap" data-loading={loading}>
+      <div
+        className="overview-table-wrap"
+        data-loading={loading}
+        ref={wrapRef}
+        onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+      >
         {loading ? (
           <div className="loading" data-loading="true">
             scanning
@@ -90,9 +160,15 @@ export function ScannerWindow({
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => (
+            {topPad > 0 ? (
+              <tr aria-hidden="true" className="overview-spacer">
+                <td colSpan={5} style={{ height: topPad, padding: 0, border: 0 }} />
+              </tr>
+            ) : null}
+            {windowRows.map((row, index) => (
               <tr
                 key={row.key}
+                ref={index === 0 ? firstRowRef : undefined}
                 tabIndex={0}
                 data-testid="overview-row"
                 data-object-id={row.id}
@@ -113,9 +189,14 @@ export function ScannerWindow({
                 <td data-testid="overview-cell-bearing">{formatBearing(row.bearing)}</td>
               </tr>
             ))}
+            {bottomPad > 0 ? (
+              <tr aria-hidden="true" className="overview-spacer">
+                <td colSpan={5} style={{ height: bottomPad, padding: 0, border: 0 }} />
+              </tr>
+            ) : null}
           </tbody>
         </table>
-        {rows.length === 0 && !loading ? (
+        {total === 0 && !loading ? (
           <div className="empty" data-testid="overview-empty">
             no returns
           </div>

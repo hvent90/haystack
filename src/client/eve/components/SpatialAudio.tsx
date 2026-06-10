@@ -52,16 +52,28 @@ export function RemoteShipAudio({
   useEffect(() => {
     const group = groupRef.current;
     if (group === null || listener === null) {
-      return;
+      return undefined;
     }
+    // Build the drone on the LISTENER's context, not the `ctx` prop: PositionalAudio
+    // derives its context from the listener, and connecting nodes across two different
+    // (or a closed) AudioContext throws and takes down the whole Canvas. The listener's
+    // context and the prop are normally the same, but a teardown/HMR/StrictMode remount
+    // can briefly skew them (the engine closes + recreates its context on dispose). Using
+    // listener.context guarantees they match; the try/catch is a last-resort guard so a
+    // transient mismatch silently skips this voice instead of crashing the scene.
     const positional = new PositionalAudio(listener);
     positional.setRefDistance(0.6);
     positional.setRolloffFactor(1.6);
     positional.setMaxDistance(40);
-    const drone = createSpatialDrone(ctx);
-    // three's setNodeSource is typed for AudioScheduledSourceNode, but at runtime it
-    // only assigns `source` and calls connect() — a GainNode (our drone output) works.
-    positional.setNodeSource(drone.output as AudioScheduledSourceNode);
+    let drone: SpatialDrone;
+    try {
+      drone = createSpatialDrone(listener.context);
+      // three's setNodeSource is typed for AudioScheduledSourceNode, but at runtime it
+      // only assigns `source` and calls connect() — a GainNode (our drone output) works.
+      positional.setNodeSource(drone.output as AudioScheduledSourceNode);
+    } catch {
+      return undefined;
+    }
     group.add(positional);
     droneRef.current = drone;
     drone.setState(state);
