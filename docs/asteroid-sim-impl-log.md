@@ -157,3 +157,25 @@ Landed (all gates green at each step):
   the relocated spawn sits outside the legacy cube so the drift window produces no
   crossings — frame numbers are the render baseline, derive cost compared via the belt
   run's own worker timings, which match the pre-belt era's ~8–12 ms).
+
+- verify:gpu-live:prod with the smoke bake: frames p95 16.7 / 60.1 fps, SCAN gate PASS,
+  SHADOW gate FAIL (tier1=383 vs >2000, baseLit=2931 vs healthy ~15500). Cause: band
+  density at spawn ≈ 0.38 rocks/cell (smoke bake) vs the legacy 1.0/cell — down-sun
+  occlusion is genuinely rarer, the gate's absolute pixel thresholds assume the old
+  density. Re-evaluate on the 1M bake; if still short, relativize thresholds to
+  baselineLit (keeping the all-dark upper bounds + noise floors that make it
+  non-vacuous).
+
+### Fresh-context audit (Phase 3)
+
+Verifier subagent audit (adversarial, read-only + test runs): all seven contract claims
+verified — one shared derivation module, invariants kept, zone-driven pockets/minerals,
+parity suites green, no determinism leaks, axis mapping consistent across bake/decode/
+sampling/render, collision broad-phase sound. One real bug found and fixed: heroes whose
+sim position lay beyond the baked z_max were silently dropped at decode (3/2000 in the
+smoke bake) — the bake now clips hero candidates to the baked volume, and decode gained
+guards (cell-key base assert, record-length validation). Noted concerns: thresholded
+existence roll amplifies any cross-engine Math.sin ULP drift (probability ~1e-16/cell,
+accepted); streamedFieldToken is test-pinned reference API with no production consumer
+(virtual field is fully client-derived; server production consumers are virtualScanHits +
+fieldDiagnostic, both belt-aware).
