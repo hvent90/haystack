@@ -788,6 +788,26 @@ function scanSurface(
     .filter((hit) => hit.strength > 0.015);
 }
 
+// Deterministic per-pilot spawn offset: a ring around the station spawn so freshly
+// created ships never materialize inside each other (ships are solid now — see
+// src/shared/collision.ts). Small enough (≤ ~400 m) that every station-range mechanic
+// (mining reach, scan discovery, docking distances) is unaffected.
+function spawnOffsetFor(pilotId: string): Vector3 {
+  let hash = 2166136261;
+  for (let i = 0; i < pilotId.length; i += 1) {
+    hash = Math.imul(hash ^ pilotId.charCodeAt(i), 16777619);
+  }
+  const unsigned = hash >>> 0;
+  const angle = ((unsigned % 4096) / 4096) * Math.PI * 2;
+  const ring = 180 + ((unsigned >>> 12) % 200);
+  const lift = (((unsigned >>> 20) % 81) - 40) * 1;
+  return {
+    x: Math.cos(angle) * ring,
+    y: lift,
+    z: Math.sin(angle) * ring,
+  };
+}
+
 function ensureShip(db: HaystackDb, pilotId: string, callsign: string): void {
   const existing = db.query("SELECT pilot_id FROM ships WHERE pilot_id = ?").get(pilotId) as {
     pilot_id: string;
@@ -796,6 +816,28 @@ function ensureShip(db: HaystackDb, pilotId: string, callsign: string): void {
     return;
   }
 
+  // Re-probe with a salted hash until the spot is clear of already-spawned ships (the
+  // ring hash alone can collide); runs once per pilot, result persists in the row.
+  const occupied = db.query("SELECT x, y, z FROM ships").all() as Array<{
+    x: number;
+    y: number;
+    z: number;
+  }>;
+  let offset = spawnOffsetFor(pilotId);
+  for (let attempt = 1; attempt <= 64; attempt += 1) {
+    const clear = occupied.every(
+      (ship) =>
+        Math.hypot(
+          stationSpawn.x + offset.x - ship.x,
+          stationSpawn.y + offset.y - ship.y,
+          stationSpawn.z + offset.z - ship.z,
+        ) >= 140,
+    );
+    if (clear) {
+      break;
+    }
+    offset = spawnOffsetFor(`${pilotId}:${attempt}`);
+  }
   db.query(
     `INSERT INTO ships
       (pilot_id, name, x, y, z, vx, vy, vz, qx, qy, qz, qw, wx, wy, wz, throttle, cruise_lock, heat, cargo_mass, cargo_capacity, scan_power, mining_power, stabilizer_efficiency)
@@ -803,9 +845,9 @@ function ensureShip(db: HaystackDb, pilotId: string, callsign: string): void {
   ).run(
     pilotId,
     `${callsign} Brickrunner`,
-    stationSpawn.x,
-    stationSpawn.y,
-    stationSpawn.z,
+    stationSpawn.x + offset.x,
+    stationSpawn.y + offset.y,
+    stationSpawn.z + offset.z,
     0,
     0,
     0,

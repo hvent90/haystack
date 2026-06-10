@@ -173,11 +173,78 @@ try {
   );
   await waitForRemoteShipLights(scoutPage, hauler.id, false);
 
+  // Ship-ship collision: drive the hauler straight at the scout. The two must bump and
+  // separate — never interpenetrate (gap stays >= 2 x 50 m ship radius), and the
+  // stationary scout must pick up momentum from the hit.
+  for (let i = 0; i < 12; i += 1) {
+    await api(`/api/ships/${encodeURIComponent(hauler.id)}/thrust`, {
+      method: "POST",
+      body: JSON.stringify({ impulse: { x: 0, y: 0, z: 0 }, stabilize: true }),
+    });
+  }
+  const beforeRam = await shipPair(scout.id, hauler.id);
+  const ramRange = vectorDistance(beforeRam.hauler.position, beforeRam.scout.position);
+  const ramDirection = {
+    x: (beforeRam.scout.position.x - beforeRam.hauler.position.x) / ramRange,
+    y: (beforeRam.scout.position.y - beforeRam.hauler.position.y) / ramRange,
+    z: (beforeRam.scout.position.z - beforeRam.hauler.position.z) / ramRange,
+  };
+  for (let i = 0; i < 3; i += 1) {
+    await api(`/api/ships/${encodeURIComponent(hauler.id)}/thrust`, {
+      method: "POST",
+      body: JSON.stringify({
+        impulse: { x: ramDirection.x * 12, y: ramDirection.y * 12, z: ramDirection.z * 12 },
+      }),
+    });
+  }
+
+  let minGap = ramRange;
+  let scoutPeakSpeed = 0;
+  const ramDeadline = Date.now() + Math.ceil((ramRange / 36) * 1000) + 20000;
+  let bumped = false;
+  while (Date.now() < ramDeadline) {
+    const pair = await shipPair(scout.id, hauler.id);
+    const gap = vectorDistance(pair.hauler.position, pair.scout.position);
+    minGap = Math.min(minGap, gap);
+    const scoutSpeed = Math.hypot(
+      pair.scout.velocity.x,
+      pair.scout.velocity.y,
+      pair.scout.velocity.z,
+    );
+    scoutPeakSpeed = Math.max(scoutPeakSpeed, scoutSpeed);
+    if (scoutSpeed > 5 && gap >= 100) {
+      bumped = true;
+      break;
+    }
+    await Bun.sleep(50);
+  }
+  if (!bumped) {
+    throw new Error(
+      `Ships never collided: minGap=${minGap.toFixed(1)} scoutPeakSpeed=${scoutPeakSpeed.toFixed(1)}`,
+    );
+  }
+  if (minGap < 94) {
+    throw new Error(`Ships interpenetrated: minGap=${minGap.toFixed(1)} < 94 m`);
+  }
+  // After the bump they must end separated, not overlapping.
+  await Bun.sleep(1000);
+  const afterRam = await shipPair(scout.id, hauler.id);
+  const finalGap = vectorDistance(afterRam.hauler.position, afterRam.scout.position);
+  if (finalGap < 100) {
+    throw new Error(`Ships still overlapping after bump: gap=${finalGap.toFixed(1)}`);
+  }
+
   console.log(
     JSON.stringify(
       {
         appUrl: clientUrl,
         external: externalAppUrl !== null,
+        shipCollision: {
+          approachRange: Number(ramRange.toFixed(1)),
+          minGap: Number(minGap.toFixed(1)),
+          scoutPeakSpeed: Number(scoutPeakSpeed.toFixed(1)),
+          finalGap: Number(finalGap.toFixed(1)),
+        },
         clients: [
           { pilotId: scout.id, callsign: scout.callsign },
           { pilotId: hauler.id, callsign: hauler.callsign },
@@ -247,6 +314,27 @@ async function assertNoCommsLocal(page: Page, pilotId: string): Promise<void> {
 
 async function waitForMovedShip(observerPilotId: string, movedPilotId: string): Promise<Ship> {
   return await waitForShipVelocity(observerPilotId, movedPilotId, (ship) => ship.velocity.x >= 3.9);
+}
+
+async function shipPair(
+  scoutPilotId: string,
+  haulerPilotId: string,
+): Promise<{ scout: Ship; hauler: Ship }> {
+  const query = new URLSearchParams({ pilotId: scoutPilotId });
+  const snapshot = await api<WorldSnapshot>(`/api/world?${query.toString()}`);
+  const scoutShip = snapshot.ships.find((ship) => ship.pilotId === scoutPilotId);
+  const haulerShip = snapshot.ships.find((ship) => ship.pilotId === haulerPilotId);
+  if (scoutShip === undefined || haulerShip === undefined) {
+    throw new Error("Expected both ships in the world snapshot.");
+  }
+  return { scout: scoutShip, hauler: haulerShip };
+}
+
+function vectorDistance(
+  a: { x: number; y: number; z: number },
+  b: { x: number; y: number; z: number },
+): number {
+  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 }
 
 async function waitForShipState(

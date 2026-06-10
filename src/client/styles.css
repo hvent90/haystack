@@ -1580,6 +1580,12 @@ tr:focus-visible {
     grid-template-columns: repeat(7, minmax(28px, 1fr));
   }
 
+  /* Keyboard hints are meaningless on touch layouts — and the extra HUD row would
+     overlap the mobile window layer. */
+  .hud-keybinds {
+    display: none;
+  }
+
   .hud-buttons button {
     width: auto;
   }

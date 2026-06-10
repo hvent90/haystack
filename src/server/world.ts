@@ -9,6 +9,12 @@ import {
   shipFixedDt,
   type HeldFlightInput,
 } from "../shared/ship-motion";
+import {
+  makeShipCollisionEnvironment,
+  resolveShipPairCollision,
+  type ShipCollisionEnvironment,
+} from "../shared/collision";
+import { fieldSummary } from "./field";
 import type { HaystackDb } from "./db";
 import { metrics } from "./metrics";
 
@@ -164,6 +170,9 @@ export class ShipActor extends Actor {
   stabilizerEfficiency: number;
   private heldInput: HeldFlightInput | null = null;
   private inputFreshFor = 0;
+  // Injected by ServerWorld: deterministic nearby-rock lookup (virtual field + seeded DB
+  // rocks). Shared with client prediction so collision response reconciles cleanly.
+  collisionEnvironment: ShipCollisionEnvironment | null = null;
 
   constructor(row: ShipRow) {
     super();
@@ -239,7 +248,14 @@ export class ShipActor extends Actor {
       this.inputFreshFor = Math.max(0, this.inputFreshFor - dt);
       heldInput = this.heldInput;
     }
-    this.assignShip(integrateShipTick(this.toUnroundedShip(), dt, heldInput));
+    this.assignShip(
+      integrateShipTick(
+        this.toUnroundedShip(),
+        dt,
+        heldInput,
+        this.collisionEnvironment ?? undefined,
+      ),
+    );
   }
 
   toShip(): Ship {
@@ -298,6 +314,9 @@ export class ServerWorld {
   private accumulator = 0;
   private lastWallMs: number;
   private timer: ReturnType<typeof setInterval> | null = null;
+  // Built lazily: the field geometry and the seeded DB rocks are both static for the
+  // lifetime of a world, so one environment serves every ship on every tick.
+  private collisionEnvironment: ShipCollisionEnvironment | null = null;
 
   constructor(readonly db: HaystackDb) {
     this.lastWallMs = this.readLastTickMs();
@@ -424,9 +443,56 @@ export class ServerWorld {
       }
     }
 
+    this.resolveShipShipCollisions();
     this.collectReplication();
     this.frame += 1;
     this.currentTick += 1;
+  }
+
+  // Ship-vs-ship is server-authoritative only (a client cannot predict the other ship's
+  // inputs); clients absorb the correction through normal reconciliation. Pairs are
+  // processed in sorted-id order so the outcome is deterministic.
+  private resolveShipShipCollisions(): void {
+    if (this.shipActors.size < 2) {
+      return;
+    }
+    const ships = [...this.shipActors.values()].sort((left, right) =>
+      left.id.localeCompare(right.id),
+    );
+    for (let i = 0; i < ships.length; i += 1) {
+      for (let j = i + 1; j < ships.length; j += 1) {
+        const a = ships[i]!;
+        const b = ships[j]!;
+        const resolved = resolveShipPairCollision(
+          { position: a.position, velocity: a.velocity },
+          { position: b.position, velocity: b.velocity },
+        );
+        if (resolved === null) {
+          continue;
+        }
+        a.position = resolved.a.position;
+        a.velocity = resolved.a.velocity;
+        b.position = resolved.b.position;
+        b.velocity = resolved.b.velocity;
+      }
+    }
+  }
+
+  private shipCollisionEnvironment(): ShipCollisionEnvironment {
+    if (this.collisionEnvironment === null) {
+      const rows = this.db
+        .query("SELECT id, x, y, z, radius FROM asteroids ORDER BY id ASC")
+        .all() as Array<{ id: string; x: number; y: number; z: number; radius: number }>;
+      this.collisionEnvironment = makeShipCollisionEnvironment(
+        fieldSummary(),
+        rows.map((row) => ({
+          id: row.id,
+          position: { x: row.x, y: row.y, z: row.z },
+          radius: row.radius,
+        })),
+      );
+    }
+    return this.collisionEnvironment;
   }
 
   private applyPendingInputs(): void {
@@ -469,6 +535,7 @@ export class ServerWorld {
       const existing = this.shipActors.get(row.pilot_id);
       if (existing === undefined) {
         const actor = new ShipActor(row);
+        actor.collisionEnvironment = this.shipCollisionEnvironment();
         this.shipActors.set(row.pilot_id, actor);
         this.actors.push(actor);
       } else {

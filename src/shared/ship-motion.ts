@@ -1,4 +1,5 @@
 import type { FlightInputCommand, Quaternion, Ship, ThrustCommand, Vector3 } from "./types";
+import { resolveShipCollision, type ShipCollisionEnvironment } from "./collision";
 
 export const shipFixedDt = 1 / 60;
 export const shipInputFreshSeconds = 0.3;
@@ -97,7 +98,12 @@ export function applyThrustCommand(ship: Ship, command: ThrustCommand): Ship {
   return nextShip;
 }
 
-export function integrateShipTick(ship: Ship, dt: number, heldInput: HeldFlightInput | null): Ship {
+export function integrateShipTick(
+  ship: Ship,
+  dt: number,
+  heldInput: HeldFlightInput | null,
+  collision?: ShipCollisionEnvironment,
+): Ship {
   let nextShip = cloneShip(ship);
   if (heldInput !== null) {
     nextShip = integrateHeldInput(nextShip, dt, heldInput);
@@ -114,6 +120,9 @@ export function integrateShipTick(ship: Ship, dt: number, heldInput: HeldFlightI
     },
     heat: Math.max(0, nextShip.heat - dt * 4.25),
   };
+  if (collision !== undefined) {
+    nextShip = resolveShipCollision(ship.position, nextShip, collision);
+  }
   return nextShip;
 }
 
@@ -121,12 +130,13 @@ export function applyShipCommandForPrediction(
   ship: Ship,
   command: ThrustCommand | FlightInputCommand,
   dt = shipFixedDt,
+  collision?: ShipCollisionEnvironment,
 ): Ship {
   if (isFlightInputCommand(command)) {
     const receipt = receiveFlightInput(ship, command);
-    return integrateShipTick(receipt.ship, dt, receipt.heldInput);
+    return integrateShipTick(receipt.ship, dt, receipt.heldInput, collision);
   }
-  return integrateShipTick(applyThrustCommand(ship, command), dt, null);
+  return integrateShipTick(applyThrustCommand(ship, command), dt, null, collision);
 }
 
 export function isFlightInputCommand(

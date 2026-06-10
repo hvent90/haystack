@@ -1,9 +1,11 @@
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
+  Asteroid,
   CharacterCard,
   Deposit,
   FieldDiagnostic,
+  FieldSummary,
   FlightInputCommand,
   ScanMode,
   ScanReport,
@@ -13,6 +15,7 @@ import type {
   Vector3,
   WorldSnapshot,
 } from "../../shared/types";
+import { makeShipCollisionEnvironment } from "../../shared/collision";
 import {
   buildBase,
   createPilot,
@@ -161,6 +164,9 @@ export function EveApp(): ReactNode {
   const sessionRef = useRef<Session | null>(null);
   const predictionRef = useRef(new OwnedShipPrediction());
   const fieldDeriverRef = useRef(new FieldDeriver());
+  // Identity of the collision environment currently installed on the prediction (field
+  // geometry + seeded rock ids); rebuilt only when the wire delivers a different set.
+  const collisionEnvKeyRef = useRef<string | null>(null);
   // Synthetic owned-ship x for the benchmark drift control (null = not drifting).
   const driftXRef = useRef<number | null>(null);
   const heldKeysRef = useRef<Set<string>>(new Set());
@@ -178,6 +184,9 @@ export function EveApp(): ReactNode {
   const myShipRef = useRef<Ship | null>(null);
   const previousChatIdsRef = useRef<Set<string>>(new Set());
   const predictCommitRef = useRef(0);
+  // Total reconciliation corrections (prediction disagreed with an ack beyond tolerance).
+  // Exposed as a data attribute so e2e can prove predicted collisions reconcile cleanly.
+  const predictionCorrectionsRef = useRef(0);
   // Coalescer state: the live world snapshot is merged synchronously on every 30Hz
   // delta into liveSnapshotRef (the source of truth for the merge pipeline), while
   // the React `snapshot` state is mirrored from it at ~10Hz. This breaks the
@@ -237,6 +246,7 @@ export function EveApp(): ReactNode {
             resetPredictionFromSnapshot(world, pilot.id);
             setSession({ pilot, snapshot: world });
             fieldDeriverRef.current.setSeeded(world.asteroids);
+            seedCollisionEnvironment(world.field, world.asteroids);
             commitSnapshotNow(withDerivedField(world, fieldDeriverRef.current, pilot.id));
           }
           return;
@@ -251,6 +261,7 @@ export function EveApp(): ReactNode {
         resetPredictionFromSnapshot(world, nextSession.pilot.id);
         setSession({ pilot: nextSession.pilot, snapshot: world });
         fieldDeriverRef.current.setSeeded(world.asteroids);
+        seedCollisionEnvironment(world.field, world.asteroids);
         commitSnapshotNow(withDerivedField(world, fieldDeriverRef.current, nextSession.pilot.id));
       }
     }
@@ -318,6 +329,7 @@ export function EveApp(): ReactNode {
             resetPredictionFromSnapshot(message.snapshot, session.pilot.id);
             pushRemotesToStore(message.snapshot.ships, session.pilot.id, message.serverTimeMs);
             fieldDeriverRef.current.setSeeded(message.snapshot.asteroids);
+            seedCollisionEnvironment(message.snapshot.field, message.snapshot.asteroids);
             commitSnapshotNow(
               withDerivedField(message.snapshot, fieldDeriverRef.current, session.pilot.id),
             );
@@ -342,6 +354,10 @@ export function EveApp(): ReactNode {
             }
             if (patch.asteroids !== undefined) {
               fieldDeriverRef.current.setSeeded(patch.asteroids);
+              const field = patch.field ?? liveSnapshotRef.current?.field;
+              if (field !== undefined) {
+                seedCollisionEnvironment(field, patch.asteroids);
+              }
             }
             applySnapshot((current) =>
               current === null
@@ -371,6 +387,7 @@ export function EveApp(): ReactNode {
             // commit + deltas, so no per-ack setSnapshot is needed here.
             const outcome = predictionRef.current.reconcile(message.ackClientTick, message.ship);
             if (outcome.corrected) {
+              predictionCorrectionsRef.current += 1;
               flightRenderStore.correctOwned(outcome.ship);
             } else {
               flightRenderStore.setOwnedPredicted(outcome.ship);
@@ -787,6 +804,7 @@ export function EveApp(): ReactNode {
       data-owned-z={myShip.position.z.toFixed(3)}
       data-prediction-tick={predictionRef.current.currentPredictionTick}
       data-ack-tick={predictionRef.current.lastAcknowledgedTick}
+      data-prediction-corrections={predictionCorrectionsRef.current}
       data-owned-nav-lights={navLightsOn}
       data-owned-flashlight={flashlightOn}
     >
@@ -1057,6 +1075,7 @@ export function EveApp(): ReactNode {
         resetPredictionFromSnapshot(world, pilotId);
       }
       fieldDeriverRef.current.setSeeded(world.asteroids);
+      seedCollisionEnvironment(world.field, world.asteroids);
       applySnapshot((current) =>
         withDerivedField(
           mergeWorldSnapshotForOwnedPrediction(current, world, pilotId, predictedShip),
@@ -1071,6 +1090,31 @@ export function EveApp(): ReactNode {
 
   function predictedShipForAuthoritativeMerge(): Ship | null {
     return predictionRef.current.bufferedInputCount > 0 ? predictionRef.current.currentShip : null;
+  }
+
+  // Install the shared collision environment (virtual field geometry + seeded DB rocks)
+  // on the owned-ship prediction so predicted ticks and replays resolve ship-vs-asteroid
+  // collisions exactly like the server. The seeded set arrives on the same wire paths as
+  // the field deriver's setSeeded — call this wherever that is called.
+  function seedCollisionEnvironment(field: FieldSummary, asteroids: Asteroid[]): void {
+    const seeded = asteroids.filter((asteroid) => !asteroid.id.startsWith("v-"));
+    const key = `${field.seed}:${field.cellSize}:${field.totalAsteroids}:${seeded
+      .map((asteroid) => asteroid.id)
+      .join(",")}`;
+    if (collisionEnvKeyRef.current === key) {
+      return;
+    }
+    collisionEnvKeyRef.current = key;
+    predictionRef.current.setCollisionEnvironment(
+      makeShipCollisionEnvironment(
+        field,
+        seeded.map((asteroid) => ({
+          id: asteroid.id,
+          position: asteroid.position,
+          radius: asteroid.radius,
+        })),
+      ),
+    );
   }
 
   function resetPredictionFromSnapshot(world: WorldSnapshot, pilotId: string): void {
