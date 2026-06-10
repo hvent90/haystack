@@ -12,6 +12,12 @@
   --border-soft: rgb(231 227 210 / 14%);
   --border-cyan: rgb(135 208 189 / 32%);
   --mobile-rail-space: 96px;
+  /* Device safe areas (notch / home indicator). Zero everywhere except notched phones
+     with viewport-fit=cover; every fixed-position rail/cluster offsets by these. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
   font-family:
     Inter,
     ui-sans-serif,
@@ -30,12 +36,21 @@
   box-sizing: border-box;
 }
 
+html {
+  /* No pull-to-refresh / rubber-band navigation gestures over the game. */
+  overscroll-behavior: none;
+}
+
 body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
   overflow: hidden;
   background: var(--bg-base);
+  overscroll-behavior: none;
+  /* Kill the grey tap flash and long-press callout on touch browsers. */
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
 }
 
 button,
@@ -110,6 +125,11 @@ tr:focus-visible {
 .world-stage canvas {
   position: absolute;
   inset: 0;
+  /* The stage owns every touch gesture (sticks, orbit drag) — no browser panning,
+     pinch zoom, or double-tap zoom over the canvas. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .world-stage canvas {
@@ -563,7 +583,8 @@ tr:focus-visible {
   align-items: center;
   gap: 10px;
   min-height: 50px;
-  padding: 8px 14px 8px 60px;
+  padding: calc(8px + var(--safe-top)) calc(14px + var(--safe-right)) 8px
+    calc(60px + var(--safe-left));
   border-bottom: 1px solid rgb(180 139 85 / 48%);
   background: rgb(20 19 18 / 84%);
   backdrop-filter: blur(12px);
@@ -612,8 +633,9 @@ tr:focus-visible {
   display: grid;
   align-content: start;
   gap: 6px;
-  width: 48px;
-  padding: 58px 6px 8px;
+  width: calc(48px + var(--safe-left));
+  padding: calc(58px + var(--safe-top)) 6px calc(8px + var(--safe-bottom))
+    calc(6px + var(--safe-left));
   border-right: 1px solid rgb(135 208 189 / 18%);
   background: rgb(14 15 14 / 86%);
   backdrop-filter: blur(12px);
@@ -1266,7 +1288,7 @@ tr:focus-visible {
   position: absolute;
   z-index: 7000;
   left: 50%;
-  bottom: 16px;
+  bottom: calc(16px + var(--safe-bottom));
   display: grid;
   grid-template-columns: 72px minmax(150px, 220px) auto;
   align-items: center;
@@ -1371,8 +1393,8 @@ tr:focus-visible {
 .selected-item {
   position: absolute;
   z-index: 7100;
-  right: 18px;
-  bottom: 18px;
+  right: calc(18px + var(--safe-right));
+  bottom: calc(18px + var(--safe-bottom));
   display: grid;
   width: 280px;
   gap: 7px;
@@ -1602,8 +1624,8 @@ tr:focus-visible {
 
 .audio-controls {
   position: fixed;
-  right: 12px;
-  bottom: 12px;
+  right: calc(12px + var(--safe-right));
+  bottom: calc(12px + var(--safe-bottom));
   z-index: 50;
   display: grid;
   gap: 4px;
