@@ -32,10 +32,19 @@ import {
 } from "../../../shared/belt/field";
 
 // --- grid dimensions (§2.5 — committed schema) ---------------------------------------
-export const FROXEL_W = 160;
-export const FROXEL_H = 90;
-export const FROXEL_D = 64;
-export const FROXEL_COUNT = FROXEL_W * FROXEL_H * FROXEL_D; // 921,600
+// Quality-tier selected AT MODULE LOAD (quality.ts): desktop 160x90x64 = 921,600
+// froxels; mobile 96x54x48 = 248,832 — same pipeline and math, ~27% of the scatter
+// cost. The tier is fixed for the session, and every consumer (kernel closures, the
+// accum buffer, these CPU parity mirrors) reads the same constants, so the grid stays
+// internally consistent. Bun test / worker contexts have no window and resolve to the
+// desktop tier — the parity fixtures are unchanged.
+import { qualityParams } from "../quality";
+
+const FROXEL_GRID = qualityParams().froxel;
+export const FROXEL_W = FROXEL_GRID.w;
+export const FROXEL_H = FROXEL_GRID.h;
+export const FROXEL_D = FROXEL_GRID.d;
+export const FROXEL_COUNT = FROXEL_W * FROXEL_H * FROXEL_D;
 
 // Radial slice range in SCENE units (1 unit = 1 km). FAR sits inside the far-field
 // handoff: the haze annulus fades in over 22..95 km (BeltFarField), the cull retires

@@ -36,6 +36,17 @@ export async function count(page: Page, selector: string): Promise<number> {
   return page.locator(selector).count();
 }
 
+// The default layout boots with every window CLOSED (2e43cf2). Suites that drive
+// window-hosted controls (e.g. flight-mode-toggle lives in the Flight window) must
+// open the window through the neocom first — the same path a user takes.
+export async function openWindow(page: Page, key: string): Promise<void> {
+  if ((await page.locator(`[data-testid='window-${key}']`).count()) > 0) {
+    return;
+  }
+  await page.getByTestId(`neocom-${key}`).click();
+  await page.waitForSelector(`[data-testid='window-${key}']`);
+}
+
 export function captureTraffic(page: Page): {
   inputFrames: () => unknown[];
   requests: { url: string; body: string | null }[];

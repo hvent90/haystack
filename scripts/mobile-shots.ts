@@ -124,11 +124,7 @@ async function touchContext(
   });
 }
 
-async function openApp(
-  context: BrowserContext,
-  pilotId: string,
-  safeVars: Record<string, string>,
-) {
+async function openApp(context: BrowserContext, pilotId: string, safeVars: Record<string, string>) {
   const page = await context.newPage();
   const url = new URL(clientUrl);
   url.searchParams.set("pilotId", pilotId);

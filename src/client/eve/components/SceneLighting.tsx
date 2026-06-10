@@ -10,6 +10,8 @@ import {
 } from "three";
 import type { Quaternion } from "../../../shared/types";
 import { setFroxelFlashlight } from "../gpu/kernels/froxels";
+import { shadowTier1Enable } from "../gpu/kernels/render-node";
+import { qualityParams } from "../quality";
 import { flightRenderStore } from "../renderStore";
 import {
   flashlightAngle,
@@ -60,7 +62,12 @@ export function SunLight(): ReactNode {
       return;
     }
     light.target = target;
-    light.castShadow = true;
+    // Mobile tier skips the sun shadow-map pass entirely (the per-instance aSunlit
+    // tier still shades the field; near-bubble crispness is a desktop luxury). The
+    // shadowTier1Enable uniform is zeroed alongside so the TSL mix never samples the
+    // absent map (render-node.ts).
+    light.castShadow = qualityParams().sunShadowMap;
+    shadowTier1Enable.value = qualityParams().sunShadowMap ? 1 : 0;
     light.shadow.mapSize.set(shadowMapSize, shadowMapSize);
     light.shadow.bias = shadowBias;
     light.shadow.normalBias = shadowNormalBias;

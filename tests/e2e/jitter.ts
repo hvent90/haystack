@@ -21,7 +21,7 @@ import { resolve } from "node:path";
 import { chromium, type Browser, type Page } from "playwright";
 
 import type { Pilot } from "../../src/shared/types";
-import { webgpuLaunchOptions } from "./helpers";
+import { webgpuLaunchOptions, openWindow } from "./helpers";
 
 const serverPort = Number(process.env["JITTER_SERVER_PORT"] ?? "8830");
 const clientPort = Number(process.env["JITTER_CLIENT_PORT"] ?? "5230");
@@ -78,6 +78,7 @@ try {
   await page.goto(url.toString(), { waitUntil: "domcontentloaded" });
   await page.waitForSelector("[data-testid='haystack-app']", { timeout: 15000 });
 
+  await openWindow(page, "flight");
   await page.getByTestId("flight-mode-toggle").click();
   await page.waitForFunction(
     () =>

@@ -11,7 +11,14 @@ import { resolve } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 
 import type { Pilot } from "../../src/shared/types";
-import { assert, captureTraffic, count, pollUntil, webgpuLaunchOptions } from "./helpers";
+import {
+  assert,
+  captureTraffic,
+  count,
+  pollUntil,
+  webgpuLaunchOptions,
+  openWindow,
+} from "./helpers";
 
 const serverPort = 8807;
 const clientPort = 5207;
@@ -264,6 +271,7 @@ async function verifyThirdPersonFlight(page: Page): Promise<void> {
   const before = await probe(page);
   assert(before !== null && before.viewMode === "third", "still third person");
 
+  await openWindow(page, "flight");
   await page.getByTestId("flight-mode-toggle").click();
   await pollUntil(
     () => probe(page),
@@ -314,6 +322,7 @@ async function verifyThirdPersonFlight(page: Page): Promise<void> {
 
   // Re-lock and prove steering still flies the ship in third person (roll on Q avoids
   // relying on synthetic pointer-lock mouse deltas under headless).
+  await openWindow(page, "flight");
   await page.getByTestId("flight-mode-toggle").click();
   await pollUntil(
     () => probe(page),

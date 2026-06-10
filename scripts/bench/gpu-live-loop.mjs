@@ -206,6 +206,9 @@ try {
   summary.stage = "navigating";
   const url = new URL(CLIENT_URL);
   url.searchParams.set("pilotId", pilotId);
+  // GPU_LIVE_TIER=mobile runs the client's mobile quality tier (quality.ts): capped
+  // resident rocks, dpr clamp 1.0, no sun shadow map, reduced froxel grid.
+  if (process.env.GPU_LIVE_TIER) url.searchParams.set("tier", process.env.GPU_LIVE_TIER);
   await page.goto(url.toString(), { waitUntil: "networkidle" });
 
   // Capture the adapter line up front and log it into the console capture (the spec wants

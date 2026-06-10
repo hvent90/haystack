@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { chromium, type Browser, type Page } from "playwright";
 
 import type { Pilot, Ship, WorldSnapshot } from "../../src/shared/types";
-import { webgpuLaunchOptions } from "./helpers";
+import { webgpuLaunchOptions, openWindow } from "./helpers";
 
 const serverPort = 8799;
 const clientPort = 5199;
@@ -98,6 +98,7 @@ try {
   const movedShip = await waitForMovedShip(scout.id, hauler.id);
   await waitForPilotCardText(scoutPage, haulerCallsign, /4\.0m\/s/);
 
+  await openWindow(haulerPage, "flight");
   await haulerPage.getByTestId("flight-mode-toggle").click();
   await haulerPage.waitForFunction(
     () =>

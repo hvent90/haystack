@@ -30,6 +30,7 @@ import {
 import type { FlightMode, OverviewRow, Selection, Waypoint } from "../types";
 import { flightInputScaleMax, flightInputScaleMin } from "../constants";
 import { clamp, formatDistance, toScene, vectorMagnitude } from "../vector";
+import { qualityParams } from "../quality";
 import { sameSelection } from "../overview";
 import { flightRenderStore } from "../renderStore";
 import { cameraBlendSec, chaseHeightRatio, orbitCamera, type ViewMode } from "../cameraStore";
@@ -202,7 +203,7 @@ export function WorldView({
         gl={makeWebGPUFactory()}
         shadows
         camera={{ position: [0, 0.12, 0], fov: 68, near: 0.01, far: 500000 }}
-        dpr={[1, 1.5]}
+        dpr={qualityParams().dprRange}
       >
         <RenderDriver fallbackShip={myShip} viewMode={viewMode} flightMode={flightMode} />
         <SceneProjection

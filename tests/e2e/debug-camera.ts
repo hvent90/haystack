@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import { chromium, type Browser } from "playwright";
 
 import type { Pilot } from "../../src/shared/types";
-import { captureTraffic, webgpuLaunchOptions } from "./helpers";
+import { captureTraffic, webgpuLaunchOptions, openWindow } from "./helpers";
 
 const serverPort = 8809;
 const clientPort = 5209;
@@ -47,6 +47,7 @@ try {
   await Bun.sleep(800);
   console.log("after C:", JSON.stringify(await dump(page)));
 
+  await openWindow(page, "flight");
   await page.getByTestId("flight-mode-toggle").click();
   await Bun.sleep(800);
   console.log("after lock:", JSON.stringify(await dump(page)));

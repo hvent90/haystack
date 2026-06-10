@@ -1622,6 +1622,70 @@ tr:focus-visible {
   }
 }
 
+/* --- unsupported-browser (no WebGPU) screen ------------------------------------------
+   Phone-presentable: single centered card, safe-area aware, readable at 320px. */
+.unsupported-screen {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: calc(16px + var(--safe-top)) calc(16px + var(--safe-right))
+    calc(16px + var(--safe-bottom)) calc(16px + var(--safe-left));
+  background:
+    radial-gradient(circle at 28% 34%, rgb(128 98 56 / 18%), transparent 24%),
+    linear-gradient(135deg, #171615, var(--bg-base) 62%, #1c1813);
+}
+
+.unsupported-card {
+  display: grid;
+  max-width: 460px;
+  gap: 12px;
+  padding: 24px;
+  border: 1px solid rgb(180 139 85 / 52%);
+  background: var(--panel-bg);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.unsupported-card h1 {
+  margin: 0;
+  color: var(--accent-amber);
+  font-size: 19px;
+}
+
+.unsupported-card p {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.unsupported-card ul {
+  display: grid;
+  margin: 0;
+  padding-left: 18px;
+  gap: 6px;
+  color: var(--text-muted);
+}
+
+.unsupported-card b {
+  color: var(--text-primary);
+}
+
+.unsupported-hint {
+  color: var(--text-muted) !important;
+  font-size: 12px;
+}
+
+.unsupported-mark {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  border: 1px solid #9c7649;
+  background: #1c1a18;
+  color: var(--accent-amber);
+  font-size: 24px;
+  font-weight: 800;
+}
+
 /* --- touch UI fit (.touch-ui set on .app-shell for touch devices) -------------------
    Width media queries can't see "this is a phone" (a landscape phone is 800-950px
    wide); the capability probe can. These rules make the UI thumb-operable: windows

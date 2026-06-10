@@ -3,6 +3,7 @@ import { ensureBeltBake } from "./belt-bake-loader";
 import { renderStats } from "./render-stats";
 import { primeSunlitCells } from "./sun-occlusion";
 import { beltReady, cellCoords, deriveVirtualField, indexByCell, unpackField } from "./field-core";
+import { qualityParams } from "./quality";
 import type { FieldDeriveRequest, FieldDeriveResponse } from "./field-worker";
 
 // Client-side reconstruction of the deterministic virtual asteroid field. The field math
@@ -17,6 +18,23 @@ export { deriveVirtualField } from "./field-core";
 function cellKeyFor(position: Vector3, field: FieldSummary): string {
   const { cx, cy, cz } = cellCoords(position, field);
   return `${cx}-${cy}-${cz}-${field.renderedLimit}-${field.seed}-${field.cellSize}`;
+}
+
+// Mobile tier carries fewer resident rocks (quality.ts). Identity-cached so the same
+// FieldSummary object maps to the same clamped object — cellKeyFor and the snapshot
+// memos depend on reference stability across 30Hz deltas.
+let clampedFieldSource: FieldSummary | null = null;
+let clampedFieldResult: FieldSummary | null = null;
+function clampFieldForQuality(field: FieldSummary): FieldSummary {
+  const cap = qualityParams().renderedLimitCap;
+  if (!(field.renderedLimit > cap)) {
+    return field;
+  }
+  if (clampedFieldSource !== field) {
+    clampedFieldSource = field;
+    clampedFieldResult = { ...field, renderedLimit: cap };
+  }
+  return clampedFieldResult!;
 }
 
 function sameSeededSet(
@@ -157,6 +175,12 @@ export class FieldDeriver {
   }
 
   asteroidsFor(position: Vector3 | null, field: FieldSummary): Asteroid[] {
+    // Mobile-tier resident-rock cap. Applied HERE — the single entry point for client
+    // field derivation — so the cell key, the worker request, and the synchronous
+    // fallback all see the same (clamped) limit. The server's renderedLimit is a
+    // ceiling, not a contract: virtual rocks are derived client-side, so a lower
+    // client count is purely local (render/collision/overview shrink together).
+    field = clampFieldForQuality(field);
     if (position === null) {
       if (this.cellKey !== "none" || this.mergedSeededRef !== this.seeded) {
         this.cellKey = "none";

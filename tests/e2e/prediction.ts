@@ -7,7 +7,7 @@ import { chromium, type Browser, type Page } from "playwright";
 import type { Pilot, Ship, Vector3, WorldSnapshot } from "../../src/shared/types";
 import { SHIP_COLLISION_RADIUS } from "../../src/shared/collision";
 import { deriveVirtualField } from "../../src/client/eve/field-core";
-import { webgpuLaunchOptions } from "./helpers";
+import { webgpuLaunchOptions, openWindow } from "./helpers";
 
 const serverPort = 8802;
 const clientPort = 5202;
@@ -97,6 +97,7 @@ async function verifyOwnedPredictionUnderDelayedAck(page: Page): Promise<void> {
   const preClickAck = await ackTick(page);
   const clickedAt = Date.now();
   console.error(`pre-click: predictionTick=${preClickTick} ackTick=${preClickAck}`);
+  await openWindow(page, "flight");
   await page.getByTestId("flight-mode-toggle").click();
   // Press W immediately: the flight-mode ref flips synchronously on the click, and the
   // whole pre-ack sequence below must fit inside the 550 ms simulated ack delay — an

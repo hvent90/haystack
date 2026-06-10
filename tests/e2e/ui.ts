@@ -5,7 +5,14 @@ import { resolve } from "node:path";
 import { chromium, type Browser, type Page } from "playwright";
 
 import type { Pilot, WorldSnapshot } from "../../src/shared/types";
-import { assert, captureTraffic, count, pollUntil, webgpuLaunchOptions } from "./helpers";
+import {
+  assert,
+  captureTraffic,
+  count,
+  pollUntil,
+  webgpuLaunchOptions,
+  openWindow,
+} from "./helpers";
 
 const serverPort = 8801;
 const clientPort = 5201;
@@ -81,7 +88,11 @@ async function verifyChrome(page: Page, pilotId: string): Promise<void> {
     "no forbidden neocom buttons",
   );
 
+  // The default layout boots with every window CLOSED (2e43cf2) — this suite predates
+  // that and used to find them already open. Open each through the neocom (the user
+  // path) before asserting its chrome.
   for (const key of ["flight", "scanner", "cargo", "comms", "character", "bases", "settings"]) {
+    await page.getByTestId(`neocom-${key}`).click();
     await page.waitForSelector(`[data-testid='window-${key}']`);
     await page.waitForSelector(`[data-testid='window-${key}-close']`);
     await page.waitForSelector(`[data-testid='window-${key}-resize-se']`);
@@ -183,6 +194,10 @@ async function verifyChrome(page: Page, pilotId: string): Promise<void> {
   );
   assert(layoutBlob !== null && layoutBlob.includes("scanner"), "layout persisted under pilot key");
   await page.getByTestId("layout-reset").click();
+  // Reset restores the default layout, which closes every window (2e43cf2). The
+  // overview/selection phase below reads scanner rows — reopen it.
+  await page.getByTestId("neocom-scanner").click();
+  await page.waitForSelector("[data-testid='window-scanner']");
 }
 
 async function verifyOverviewAndSelection(
@@ -299,6 +314,7 @@ async function verifyFlightVectorPips(page: Page, pilotId: string): Promise<void
 }
 
 async function verifyAimDeltaAlignment(page: Page, pilotId: string): Promise<void> {
+  await openWindow(page, "flight");
   await page.getByTestId("flight-mode-toggle").click();
   await page.waitForFunction(
     () =>
@@ -486,6 +502,10 @@ async function angularTorqueLineLength(page: Page): Promise<number | null> {
 }
 
 async function verifyCoreWindows(page: Page): Promise<void> {
+  // Window content only exists while open (the layout reset above closed everything).
+  for (const key of ["cargo", "comms", "character", "bases"]) {
+    await openWindow(page, key);
+  }
   assert((await count(page, "[data-testid='cargo-capacity-bar']")) === 1, "cargo capacity bar");
   assert((await count(page, "[data-testid='cargo-sell']")) === 1, "cargo sell");
   assert((await count(page, "[data-testid='comms-tab-global']")) === 1, "global comms tab");
