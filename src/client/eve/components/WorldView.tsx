@@ -93,6 +93,14 @@ import {
 } from "../gpu/buffers";
 import { markRangesForUpload } from "../gpu/base-derive";
 import { FieldRingStream, mergeDirtyToRanges } from "../gpu/ring-stream";
+import {
+  applyFroxelTuning,
+  ensureFroxelDensity,
+  froxelCamWorld,
+  froxelProjInv,
+  makeFroxelPipeline,
+} from "../gpu/kernels/froxels";
+import { activeBeltField } from "../field-core";
 import { BeltFarField } from "./BeltFarField";
 // NOTE: the WebGL @react-three/postprocessing stack (ScanPulse + Bloom + ACES) cannot run under
 // WebGPURenderer; it is removed here and ported to the three-native TSL PostProcessing in step 2.
@@ -1301,6 +1309,9 @@ function InstancedAsteroids({
   // Step 7: the collision pipeline + the deterministic wells that manufacture its density.
   const collision = useMemo(() => makeCollisionPipeline(), []);
   const wells = useMemo(() => deriveGravityWells(), []);
+  // Step 9: the froxel volumetric pipeline (scatter -> integrate; §6.5). View-space,
+  // rebuilt every frame, cosmetic-only — writes nothing the physics/cull pipeline reads.
+  const froxel = useMemo(() => makeFroxelPipeline(), []);
 
   // Ring-stream base/packAttr/slotMeta from the app's already-derived field (the worker +
   // reconcile output) on each visible-set change — a CPU derive + buffer SUB-RANGE write,
@@ -1367,6 +1378,16 @@ function InstancedAsteroids({
     gl.compute(lod.pipeline.clearCull);
     gl.compute(lod.pipeline.cull);
     gl.compute(lod.pipeline.publishCounts);
+    // Froxel volumetrics (§6.5): upload the baked density once the async bake fetch lands
+    // (until then the medium is the sigmaFloor breath only), refresh the camera basis +
+    // tuning uniforms, and scatter+integrate into froxelAccum for this frame's composite.
+    ensureFroxelDensity(activeBeltField());
+    applyFroxelTuning(getRenderDebugControls().froxel);
+    froxelProjInv.value.copy(camera.projectionMatrixInverse);
+    froxelCamWorld.value.copy(camera.matrixWorld);
+    for (const kernel of froxel.dispatches) {
+      gl.compute(kernel);
+    }
   });
 
   if (asteroids.length === 0) {

@@ -245,6 +245,10 @@ export type RenderDebugControls = {
   // around) become this point. Lets capture scripts shoot the belt at any scale without
   // flying there. No effect in normal play (nothing sets it).
   viewPos: { x: number; y: number; z: number } | null;
+  // Live froxel-fog tuning overrides (merged over FROXEL_DEFAULTS each frame; null =
+  // pure defaults). Lets the console / capture harnesses iterate on the volumetric look
+  // (sigma scale/floor, albedo, mix, light strengths) without a rebuild.
+  froxel: Partial<import("./gpu/kernels/froxels").FroxelTuning> | null;
 };
 
 const debugControls: RenderDebugControls = {
@@ -254,6 +258,7 @@ const debugControls: RenderDebugControls = {
   shadowTier1: true,
   shadowTier2: true,
   viewPos: null,
+  froxel: null,
 };
 
 export function getRenderDebugControls(): RenderDebugControls {
@@ -271,6 +276,7 @@ if (typeof window !== "undefined") {
         lookDir: (dir: { x: number; y: number; z: number } | null) => void;
         shadowTiers: (tier1: boolean, tier2: boolean) => void;
         viewPos: (pos: { x: number; y: number; z: number } | null) => void;
+        froxel: (params: RenderDebugControls["froxel"]) => void;
       };
     }
   ).__HAYSTACK_RENDER_DEBUG__ = {
@@ -291,6 +297,9 @@ if (typeof window !== "undefined") {
     },
     viewPos: (pos: { x: number; y: number; z: number } | null) => {
       debugControls.viewPos = pos;
+    },
+    froxel: (params: RenderDebugControls["froxel"]) => {
+      debugControls.froxel = params;
     },
   };
 }
